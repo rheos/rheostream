@@ -15,8 +15,9 @@ system as designed; [Status](#status) says what is built today.
 One system you own, with your work in it and an agent named rheo to run it. The
 [design guide](docs/guide/README.md) walks through every part.
 
-- Each workspace is its own Postgres database, chosen from who you are and never from what
-  a request says. ([Workspaces and storage](docs/guide/workspaces-and-storage.md))
+- Your records live in your own Postgres, and a workspace exports to one file that restores
+  elsewhere with the same identifiers. ([Storage](docs/guide/workspaces-and-storage.md),
+  [export, restore and deploy](docs/guide/export-restore-deploy.md))
 - A change and its events commit together, jobs run under leases, and every long call
   leaves an operation record you can poll. ([Durable work](docs/guide/durable-work.md))
 - Deleting, sending and paying need a person's approval, bound to the exact call. No
@@ -25,8 +26,9 @@ One system you own, with your work in it and an agent named rheo to run it. The
 - Every agent comes in through one MCP server, with scoped tokens, redaction before
   anything reaches a model, and a runtime you can swap.
   ([The MCP door](docs/guide/mcp-and-runtimes.md))
-- Recallatron stores who may read each memory and why, recalls with hybrid search that runs inside the deployment, and erases whatever was derived from erased data. It can save
-  from your Claude Code sessions on its own. ([Recallatron](docs/guide/recallatron.md),
+- Recallatron stores who may read each memory and why, recalls with hybrid search that
+  runs inside the deployment, and erases whatever was derived from erased data. It can
+  save from your Claude Code sessions on its own. ([Recallatron](docs/guide/recallatron.md),
   [the Claude Code bridge](docs/guide/claude-code-bridge.md))
 - Leads takes inquiries from any funnel (signed webhooks, imports, pasted email) and keeps
   the evidence behind every opportunity. ([Leads](docs/guide/leads.md),
@@ -35,9 +37,8 @@ One system you own, with your work in it and an agent named rheo to run it. The
   handoffs from Leads exactly once. ([Current](docs/guide/current.md))
 - rheo works from Claude, Telegram or voice under one authorization model.
   ([rheo and channels](docs/guide/rheo-and-channels.md))
-- A workspace exports to one file and restores elsewhere with the same identifiers.
-  ([Export, restore and deploy](docs/guide/export-restore-deploy.md),
-  [Web shell and CLI](docs/guide/web-shell-and-cli.md))
+- A web shell for people, and a `rheo` command for the operator.
+  ([Web shell and CLI](docs/guide/web-shell-and-cli.md))
 
 ## Mechanisms you can inspect
 

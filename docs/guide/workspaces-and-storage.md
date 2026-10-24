@@ -1,58 +1,28 @@
-# Workspaces and storage
+# Storage, settings and secrets
 
 ## What it is
 
-A workspace is the boundary for everything: isolation, ownership, export, retention and
-collaboration. A one-person setup starts with one workspace; a studio can give several
-people access to one. Every workspace is its own Postgres database, named `ws_` followed
-by the 32 hex digits of its UUID. Beside them sits one small control-plane database,
-`rheo_control`, which holds only what must exist before any workspace can be reached:
-accounts, login identities, the workspace registry, memberships, sessions, tokens, and the
-worker's due-work index. It holds no domain records.
+rheoStream keeps your records in Postgres and everything else (settings, secrets,
+uploads, exports, cached model files) in one data directory outside the source checkout.
 
-Inside a workspace database, the core owns a `core` schema and every installed module owns
-a schema named after it: `recallatron`, `relationships`, `leads`, `current`.
+All of it belongs to a workspace: the unit you own, export, set retention for, and share
+with collaborators. Most people running rheoStream for themselves have exactly one
+workspace and never think about it. A studio can give several people access to that one
+workspace, and an operator can host several workspaces side by side.
+
+Inside the database, the core and each installed module keep their tables in their own
+schema: `core`, `recallatron`, `relationships`, `leads`, `current`.
 
 ## What you can do with it
 
-- Create a workspace for an owner. Its creator is its owner, and the database is
-  provisioned on the spot.
-- Give a second person a membership with the role `owner` or `member`. An account is not
-  a workspace; one person can belong to several.
-- Switch the shell's active workspace. Every later request in that session routes to the
-  new workspace with no identifier in any URL.
-- Read a workspace's composition with `workspace_status`: the core version, each
+- Give a second person a membership with the role `owner` or `member`.
+- Read the workspace's composition with `workspace_status`: the core version, each
   module's package and schema version, and its state.
 - Set workspace and member settings within the limits the operator allows.
+- Keep credentials as references that domain code can never resolve.
+- Create more workspaces when you need them, and switch between them in the shell.
 
 ## How it works
-
-### Routing comes from the authenticated context
-
-Every entry point (the web session, an MCP or CLI token, a job, an intake connection, a
-channel) builds a `WorkspaceContext` before any service runs. Only the boundary factories
-can construct one. Storage routing then follows a fixed path:
-
-```text
-ctx.workspace_id
-  -> control.workspace row (state must be active)
-  -> database_name
-  -> the cluster connection, resolved from a secret reference
-  -> a pool for that database
-```
-
-A database name is never accepted from a request, a model's tool argument, a payload, a
-workspace setting or a configuration file. The only code that writes it is provisioning. A
-test feeds a database name, a connection string, a schema name and a workspace id through
-every input channel and checks that each one is ignored.
-
-### Provisioning is a small state machine
-
-`CREATE DATABASE` cannot run inside a transaction, so creating a workspace is a sequence
-of idempotent steps tracked on the registry row: insert the row as `provisioning` with its
-owner, create the database, apply the core migration chain, write the settings rows that
-must exist explicitly, set the row `active`. A crash between steps leaves a row whose
-state says where it stopped, and `rheo workspace repair` finishes it.
 
 ### One schema per module
 
@@ -63,22 +33,11 @@ schema, and scans the module's code for another schema's names.
 
 ### Migrations have one entry point
 
-The core's migration orchestrator runs every chain. It takes a transaction-scoped advisory
-lock per workspace, so two processes cannot interleave DDL. If a workspace's core
-migration fails, that workspace goes `unavailable` with the error recorded, the
-orchestrator moves on to the next one, and the failed one is refused at the boundary
-instead of being served half-migrated. A workspace whose recorded schema is newer than the
-running code is refused as `schema_ahead`.
-
-### Bounded connection pools
-
-Each workspace gets its own pool. An engine idle for 300 seconds is closed, at most 6 are
-cached, and each holds at most 5 connections. With the control-plane engine and one
-maintenance connection that is 36 connections per process, 72 for core and worker
-together, against a stock Postgres limit of 100. `rheo doctor` reports `ok` only while
-that figure stays within 80% of `max_connections`, and names the three settings that move
-it. Busy engines are never evicted, and the worker visits only workspaces that have work
-due, so an idle workspace costs no connection at all.
+The core's migration orchestrator runs every chain, under an advisory lock, so two
+processes cannot interleave DDL. A failed core migration marks the workspace `unavailable`
+with the error recorded, and the boundary refuses it instead of serving it half-migrated.
+A database whose recorded schema is newer than the running code is refused as
+`schema_ahead`.
 
 ### Revisions are compare-and-set
 
@@ -109,38 +68,53 @@ moment it starts the process.
 ### Files live under one data root
 
 Everything the deployment writes outside Postgres sits in one operator-configured
-directory: deployment settings, the secret store, per-workspace uploads, exports and
-scratch space, and cached model files. It is resolved outside the source checkout by
-default, and modules receive paths only for a closed set of purposes. A module cannot name
-a path.
+directory: deployment settings, the secret store, uploads, exports, scratch space and
+cached model files. It is resolved outside the source checkout by default, and modules
+receive paths only for a closed set of purposes. A module cannot name a path.
 
 ### Identifiers
 
 Durable records use UUID version 7, minted without a coordinator and time-ordered for
 index locality. Records are named across modules by a reference such as
-`leads.opportunity:<uuid>`. No identifier encodes its workspace, so knowing an id tells
-you nothing about where it lives. People see a short ID, the last 8 hex characters,
-lengthened like a git short hash when two records share a tail.
+`leads.opportunity:<uuid>`. No identifier encodes where it lives, so a record keeps its id
+through an export and a restore into another deployment. People see a short ID, the last
+8 hex characters, lengthened like a git short hash when two records share a tail.
+
+### Every request names its workspace from the server side
+
+Every entry point (the web session, an MCP or CLI token, a job, an intake connection, a
+channel) builds a `WorkspaceContext` before any service runs, from the authenticated
+session or token. Only the boundary factories can construct one. A workspace or database
+named in a request body, a model's tool argument or a payload is ignored, and a test feeds
+one through every input channel to prove it.
 
 ## Why it's built this way
 
-A connection opened against the wrong database cannot read another workspace's rows at
-all. With one shared schema, isolation would depend on every query remembering a tenant
-filter, every time, including inside library code that never heard of the rule. Here it is
-structural.
+The parts that matter day to day are the boring ones done strictly. Each module owns its
+own schema, so modules stay separable. Credentials are references that only the component
+presenting them can resolve, so a module or a model never holds one. Identifiers survive
+export and restore, so your data can move.
 
-The workspace is also the unit everything else already wants. Export, restore, backup and
-deletion act on one workspace, and a dump of one database is exactly that unit. Extensions
-such as pgvector are installed per database, and each database carries its own schema
-versions, so a half-migrated cluster is a set of databases each in a known state, never
-one database in an unknown mixed state.
+## Running more than one workspace
 
-The cost is operational: pools, provisioning and migrations multiply with workspaces. The
-design bounds each one and states the numbers so an operator can check them. Shared
-Postgres with row-level security and a schema per workspace were weighed and lost.
-Per-workspace SQLite stays a contract goal: the storage seam is protocol-shaped, the
-export format is backend-neutral, and no domain code names Postgres, so a second backend
-has a contract to prove itself against.
+This matters to an operator hosting several workspaces, or to anyone curious about the
+hosted design. The [storage specification](../architecture/storage-and-workspaces.md#a1-the-per-workspace-unit-is-a-database)
+has the full reasoning.
+
+Each workspace is its own Postgres database, named `ws_` plus the 32 hex digits of its
+UUID, beside one small control-plane database, `rheo_control`, that holds accounts,
+memberships, sessions, tokens and the workspace registry. Storage routing goes from the
+server-resolved context to the registry row to that database, so a connection opened for
+one workspace cannot read another's rows at all. Export, backup and deletion then act on
+one database each.
+
+Creating a workspace is a small state machine, because `CREATE DATABASE` cannot run inside
+a transaction: each step is idempotent and recorded on the registry row, and
+`rheo workspace repair` finishes one a crash interrupted. Connection pools are bounded per
+process (6 cached engines of 5 connections, plus the control plane and a maintenance
+connection: 36 per process, 72 for core and worker) and `rheo doctor` checks that figure
+against Postgres's limit. The worker visits only workspaces with work due, so an idle
+workspace costs no connection.
 
 ## Where to look
 
