@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isTimeZone, readTimeZoneCookie, TIME_ZONE_COOKIE, timeZoneCookieValue, timeZoneNames } from "./time-zone";
+import { canonicalTimeZone, readTimeZoneCookie, TIME_ZONE_COOKIE, timeZoneCookieValue, timeZoneNames } from "./time-zone";
 
 function jar(value?: string) {
   return { get: (name: string) => (name === TIME_ZONE_COOKIE && value !== undefined ? { value } : undefined) };
@@ -22,11 +22,12 @@ describe("the time zone cookie (#465)", () => {
     }
   });
 
-  it("accepts only zones the runtime can format in", () => {
-    expect(isTimeZone("America/Vancouver")).toBe(true);
-    expect(isTimeZone("UTC")).toBe(true);
-    expect(isTimeZone("Not/AZone")).toBe(false);
-    expect(isTimeZone(42)).toBe(false);
+  it("accepts only zones the runtime can format in, under one name", () => {
+    expect(canonicalTimeZone("America/Vancouver")).toBe("America/Vancouver");
+    for (const alias of ["UTC", "Etc/UTC", "utc"]) expect(canonicalTimeZone(alias)).toBe("UTC");
+    expect(canonicalTimeZone("Not/AZone")).toBeNull();
+    expect(canonicalTimeZone(42)).toBeNull();
+    expect(readTimeZoneCookie(jar("auto:Etc/UTC"))).toEqual({ zone: "UTC", chosen: false });
   });
 
   it("offers UTC and the viewer's zone", () => {

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useId, useState, useSyncExternalStore, useTransition } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, useTransition } from "react";
 import styles from "@/theme/theme-picker.module.css";
 import { detectTimeZone, selectTimeZone } from "./time-zone-action";
 import type { ViewerTimeZone } from "./time-zone";
@@ -11,12 +11,18 @@ function browserZone(): string {
 }
 
 /** Tells the server the browser's zone when it follows the browser and the
- * cookie is missing or out of date (a first visit, or the laptop moved). */
+ * cookie is missing or out of date (a first visit, or the laptop moved). Once per
+ * zone per page: if the cookie does not take, the page must not keep asking. */
 export function TimeZoneSync({ current }: { current: ViewerTimeZone | null }) {
+  const sent = useRef<string | null>(null);
+  const chosen = current?.chosen ?? false;
+  const known = current?.zone ?? null;
   useEffect(() => {
     const zone = browserZone();
-    if (!current?.chosen && current?.zone !== zone) void detectTimeZone(zone);
-  }, [current]);
+    if (chosen || known === zone || sent.current === zone) return;
+    sent.current = zone;
+    void detectTimeZone(zone);
+  }, [chosen, known]);
   return null;
 }
 

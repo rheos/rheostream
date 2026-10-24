@@ -46,12 +46,18 @@ export function zoneLabel(zone: string): { timeZoneName?: "short" } {
 }
 /** The calendar day an instant falls on in a zone, as YYYY-MM-DD. */
 export function dayIn(ms: number, zone: string): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    timeZone: zone,
-  }).format(ms);
+  // From the parts, not a locale's pattern: the result is compared as text.
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      timeZone: zone,
+    })
+      .formatToParts(ms)
+      .map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 /** A day as "Oct 23, 2026". A bare YYYY-MM-DD is a calendar date and is never
  * shifted; an instant shows the day it falls on in the viewer's zone. */

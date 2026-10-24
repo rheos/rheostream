@@ -232,6 +232,7 @@ function ItemRows({
             </div>
             {shell.submit ? (
               <StatusActions
+                zone={shell.timeZone}
                 submit={shell.submit}
                 itemRef={item.ref}
                 revision={item.revision}
@@ -820,6 +821,7 @@ export async function item({ shell, query }: ScreenProps) {
             </p>
             {shell.submit ? (
               <StatusActions
+                zone={shell.timeZone}
                 submit={shell.submit}
                 itemRef={record.ref}
                 revision={record.revision}

@@ -16,14 +16,14 @@ export interface ViewerTimeZone {
   chosen: boolean;
 }
 
-/** True for a zone name this runtime can format in. */
-export function isTimeZone(value: unknown): value is string {
-  if (typeof value !== "string" || value === "" || value.length > 64) return false;
+/** The runtime's own name for a zone it can format in, or null. Aliases fold
+ * to one name (`Etc/UTC` and `utc` are `UTC`), so screens can tell UTC apart. */
+export function canonicalTimeZone(value: unknown): string | null {
+  if (typeof value !== "string" || value === "" || value.length > 64) return null;
   try {
-    new Intl.DateTimeFormat("en", { timeZone: value });
-    return true;
+    return new Intl.DateTimeFormat("en", { timeZone: value }).resolvedOptions().timeZone;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -35,8 +35,8 @@ export function readTimeZoneCookie(jar: {
   get(name: string): { value: string } | undefined;
 }): ViewerTimeZone | null {
   const match = /^(auto|set):(.+)$/.exec(jar.get(TIME_ZONE_COOKIE)?.value ?? "");
-  if (!match || !isTimeZone(match[2])) return null;
-  return { zone: match[2], chosen: match[1] === "set" };
+  const zone = match ? canonicalTimeZone(match[2]) : null;
+  return match && zone ? { zone, chosen: match[1] === "set" } : null;
 }
 
 /** Every zone the runtime knows, for the settings choice. */

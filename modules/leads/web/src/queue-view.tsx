@@ -238,10 +238,12 @@ function Badges({ item, pipeline }: { item: Row; pipeline?: string }) {
 export function Meta({
   item,
   now,
+  zone = "UTC",
   detail = false,
 }: {
   item: Row;
   now: number;
+  zone?: string;
   detail?: boolean;
 }) {
   const fields = row(item.fields);
@@ -260,7 +262,7 @@ export function Meta({
         <span className={styles.flag}>New client</span>
       ) : null}
       {party ? <span>{party}</span> : null}
-      <span>{age(item, now)}</span>
+      <span>{age(item, now, zone)}</span>
     </div>
   );
 }
@@ -426,7 +428,7 @@ function Card({
         </div>
         <FitPill assessment={item.assessment} />
       </div>
-      <Meta item={item} now={now} />
+      <Meta item={item} now={now} zone={zone} />
       <FollowupLine item={item} now={now} zone={zone} />
       {summary ? (
         <p className={`${styles.reason} ${styles.clamped}`} title={summary}>
@@ -809,7 +811,7 @@ export function JobHeader({
             title
           )}
         </h1>
-        <Meta item={item} now={now} detail />
+        <Meta item={item} now={now} zone={zone} detail />
         <div className={styles.verdictRow}>
           {verdict ? <p className={styles.verdict}>{verdict}</p> : null}
           <InfoTip label="Why this score, and the record details" align="start" wide>

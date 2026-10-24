@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { date, dayIn, moment, zoneOf } from "./data";
-import { followupFor } from "./queue";
+import { followupFor, postedAgo } from "./queue";
 import { clock } from "./scoring";
 
 // 03:30Z on Oct 24 is 8:30 pm on Oct 23 in Vancouver (PDT, UTC-7).
@@ -34,6 +34,12 @@ describe("times in the viewer's zone (#465)", () => {
     expect(followupFor(item, now, VAN)?.overdue).toBe(false);
     expect(followupFor(item, now)?.overdue).toBe(true);
     expect(dayIn(now, VAN)).toBe("2026-10-23");
+  });
+
+  it("counts posting days by the viewer's day", () => {
+    const now = Date.parse("2026-10-24T01:00:00Z"); // 6 pm Oct 23 in Vancouver
+    expect(postedAgo("2026-10-23", now, VAN)).toBe("posted today");
+    expect(postedAgo("2026-10-23", now)).toBe("posted 1d ago");
   });
 
   it("falls back to UTC when the shell has no zone", () => {

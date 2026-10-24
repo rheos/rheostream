@@ -152,3 +152,37 @@ describe("helpers", () => {
     ).toMatchObject({ status: "done", area: "bills", overdue: true, blocked: null });
   });
 });
+
+describe("snooze picks in the shell's zone (#465)", () => {
+  // 3 pm Friday 9 October 2026 in Vancouver (PDT) is 22:00Z.
+  const vanFriday3pm = new Date("2026-10-09T22:00:00Z");
+  it("computes each pick on the shown zone's clock, whatever the browser's", () => {
+    expect(snoozeAt("tomorrow", vanFriday3pm, "America/Vancouver")?.toISOString()).toBe(
+      "2026-10-10T16:00:00.000Z",
+    );
+    expect(snoozeAt("evening", vanFriday3pm, "America/Vancouver")?.toISOString()).toBe(
+      "2026-10-10T02:00:00.000Z",
+    );
+    // Already 11 pm in London, so no evening, and tomorrow is 9 am BST.
+    expect(snoozeAt("evening", vanFriday3pm, "Europe/London")).toBeNull();
+    expect(snoozeAt("tomorrow", vanFriday3pm, "Europe/London")?.toISOString()).toBe(
+      "2026-10-10T08:00:00.000Z",
+    );
+    expect(snoozeAt("monday", vanFriday3pm, "America/Vancouver")?.toISOString()).toBe(
+      "2026-10-12T16:00:00.000Z",
+    );
+  });
+  it("crosses the November clock change on the zone's clock", () => {
+    const saturday = new Date("2026-10-31T22:00:00Z"); // 3 pm PDT
+    expect(snoozeAt("monday", saturday, "America/Vancouver")?.toISOString()).toBe(
+      "2026-11-02T17:00:00.000Z", // 9 am PST
+    );
+  });
+  it("reads a custom time on the zone's clock", () => {
+    expect(customSnooze("2026-10-10T09:00", vanFriday3pm, "America/Vancouver")?.toISOString()).toBe(
+      "2026-10-10T16:00:00.000Z",
+    );
+    expect(customSnooze("2026-10-09T14:00", vanFriday3pm, "America/Vancouver")).toBeNull();
+    expect(customSnooze("2026-13-01T09:00", vanFriday3pm, "America/Vancouver")).toBeNull();
+  });
+});

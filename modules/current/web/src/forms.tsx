@@ -364,7 +364,7 @@ function verb(from: Status, to: Status): string {
  * The status controls for one item: only the moves the service allows from its
  * current status, so no button leads to a refusal by construction. Snoozing opens
  * a picker whose quick picks are computed in the browser at the moment of the
- * click, in the viewer's time zone.
+ * click, in the zone times are shown in (the browser's own when none is given).
  */
 export function StatusActions({
   submit,
@@ -374,6 +374,7 @@ export function StatusActions({
   subject,
   compact = false,
   reloadHref,
+  zone,
 }: {
   submit: Submit;
   itemRef: string;
@@ -383,6 +384,8 @@ export function StatusActions({
   subject: string;
   compact?: boolean;
   reloadHref?: string;
+  /** The viewer's zone from the shell (#465). */
+  zone?: string;
 }) {
   const id = useId();
   const [result, setResult] = useState<OperationOutcome | null>(null);
@@ -417,11 +420,11 @@ export function StatusActions({
     });
   }
   function pick(choice: SnoozePick) {
-    const until = snoozeAt(choice, new Date());
+    const until = snoozeAt(choice, new Date(), zone);
     if (until) move("snoozed", until);
   }
   function snoozeCustom() {
-    const until = customSnooze(custom, new Date());
+    const until = customSnooze(custom, new Date(), zone);
     if (until) move("snoozed", until);
     else setCustomError(true);
   }
@@ -472,7 +475,7 @@ export function StatusActions({
         >
           <div className={styles.picks}>
             {SNOOZE_PICKS.filter(
-              (p) => snoozeAt(p.id, pickerOpenedAt) !== null,
+              (p) => snoozeAt(p.id, pickerOpenedAt, zone) !== null,
             ).map((p) => (
               <button
                 key={p.id}

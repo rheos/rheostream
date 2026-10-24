@@ -731,6 +731,7 @@ export async function review({ shell }: ScreenProps) {
         <ReviewQueue
           items={records}
           now={Date.now()}
+          zone={zoneOf(shell)}
           hrefs={hrefs}
           limited={records.length >= REVIEW_LIMIT}
           canPromote={shell.role === "owner"}
@@ -1202,8 +1203,8 @@ export async function detail({ shell, query }: ScreenProps) {
                               {fieldValue(
                                 str(field.target),
                                 str(field.value_text),
-zoneOf(shell),
-) || label(field.value_kind)}
+                                zoneOf(shell),
+                              ) || label(field.value_kind)}
                             </dd>
                           </div>
                         ))}

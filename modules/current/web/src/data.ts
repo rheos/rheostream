@@ -339,46 +339,86 @@ export const SNOOZE_PICKS = [
 ] as const;
 export type SnoozePick = (typeof SNOOZE_PICKS)[number]["id"];
 
-function at(now: Date, addDays: number, hour: number): Date {
-  const d = new Date(now);
-  d.setDate(d.getDate() + addDays);
-  d.setHours(hour, 0, 0, 0);
-  return d;
+/** The runtime's own zone: the browser's, where the snooze controls run. */
+function ownZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
-function next(now: Date, weekday: number, hour: number): Date {
-  for (let add = 0; add <= 7; add += 1) {
-    const d = at(now, add, hour);
-    if (d.getDay() === weekday && d > now) return d;
+/** The wall clock an instant shows in a zone. */
+function wall(ms: number, zone: string) {
+  const parts = new Intl.DateTimeFormat("en", {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    hourCycle: "h23",
+    timeZone: zone,
+  }).formatToParts(ms);
+  const n = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((part) => part.type === type)?.value);
+  return { y: n("year"), m: n("month"), d: n("day"), h: n("hour"), min: n("minute") };
+}
+/** The instant a wall-clock time names in a zone (days and hours may overflow,
+ * as with `Date.UTC`). A time a spring-forward skips lands just after the gap. */
+function zoned(y: number, m: number, d: number, h: number, min: number, zone: string): Date {
+  const target = Date.UTC(y, m - 1, d, h, min);
+  let t = target;
+  for (let i = 0; i < 2; i += 1) {
+    const w = wall(t, zone);
+    t += target - Date.UTC(w.y, w.m - 1, w.d, w.h, w.min);
   }
-  return at(now, 7, hour);
+  return new Date(t);
+}
+function at(now: Date, addDays: number, hour: number, zone: string): Date {
+  const w = wall(now.getTime(), zone);
+  return zoned(w.y, w.m, w.d + addDays, hour, 0, zone);
+}
+function next(now: Date, weekday: number, hour: number, zone: string): Date {
+  const w = wall(now.getTime(), zone);
+  for (let add = 0; add <= 7; add += 1) {
+    const d = at(now, add, hour, zone);
+    if (new Date(Date.UTC(w.y, w.m - 1, w.d + add)).getUTCDay() === weekday && d > now)
+      return d;
+  }
+  return at(now, 7, hour, zone);
 }
 /**
- * The wake time a quick pick means, in the viewer's own clock: `now` is read in the
- * browser, never on the server, whose time zone is not the viewer's. "This evening"
- * has no answer once 7pm has passed, and the control hides it then.
+ * The wake time a quick pick means on the viewer's clock, in `zone` (the shell's,
+ * the one times are shown in; the browser's own when none is given). `now` is read
+ * in the browser. "This evening" has no answer once 7pm has passed, and the
+ * control hides it then.
  */
-export function snoozeAt(pick: SnoozePick, now: Date): Date | null {
+export function snoozeAt(pick: SnoozePick, now: Date, zone = ownZone()): Date | null {
   switch (pick) {
     case "hour":
       return new Date(now.getTime() + 60 * 60 * 1000);
     case "evening": {
-      const evening = at(now, 0, 19);
+      const evening = at(now, 0, 19, zone);
       return evening > now ? evening : null;
     }
     case "tomorrow":
-      return at(now, 1, 9);
+      return at(now, 1, 9, zone);
     case "saturday":
-      return next(now, 6, 9);
+      return next(now, 6, 9, zone);
     case "monday":
-      return next(now, 1, 9);
+      return next(now, 1, 9, zone);
   }
 }
-/** A `datetime-local` value read as the viewer's local time; null unless it is a
- * real time after `now`. */
-export function customSnooze(value: string, now: Date): Date | null {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) return null;
-  const d = new Date(value);
-  return Number.isNaN(d.valueOf()) || d <= now ? null : d;
+/** A `datetime-local` value read as a wall-clock time in `zone`; null unless it is
+ * a real time after `now`. */
+export function customSnooze(value: string, now: Date, zone = ownZone()): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value);
+  if (!m) return null;
+  const [y, mo, d, h, min] = [m[1], m[2], m[3], m[4], m[5]].map(Number) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || min > 59) return null;
+  const when = zoned(y, mo, d, h, min, zone);
+  return Number.isNaN(when.valueOf()) || when <= now ? null : when;
 }
 
 /** A key for a new area derived from its label, in the service's key grammar. */
