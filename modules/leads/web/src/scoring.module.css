@@ -2,7 +2,6 @@
    Dense like the job queue; every value is a theme token. */
 .view {
   max-width: calc(var(--rs-space-6) * 28);
-  margin-inline: auto;
   overflow-wrap: anywhere;
 }
 .status {
@@ -181,10 +180,6 @@ a.rowTitle:hover {
   min-width: calc(var(--rs-space-6) * 1.25);
   height: calc(var(--rs-space-5) + var(--rs-space-1) / 2);
   padding: 0 var(--rs-space-2);
-  border-radius: var(--rs-radius-md);
-}
-.row .chipScore > span {
-  font-size: calc(var(--rs-font-size-sm) * 0.85);
 }
 .chip_busy {
   color: var(--rs-color-success);
