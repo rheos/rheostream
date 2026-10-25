@@ -212,10 +212,12 @@ def figures_block(
     listing_type: str | None,
     *,
     per_unit: str = "",
+    first_piece: bool = False,
 ) -> str:
     """The milestones as the ONLY amounts a draft may state. The apply form's hourly
-    rate is the owner's bookkeeping and never reaches the drafter; a per-unit ask
-    makes the figures the first piece's price, never the per-unit rate."""
+    rate is the owner's bookkeeping and never reaches the drafter. With a per-unit
+    ask the total is never the per-unit rate; ``first_piece`` says these rows were
+    priced as the first piece alone, setup included."""
     amounts = [amount for _, amount in rows]
     total = round(sum(amounts, Decimal(0)), 2)
     days = working_days(p, amounts)
@@ -241,16 +243,23 @@ def figures_block(
         "as the allowance it represents, with one clause saying that anything beyond "
         "it is quoted separately before it is touched."
     )
-    if per_unit:
+    if per_unit and first_piece:
         lines.append(
             f"PER-{per_unit.upper()} ASK: the posting asks for a price per {per_unit}. "
             "These figures price the FIRST piece only, and that piece carries one-time "
             "setup (look development, style frames, the production pipeline) that "
-            f"later {per_unit}s reuse. State the total as the price of that first "
-            f"piece. Never call it, or anything derived from it, the per-{per_unit} "
-            f"rate, and never say later {per_unit}s cost the same. Say in one plain "
-            f"clause that the recurring per-{per_unit} rate leaves out the setup and "
-            "is quoted once the first piece has set the look."
+            f"each later {per_unit} reuses. State the total as the price of that "
+            "first piece. Never call it, or anything derived from it, the "
+            f"per-{per_unit} rate, and never say each later {per_unit} costs the "
+            f"same. Say in one plain clause that the recurring per-{per_unit} rate "
+            "leaves out the setup and is quoted once the first piece has set the look."
+        )
+    elif per_unit:
+        lines.append(
+            f"PER-{per_unit.upper()} ASK: the posting asks for a price per {per_unit}. "
+            "State these figures as the price of the stages they name. Never call "
+            f"the total, or anything derived from it, the per-{per_unit} rate; say in "
+            f"one plain clause that the per-{per_unit} rate is quoted separately."
         )
     lines.append(
         "The application form's own rate or price field is the developer's to fill. "

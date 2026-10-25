@@ -54,8 +54,10 @@ ANALYSIS_LIST_KEYS: Final = frozenset(
     }
 )
 ANALYSIS_BOOL_KEYS: Final = frozenset({"asks_quote"})
-# The unit reaches the pricing prompts, so only a plain short word is kept.
+# The unit reaches the pricing prompts, so only a plain short word is kept, and a
+# time unit is a rate, not a per-unit ask.
 _UNIT_RE: Final = re.compile(r"[a-z]{2,20}")
+_TIME_UNITS: Final = frozenset({"hour", "hr", "day", "week", "month", "year"})
 
 ANALYSIS_INTRO: Final = """\
 You are a brief analyst. Given a job posting, return a JSON object with fourteen fields.
@@ -576,7 +578,8 @@ def normalize_analysis(data: object) -> dict[str, Any]:
                 out[key] = str(value).strip().lower() in ("true", "yes", "1")
         elif key == "per_unit":
             unit = str(value or "").strip().lower()
-            out[key] = unit if _UNIT_RE.fullmatch(unit) else ""
+            plain = _UNIT_RE.fullmatch(unit) and unit not in _TIME_UNITS
+            out[key] = unit if plain else ""
         elif value is not None:
             out[key] = str(value)
     return out

@@ -221,12 +221,16 @@ def attribute_backed(evidence: Evidence, project: str, attribute: str) -> bool |
             return None
         name = candidates[0]
         bullet = bullets[name]
-    names = {key, name}
+    # A sentence that also names another project or known term (a client list, a
+    # portfolio summary) vouches for none of them.
+    named = set(bullets) | {t.strip().lower() for t in evidence.terms if t.strip()}
+    others = [n for n in named if n not in name and name not in n]
     sources = [bullet] + [
         sentence
         for line in evidence.lower.splitlines()
         for sentence in _TERMINAL_SPLIT_RE.split(line)
-        if any(_named_in(n, sentence) for n in names)
+        if _named_in(name, sentence)
+        and not any(_named_in(other, sentence) for other in others)
     ]
     return any(_line_backs(source, project, attribute) for source in sources)
 
@@ -465,7 +469,9 @@ _TIC_PHRASE_RES: Final = (
     re.compile(r"\bexactly the (?:layer|space|problem|work) I\b", re.IGNORECASE),
 )
 # The owner's apply-form bookkeeping: the form's rate field, tracked hours, and two
-# figures said to agree. The client never needs any of it.
+# figures said to agree. The client never needs any of it. A phrase counts only in a
+# sentence that also names a price or rate, so a letter about building forms, time
+# tracking or ledger reconciliation is left alone.
 _RECONCILIATION_RES: Final = (
     re.compile(r"\b(?:apply|application|proposal|bid) form\b", re.IGNORECASE),
     re.compile(r"\bform (?:shows|says|lists|takes|carries)\b", re.IGNORECASE),
@@ -476,6 +482,15 @@ _RECONCILIATION_RES: Final = (
     re.compile(r"\bhourly equivalent\b", re.IGNORECASE),
     re.compile(r"\btracked hours\b", re.IGNORECASE),
 )
+_PRICE_RE: Final = re.compile(
+    r"\$\s?\d|/\s?(?:hr|hour)\b|\bhourly\b|\brates?\b"
+    r"|\bfixed (?:total|price|quote|figure)\b",
+    re.IGNORECASE,
+)
+# A line break ends a sentence too, so a figure list is never part of one.
+_SENTENCE_END_RE: Final = re.compile(r"[.!?](?=\s|$)|\n")
+# Long enough to quote a whole sentence for the repair to cut.
+_SENTENCE_EXCERPT_LEN: Final = 400
 # "Question? Short fragment." inside a section. The closing question ends the letter,
 # so nothing follows it and it never matches.
 _RHETORICAL_FRAGMENT_RE: Final = re.compile(r"\?\s+([^.!?\n]{1,80}?)[.!](?=\s|$)")
@@ -485,14 +500,14 @@ _LONG_LETTER_WORDS: Final = 350
 _DUP_MIN_WORDS: Final = 8
 
 
-def _excerpt(text: str) -> str:
-    return " ".join(text.split())[:EXCERPT_LEN]
+def _excerpt(text: str, limit: int = EXCERPT_LEN) -> str:
+    return " ".join(text.split())[:limit]
 
 
 def _sentence_at(text: str, pos: int) -> str:
-    """The sentence around ``pos``, so a repair can find and cut all of it."""
-    start = max((m.end() for m in _TERMINAL_SPLIT_RE.finditer(text, 0, pos)), default=0)
-    end = _TERMINAL_SPLIT_RE.search(text, pos)
+    """The sentence (or line) around ``pos``, so a repair can find and cut all of it."""
+    start = max((m.end() for m in _SENTENCE_END_RE.finditer(text, 0, pos)), default=0)
+    end = _SENTENCE_END_RE.search(text, pos)
     return text[start : end.end() if end else len(text)].strip()
 
 
@@ -520,11 +535,13 @@ def _sentence_keys(text: str) -> list[tuple[str, str]]:
     return out
 
 
-def _finding(rule: str, location: str, excerpt: str) -> dict[str, str]:
+def _finding(
+    rule: str, location: str, excerpt: str, limit: int = EXCERPT_LEN
+) -> dict[str, str]:
     return {
         "rule": rule,
         "location": location,
-        "excerpt": _excerpt(excerpt),
+        "excerpt": _excerpt(excerpt, limit),
         "severity": "warn",
     }
 
@@ -572,9 +589,16 @@ def _lint_section(text: str, location: str) -> list[dict[str, str]]:
     for rex in _RECONCILIATION_RES:
         for m in rex.finditer(text):
             sentence = _sentence_at(text, m.start())
-            if sentence not in seen:
+            if sentence not in seen and _PRICE_RE.search(sentence):
                 seen.add(sentence)
-                findings.append(_finding("pricing_reconciliation", location, sentence))
+                findings.append(
+                    _finding(
+                        "pricing_reconciliation",
+                        location,
+                        sentence,
+                        _SENTENCE_EXCERPT_LEN,
+                    )
+                )
     for m in _RHETORICAL_FRAGMENT_RE.finditer(text):
         if len(m.group(1).split()) <= _FRAGMENT_MAX_WORDS:
             findings.append(_finding("rhetorical_fragment", location, m.group(0)))

@@ -107,12 +107,19 @@ def test_the_figures_are_the_only_amounts_a_draft_may_state() -> None:
 
 def test_a_per_unit_ask_makes_the_figures_the_first_pieces_price() -> None:
     block = pricing.figures_block(
-        POLICY, [("Test piece", D(800))], "hourly", per_unit="minute"
+        POLICY, [("Test piece", D(800))], "hourly", per_unit="minute", first_piece=True
     )
     assert "- Total: $800.00 for 4 working-days" in block
     assert "PER-MINUTE ASK" in block
     assert "price of that first piece" in block
     assert "Never call it, or anything derived from it, the per-minute rate" in block
+    # Rows priced elsewhere (by hand, or before the ask was read) may cover more
+    # than one piece: never the per-unit rate, but not called the first piece.
+    other = pricing.figures_block(
+        POLICY, [("Three videos", D(2400))], "hourly", per_unit="minute"
+    )
+    assert "FIRST piece" not in other
+    assert "Never call the total, or anything derived from it, the per-minute" in other
 
 
 def test_the_milestone_task_carries_the_owner_rate_and_reads_the_posting_as_data() -> (
@@ -151,7 +158,7 @@ def test_the_milestone_task_carries_the_owner_rate_and_reads_the_posting_as_data
     )
     # A rule, so it sits with the rules, ahead of the untrusted posting.
     assert unit.index("PER-VIDEO ASK") < unit.index("untrusted source material")
-    assert "one-time setup" in unit and "further videos" in unit
+    assert "one-time setup" in unit and "any further video" in unit
 
 
 def test_the_reader_holds_the_model_to_its_contract() -> None:
@@ -323,7 +330,11 @@ def test_a_per_unit_ask_reaches_the_pricing_stage_and_the_letter() -> None:
     run(script)
     calls = dict(script.calls)
     assert "PER-MINUTE ASK" in calls["milestones"]
-    assert "PER-MINUTE ASK" in calls["draft"]
+    assert "FIRST piece" in calls["draft"]
+    stored = Script(analysis=analysis, draft=LETTER, gate=CLAIMS)
+    run(stored, JobInput(title="t", description="d", milestones=(("A", D(400)),)))
+    assert "PER-MINUTE ASK" in dict(stored.calls)["draft"]
+    assert "FIRST piece" not in dict(stored.calls)["draft"]
     plain = Script(analysis=ANALYSIS, milestones=SCHEDULE, draft=LETTER, gate=CLAIMS)
     run(plain)
     assert "PER-" not in dict(plain.calls)["draft"]

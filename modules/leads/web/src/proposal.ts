@@ -274,6 +274,7 @@ export const RULE_LABELS: Record<string, string> = {
   rhetorical_fragment: "Rhetorical fragment",
   long_letter: "Long cover letter",
   duplicate_answer: "Repeated in an answer",
+  pricing_reconciliation: "Apply-form bookkeeping",
 };
 
 export interface Claim {

@@ -174,7 +174,12 @@ def generate(
             schedule = None
     figures = (
         pricing.figures_block(
-            policy.pricing, rows, job.listing_type, per_unit=analysis["per_unit"]
+            policy.pricing,
+            rows,
+            job.listing_type,
+            per_unit=analysis["per_unit"],
+            # Only this run's own Pricing stage is known to price the first piece.
+            first_piece=schedule is not None,
         )
         if rows and policy.pricing is not None
         else ""

@@ -169,9 +169,9 @@ def task(
             f"per {per_unit}. Price only what the client commits to first (a test "
             f"piece, or the first {per_unit}), at honest working-days like any stage. "
             "That first piece carries one-time setup (look development, style frames, "
-            f"the production pipeline) that later {per_unit}s reuse: name that setup "
-            "in its description, in deliverable words. Do NOT add stages for further "
-            f"{per_unit}s the client has not commissioned."
+            f"the production pipeline) that each later {per_unit} reuses: name that "
+            "setup in its description, in deliverable words. Do NOT add a stage for "
+            f"any further {per_unit} the client has not commissioned."
         )
     return (
         "".join(parts)
