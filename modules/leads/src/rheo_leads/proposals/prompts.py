@@ -13,15 +13,16 @@ the analysis fields that reach the draft come from the model's reading of it, no
 the posting's own words as instructions.
 """
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from rheo_leads.proposals.profile import Anecdote, ProposalPolicy
 
-PROMPT_VERSION: Final = "jobproposal.2"
+PROMPT_VERSION: Final = "jobproposal.3"
 # Bump when the analysis contract or the stage list changes; kept on the findings so
 # a weak letter can be traced to the pipeline that wrote it.
-GATE_VERSION: Final = 6
+GATE_VERSION: Final = 7
 
 ANALYSIS_KEYS: Final = (
     "client_voice",
@@ -35,11 +36,12 @@ ANALYSIS_KEYS: Final = (
     "opening_shape",
     # What the posting asks applicants to supply, read by the model rather than a
     # phrase list: story_asks drives anecdotes, embedded_questions feeds the answer
-    # path, asks_quote and scope_size are for pricing.
+    # path, asks_quote, scope_size and per_unit are for pricing.
     "story_asks",
     "embedded_questions",
     "asks_quote",
     "scope_size",
+    "per_unit",
 )
 ANALYSIS_LIST_KEYS: Final = frozenset(
     {
@@ -52,9 +54,11 @@ ANALYSIS_LIST_KEYS: Final = frozenset(
     }
 )
 ANALYSIS_BOOL_KEYS: Final = frozenset({"asks_quote"})
+# The unit reaches the pricing prompts, so only a plain short word is kept.
+_UNIT_RE: Final = re.compile(r"[a-z]{2,20}")
 
 ANALYSIS_INTRO: Final = """\
-You are a brief analyst. Given a job posting, return a JSON object with thirteen fields.
+You are a brief analyst. Given a job posting, return a JSON object with fourteen fields.
 
 You are given the freelancer's FULL profile so that evidence is chosen from what they have \
 actually shipped, projects and capability areas alike."""  # noqa: E501 - ported prompt text, kept verbatim
@@ -74,7 +78,8 @@ Return ONLY valid JSON, no markdown fences, no other text:
   "story_asks": ["<a request for a real example, incident, or story, in the client's own words>"],
   "embedded_questions": ["<an item applicants are told to answer or state, verbatim>"],
   "asks_quote": <true or false>,
-  "scope_size": "<one of: day | week | weeks | ongoing>"
+  "scope_size": "<one of: day | week | weeks | ongoing>",
+  "per_unit": "<the unit of a recurring per-unit price the posting asks for, one lowercase word, or empty>"
 }
 
 Rules:
@@ -115,6 +120,10 @@ rate, or timeline for the work. A posted budget alone is not an ask.
 deliverables rather than the client's stated timeline: "day" (a small fix or one deliverable), \
 "week" (a defined project of a few deliverables), "weeks" (a multi-stage build or audit, two to \
 six weeks), "ongoing" (open-ended, a retainer, staff augmentation, long-term).
+- per_unit: when the posting asks for a recurring price per unit of output ("your price per \
+minute", "rate per video", "cost per article"), that unit as one lowercase singular word \
+("minute", "video", "article"). An hourly rate, a day rate or a project total is not a per-unit \
+ask: return "".
 - client_voice: describe their actual tone, not the job category
 - angle: the ONE argument this letter should make, in a full sentence, specific to this \
 posting. Not a summary of the developer's resume and not a restatement of the job title. It \
@@ -546,7 +555,8 @@ def empty_analysis() -> dict[str, Any]:
 
 def normalize_analysis(data: object) -> dict[str, Any]:
     """Coerce an analysis answer onto the contract: every key, lists of non-empty
-    strings (a bare string is wrapped), booleans read leniently, unknown keys gone."""
+    strings (a bare string is wrapped), booleans read leniently, a per-unit ask as one
+    plain word or nothing, unknown keys gone."""
     out = empty_analysis()
     if not isinstance(data, Mapping):
         return out
@@ -564,6 +574,9 @@ def normalize_analysis(data: object) -> dict[str, Any]:
                 out[key] = value
             elif value is not None:
                 out[key] = str(value).strip().lower() in ("true", "yes", "1")
+        elif key == "per_unit":
+            unit = str(value or "").strip().lower()
+            out[key] = unit if _UNIT_RE.fullmatch(unit) else ""
         elif value is not None:
             out[key] = str(value)
     return out

@@ -2,8 +2,9 @@
 check of what a model extracted from the draft.
 
 **Style.** :func:`style_lint` runs deterministic AI-tell and format rules per section
-(the cover letter, then each answer), plus three whole-draft rules: contrast density,
-a long letter, and a letter sentence an answer repeats. :func:`repair_block` turns the
+(the cover letter, then each answer), apply-form bookkeeping a client must never read
+among them, plus three whole-draft rules: contrast density, a long letter, and a
+letter sentence an answer repeats. :func:`repair_block` turns the
 findings into one targeted instruction for the repair pass, so the lint enforces
 rather than advises.
 
@@ -11,9 +12,10 @@ rather than advises.
 ties to each project, and the past incidents it narrates (:data:`EXTRACTOR_RULES`).
 :func:`check_claims` decides each against the workspace's profile: an entity must be
 named in the profile, the anecdotes offered, or a known term; an attribution must be
-backed by that project's own profile line; a narrated incident must be backed by an
-offered anecdote. Matching is phrase-level and whole-word, so a full claim such as
-"example sdk" is flagged even when "example" appears in the profile.
+backed by that project's own profile line or a profile sentence that names it; a
+narrated incident must be backed by an offered anecdote. Matching is phrase-level and
+whole-word, so a full claim such as "example sdk" is flagged even when "example"
+appears in the profile.
 """
 
 import re
@@ -190,29 +192,43 @@ def _required_tokens(attribute: str, seeds: frozenset[str]) -> set[str]:
     return out
 
 
+def _line_backs(line: str, project: str, attribute: str) -> bool:
+    name_tokens = set(_tokens(project))
+    found = {t[:_PREFIX] for t in _tokens(line)}
+    seeds = frozenset(t.lower() for t in SEED_TERMS)
+    for required in _required_tokens(attribute, seeds) - name_tokens:
+        if required[:_PREFIX] not in found:
+            return False
+    rest = " ".join(t for t in _tokens(attribute) if t not in name_tokens)
+    return _backed_by(rest, [line])
+
+
 def attribute_backed(evidence: Evidence, project: str, attribute: str) -> bool | None:
-    """Whether the project's own profile line supports ``attribute``; ``None`` when the
-    project has no line (the entity check covers it)."""
+    """Whether the profile supports ``attribute`` for the project: its own line, or a
+    sentence elsewhere in the profile that names it (a video series described under a
+    portfolio entry, say). ``None`` when the project has no line (the entity check
+    covers it)."""
     bullets = evidence.bullets()
     key = " ".join((project or "").split()).lower()
     if not key:
         return None
-    bullet = bullets.get(key)
+    name, bullet = key, bullets.get(key)
     if bullet is None:
         candidates = sorted(
             (n for n in bullets if n.startswith(key) or key.startswith(n)), key=len
         )
         if not candidates:
             return None
-        bullet = bullets[candidates[0]]
-    name_tokens = set(_tokens(project))
-    found = {t[:_PREFIX] for t in _tokens(bullet)}
-    seeds = frozenset(t.lower() for t in SEED_TERMS)
-    for required in _required_tokens(attribute, seeds) - name_tokens:
-        if required[:_PREFIX] not in found:
-            return False
-    rest = " ".join(t for t in _tokens(attribute) if t not in name_tokens)
-    return _backed_by(rest, [bullet])
+        name = candidates[0]
+        bullet = bullets[name]
+    names = {key, name}
+    sources = [bullet] + [
+        sentence
+        for line in evidence.lower.splitlines()
+        for sentence in _TERMINAL_SPLIT_RE.split(line)
+        if any(_named_in(n, sentence) for n in names)
+    ]
+    return any(_line_backs(source, project, attribute) for source in sources)
 
 
 EXTRACTOR_RULES: Final = """You are a claim extractor. You read a freelancer's proposal draft \
@@ -448,6 +464,18 @@ _TIC_PHRASE_RES: Final = (
     ),
     re.compile(r"\bexactly the (?:layer|space|problem|work) I\b", re.IGNORECASE),
 )
+# The owner's apply-form bookkeeping: the form's rate field, tracked hours, and two
+# figures said to agree. The client never needs any of it.
+_RECONCILIATION_RES: Final = (
+    re.compile(r"\b(?:apply|application|proposal|bid) form\b", re.IGNORECASE),
+    re.compile(r"\bform (?:shows|says|lists|takes|carries)\b", re.IGNORECASE),
+    re.compile(
+        r"\bthe (?:two|figures|numbers|rates?) (?:agree|match|line up|reconcile)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bhourly equivalent\b", re.IGNORECASE),
+    re.compile(r"\btracked hours\b", re.IGNORECASE),
+)
 # "Question? Short fragment." inside a section. The closing question ends the letter,
 # so nothing follows it and it never matches.
 _RHETORICAL_FRAGMENT_RE: Final = re.compile(r"\?\s+([^.!?\n]{1,80}?)[.!](?=\s|$)")
@@ -459,6 +487,13 @@ _DUP_MIN_WORDS: Final = 8
 
 def _excerpt(text: str) -> str:
     return " ".join(text.split())[:EXCERPT_LEN]
+
+
+def _sentence_at(text: str, pos: int) -> str:
+    """The sentence around ``pos``, so a repair can find and cut all of it."""
+    start = max((m.end() for m in _TERMINAL_SPLIT_RE.finditer(text, 0, pos)), default=0)
+    end = _TERMINAL_SPLIT_RE.search(text, pos)
+    return text[start : end.end() if end else len(text)].strip()
 
 
 def _paragraphs(section: str) -> list[str]:
@@ -533,6 +568,13 @@ def _lint_section(text: str, location: str) -> list[dict[str, str]]:
         findings += [
             _finding("tic_phrase", location, m.group(0)) for m in rex.finditer(text)
         ]
+    seen: set[str] = set()
+    for rex in _RECONCILIATION_RES:
+        for m in rex.finditer(text):
+            sentence = _sentence_at(text, m.start())
+            if sentence not in seen:
+                seen.add(sentence)
+                findings.append(_finding("pricing_reconciliation", location, sentence))
     for m in _RHETORICAL_FRAGMENT_RE.finditer(text):
         if len(m.group(1).split()) <= _FRAGMENT_MAX_WORDS:
             findings.append(_finding("rhetorical_fragment", location, m.group(0)))
@@ -618,6 +660,12 @@ _REPAIR_INSTRUCTIONS: Final[Mapping[str, str]] = {
         'infrastructure", "exactly the layer I…")) with the plain statement it stood '
         "in for, or delete it."
     ),
+    "pricing_reconciliation": (
+        "Delete each flagged sentence: it explains the application form, an hourly "
+        "rate or tracked hours, or that two figures agree. That is the developer's "
+        "bookkeeping, not something the client reads. Keep every other figure as it "
+        "is."
+    ),
     "rhetorical_fragment": (
         "This section poses a question and answers it with a fragment. Fold both into "
         "one declarative sentence."
@@ -635,7 +683,7 @@ _REPAIR_INSTRUCTIONS: Final[Mapping[str, str]] = {
 }
 # Rules whose fix needs the flagged words themselves.
 _QUOTE_EXCERPTS: Final = frozenset(
-    {"tic_phrase", "rhetorical_fragment", "duplicate_answer"}
+    {"tic_phrase", "rhetorical_fragment", "duplicate_answer", "pricing_reconciliation"}
 )
 
 

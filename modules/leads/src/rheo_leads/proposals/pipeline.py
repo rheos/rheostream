@@ -8,7 +8,11 @@
    posting earns, the platform note and the pricing instruction.
 3. **Checking**: a model extracts what the draft claims; :func:`.gate.check_claims`
    decides each against the profile. Flagged claims get exactly one corrective redraft,
-   then one more check for display; the first pass's flags are kept.
+   then one more check for display; the first pass's flags are kept. A claim still
+   flagged after that redraft never blocks the draft and is never cut from it by code:
+   the draft is ready and the claim is listed as unbacked, for the owner to fix before
+   sending. The extractor paraphrases, so cutting by its words could take true
+   sentences with it, and every letter is sent by hand.
 4. **Tidying**: the style lint, then one repair pass when it found something
    repairable, adopted only when it leaves fewer findings.
 
@@ -159,6 +163,7 @@ def generate(
                         description=job.description,
                         budget_min=job.budget_min,
                         budget_max=job.budget_max,
+                        per_unit=analysis["per_unit"],
                     ),
                     milestones.SCHEMA,
                 ),
@@ -168,7 +173,9 @@ def generate(
         except (AnswerUnusable, ValueError):
             schedule = None
     figures = (
-        pricing.figures_block(policy.pricing, rows, job.listing_type)
+        pricing.figures_block(
+            policy.pricing, rows, job.listing_type, per_unit=analysis["per_unit"]
+        )
         if rows and policy.pricing is not None
         else ""
     )

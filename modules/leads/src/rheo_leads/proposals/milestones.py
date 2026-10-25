@@ -17,7 +17,7 @@ from typing import Any, Final
 from rheo_leads.proposals.pricing import money, plain
 from rheo_leads.proposals.profile import PricingPolicy
 
-PROMPT_VERSION: Final = "jobmilestones.1"
+PROMPT_VERSION: Final = "jobmilestones.2"
 MAX_STAGES: Final = 12
 MAX_OFFSET_DAYS: Final = 730
 # The same ceiling the milestone edit takes; anything above it is a model error.
@@ -128,6 +128,7 @@ def task(
     description: str,
     budget_min: str | None,
     budget_max: str | None,
+    per_unit: str = "",
 ) -> str:
     rate = money(p.day_rate)
     rules = RULES.format(
@@ -160,6 +161,17 @@ def task(
         posting += (
             f"\n\nNo budget figure is stated. Price every milestone at {rate} per "
             "honest working-day."
+        )
+    if per_unit:
+        # A rule, so it goes before the posting, not inside it.
+        parts.append(
+            f"\n\nPER-{per_unit.upper()} ASK: the posting asks for a recurring price "
+            f"per {per_unit}. Price only what the client commits to first (a test "
+            f"piece, or the first {per_unit}), at honest working-days like any stage. "
+            "That first piece carries one-time setup (look development, style frames, "
+            f"the production pipeline) that later {per_unit}s reuse: name that setup "
+            "in its description, in deliverable words. Do NOT add stages for further "
+            f"{per_unit}s the client has not commissioned."
         )
     return (
         "".join(parts)
