@@ -224,7 +224,8 @@ def attribute_backed(evidence: Evidence, project: str, attribute: str) -> bool |
     # A sentence that also names another project or known term (a client list, a
     # portfolio summary) vouches for none of them.
     named = set(bullets) | {t.strip().lower() for t in evidence.terms if t.strip()}
-    others = [n for n in named if n not in name and name not in n]
+    # A longer name that contains this one ("Example Shop API") is another project.
+    others = [n for n in named if n != name and n not in name]
     sources = [bullet] + [
         sentence
         for line in evidence.lower.splitlines()
@@ -483,7 +484,7 @@ _RECONCILIATION_RES: Final = (
     re.compile(r"\btracked hours\b", re.IGNORECASE),
 )
 _PRICE_RE: Final = re.compile(
-    r"\$\s?\d|/\s?(?:hr|hour)\b|\bhourly\b|\brates?\b"
+    r"\$\s?\d|/\s?(?:hr|hour)\b|\bhourly\b|\brates?\b|\bprices?\b|\bquoted\b"
     r"|\bfixed (?:total|price|quote|figure)\b",
     re.IGNORECASE,
 )

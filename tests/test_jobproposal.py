@@ -143,6 +143,9 @@ def test_the_lint_finds_tells_per_section_and_across_the_draft() -> None:
         "Stages:\n- Discovery: $500\n- Build: $2,000\n"
         "On the application form I entered the hourly rate."
     ) == ["On the application form I entered the hourly rate."]
+    assert reconciliation("The apply form shows the quoted price.") == [
+        "The apply form shows the quoted price."
+    ]
     long_letter = " ".join(["word"] * 360)
     assert any(
         f["rule"] == "long_letter" for f in gate.style_lint(Draft(letter=long_letter))
@@ -237,6 +240,13 @@ def test_a_profile_sentence_that_names_a_project_backs_its_attribution() -> None
     )
     # A sentence listing several projects vouches for none of them.
     assert gate.attribute_backed(listed, "Example Forms", "runs on Kubernetes") is False
+    nested = gate.Evidence(
+        profile=PROFILE + "- Example Shop API: A REST service. Example Shop API uses "
+        "Redis for sessions.\n"
+    )
+    # Nor does a sentence about a longer-named project that contains this name.
+    assert gate.attribute_backed(nested, "Example Shop", "uses Redis") is False
+    assert gate.attribute_backed(nested, "Example Shop API", "uses Redis") is True
     assert verdicts == {
         "Example Shop: explainer series": "whitelisted",
         "Example Shop explainer series: five episodes on sharing tools": "whitelisted",

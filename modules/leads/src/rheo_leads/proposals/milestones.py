@@ -167,7 +167,8 @@ def task(
         parts.append(
             f"\n\nPER-{per_unit.upper()} ASK: the posting asks for a recurring price "
             f"per {per_unit}. Price only what the client commits to first (a test "
-            f"piece, or the first {per_unit}), at honest working-days like any stage. "
+            "piece, or the first commissioned deliverable), at honest working-days "
+            "like any stage. "
             "That first piece carries one-time setup (look development, style frames, "
             f"the production pipeline) that each later {per_unit} reuses: name that "
             "setup in its description, in deliverable words. Do NOT add a stage for "
