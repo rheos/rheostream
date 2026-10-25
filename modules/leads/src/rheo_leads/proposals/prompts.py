@@ -577,7 +577,10 @@ def normalize_analysis(data: object) -> dict[str, Any]:
             elif value is not None:
                 out[key] = str(value).strip().lower() in ("true", "yes", "1")
         elif key == "per_unit":
-            unit = str(value or "").strip().lower()
+            unit = value.strip().lower() if isinstance(value, str) else ""
+            # The prompts say "per {unit}", so a plural is read as its singular.
+            if unit.endswith("s") and not unit.endswith("ss"):
+                unit = unit[:-1]
             plain = _UNIT_RE.fullmatch(unit) and unit not in _TIME_UNITS
             out[key] = unit if plain else ""
         elif value is not None:
