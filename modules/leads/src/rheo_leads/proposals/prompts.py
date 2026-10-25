@@ -58,6 +58,7 @@ ANALYSIS_BOOL_KEYS: Final = frozenset({"asks_quote"})
 # time unit is a rate, not a per-unit ask.
 _UNIT_RE: Final = re.compile(r"[a-z]{2,20}")
 _TIME_UNITS: Final = frozenset({"hour", "hr", "day", "week", "month", "year"})
+_SAME_PLURAL: Final = frozenset({"series", "species"})
 
 ANALYSIS_INTRO: Final = """\
 You are a brief analyst. Given a job posting, return a JSON object with fourteen fields.
@@ -555,6 +556,19 @@ def empty_analysis() -> dict[str, Any]:
     }
 
 
+def _singular(word: str) -> str:
+    """The prompts say "per {unit}", so a plural is read as its singular, by
+    conservative rules: stories, boxes, videos. A word that already ends in s
+    (series, bus, analysis) is kept."""
+    if word in _SAME_PLURAL or word.endswith(("ss", "us", "is")):
+        return word
+    if word.endswith("ies") and len(word) > 4:
+        return word[:-3] + "y"
+    if word.endswith(("ses", "xes", "zes", "ches", "shes")):
+        return word[:-2]
+    return word[:-1] if word.endswith("s") else word
+
+
 def normalize_analysis(data: object) -> dict[str, Any]:
     """Coerce an analysis answer onto the contract: every key, lists of non-empty
     strings (a bare string is wrapped), booleans read leniently, a per-unit ask as one
@@ -577,10 +591,7 @@ def normalize_analysis(data: object) -> dict[str, Any]:
             elif value is not None:
                 out[key] = str(value).strip().lower() in ("true", "yes", "1")
         elif key == "per_unit":
-            unit = value.strip().lower() if isinstance(value, str) else ""
-            # The prompts say "per {unit}", so a plural is read as its singular.
-            if unit.endswith("s") and not unit.endswith("ss"):
-                unit = unit[:-1]
+            unit = _singular(value.strip().lower() if isinstance(value, str) else "")
             plain = _UNIT_RE.fullmatch(unit) and unit not in _TIME_UNITS
             out[key] = unit if plain else ""
         elif value is not None:
