@@ -50,12 +50,13 @@ that intersection under any profile that never calls it.
 
 import warnings
 from datetime import UTC, datetime
-from typing import Final
+from typing import Final, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from rheo_contracts import (
     AuditSpec,
+    ExternalSpec,
     Idempotency,
     OperationDeclaration,
     RecordRef,
@@ -381,7 +382,7 @@ class SinkSendInput(BaseModel):
 
     model_config = _IGNORE_EXTRA
 
-    destination: str
+    destination: Literal["party:one"]
     message: str
 
 
@@ -537,6 +538,11 @@ SINK_SEND_DECLARATION: Final = OperationDeclaration(
     # ``subject_field=None``: a send acts on no record of a registered type. Its
     # destination is a payload field, which is not what a subject field names.
     audit=AuditSpec(subject_field=None),
+    external=ExternalSpec(
+        destination_field="destination",
+        destination_ref="party:one",
+        result_ref_field="recorded_ref",
+    ),
 )
 
 

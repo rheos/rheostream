@@ -91,10 +91,13 @@ def run_production_startup_and_report() -> None:
     outer test's signal — and on success prints a small parseable report whose
     last line is the profile the child actually resolved.
     """
+    from typing import Literal
+
     from pydantic import BaseModel
     from rheo_app_core.startup import run_startup
     from rheo_contracts import (
         AuditSpec,
+        ExternalSpec,
         Idempotency,
         OperationDeclaration,
         Role,
@@ -215,6 +218,12 @@ def run_production_startup_and_report() -> None:
     class _NoFields(BaseModel):
         pass
 
+    class _ExternalInput(BaseModel):
+        destination_ref: Literal["probe"] = "probe"
+
+    class _ExternalOutput(BaseModel):
+        result_ref: str
+
     def _probe(ctx: object, uow: object, model_input: object) -> BaseModel:
         raise AssertionError("a control-registry probe must never be dispatched")
 
@@ -228,10 +237,25 @@ def run_production_startup_and_report() -> None:
                 name=probe_name,
                 safety_class=probe_class,
                 roles=frozenset({Role.OWNER}),
-                input_model=_NoFields,
-                output=_NoFields,
+                input_model=(
+                    _ExternalInput if probe_class is SafetyClass.EXTERNAL else _NoFields
+                ),
+                output=(
+                    _ExternalOutput
+                    if probe_class is SafetyClass.EXTERNAL
+                    else _NoFields
+                ),
                 idempotency=Idempotency.NONE,
                 audit=probe_audit,
+                external=(
+                    ExternalSpec(
+                        destination_field="destination_ref",
+                        destination_ref="probe",
+                        result_ref_field="result_ref",
+                    )
+                    if probe_class is SafetyClass.EXTERNAL
+                    else None
+                ),
             ),
             _probe,
             origin=CORE_ORIGIN,

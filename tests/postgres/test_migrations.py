@@ -117,17 +117,8 @@ CORE_TABLES = {
     "evidence_enrollment",
     # 0013_outbox_retention
     "outbox_retention",
-}
-# The rest of the approval family, owned by later chain steps; their presence here
-# would contaminate the trial. Tables leave this set exactly when the revision that
-# creates them lands and they join CORE_TABLES above: the seven durable-work tables
-# left when 0002_durable_work landed, ``approval``/``approval_payload`` left when
-# 0003_approvals did, and ``standing_grant``/``standing_grant_operation`` left when
-# 0004_standing_grants did. This set is narrowed by name rather than by a comparison
-# operator so that a table slipping back in still fails. ``external_action`` is what
-# remains: release one has no external-action machinery and no chain step that would
-# create its table.
-ZERO_C_TABLES = {
+    # 0014_external_actions
+    "idempotency_result",
     "external_action",
 }
 
@@ -196,7 +187,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
     for chain in CHAINS:
         assert not (script_location(chain) / "alembic.ini").exists()
     # Every revision the script directory holds, not the one the database records:
-    # the control chain ships four files and the core chain thirteen, so these are all
+    # the control chain ships four files and the core chain fourteen, so these are all
     # the ids each carries.
     assert known_revisions(CONTROL_CHAIN) == {
         "0001_control_plane",
@@ -218,6 +209,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
         "0011_local_evidence",
         "0012_evidence_retention_index",
         "0013_outbox_retention",
+        "0014_external_actions",
     }
 
 
@@ -237,17 +229,120 @@ def test_control_chain_creates_exactly_the_seventeen_tables(
         }
 
 
-def test_core_chain_creates_exactly_the_twenty_eight_tables(
+def test_core_chain_creates_exactly_the_thirty_tables(
     cluster: ClusterSession, workspace: UUID
 ) -> None:
     _, engine = workspace_engine(cluster, workspace)
     names = tables_in(engine, "core")
     assert names == CORE_TABLES | {"alembic_version_core"}
-    assert not names & ZERO_C_TABLES
     with engine.connect() as connection:
         # The version table holds one row on a linear chain: the head, not every
         # revision the code carries.
-        assert recorded_revisions(connection, CORE_CHAIN) == {"0013_outbox_retention"}
+        assert recorded_revisions(connection, CORE_CHAIN) == {"0014_external_actions"}
+
+
+def test_idempotency_and_external_action_migration_invariants(
+    cluster: ClusterSession, workspace: UUID
+) -> None:
+    _, engine = workspace_engine(cluster, workspace)
+    inspector = inspect(engine)
+    assert {
+        column["name"]
+        for column in inspector.get_columns("idempotency_result", schema="core")
+    } == {
+        "operation_name",
+        "idempotency_key",
+        "request_identity",
+        "request_digest",
+        "request_schema_version",
+        "state",
+        "operation_id",
+        "result",
+        "result_schema_version",
+        "error_code",
+        "error_detail",
+        "created_at",
+        "updated_at",
+        "retained_until",
+    }
+    assert inspector.get_pk_constraint("idempotency_result", schema="core")[
+        "constrained_columns"
+    ] == ["operation_name", "idempotency_key"]
+    assert {
+        column["name"]
+        for column in inspector.get_columns("external_action", schema="core")
+    } == {
+        "id",
+        "operation_id",
+        "approval_id",
+        "operation_name",
+        "subject_ref",
+        "source_ref",
+        "destination_ref",
+        "approval_payload_ref",
+        "approval_payload_digest",
+        "idempotency_key",
+        "request_schema_version",
+        "result_schema_version",
+        "provider_request_id",
+        "execution_job_id",
+        "state",
+        "failure_class",
+        "attempts",
+        "result_ref",
+        "result_detail",
+        "error_code",
+        "error_detail",
+        "created_at",
+        "updated_at",
+        "terminal_at",
+    }
+    unique_columns = {
+        tuple(constraint["column_names"])
+        for constraint in inspector.get_unique_constraints(
+            "external_action", schema="core"
+        )
+    }
+    assert {
+        ("operation_id",),
+        ("approval_id",),
+        ("execution_job_id",),
+    } <= unique_columns
+    foreign_keys = inspector.get_foreign_keys("external_action", schema="core")
+    assert any(
+        foreign_key["constrained_columns"] == ["operation_name", "idempotency_key"]
+        and foreign_key["referred_table"] == "idempotency_result"
+        for foreign_key in foreign_keys
+    )
+    idempotency_checks = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints(
+            "idempotency_result", schema="core"
+        )
+    }
+    assert {
+        "idempotency_result_key_bytes",
+        "idempotency_result_state",
+        "idempotency_result_terminal_shape",
+        "idempotency_result_retention_order",
+    } <= idempotency_checks
+    external_checks = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints(
+            "external_action", schema="core"
+        )
+    }
+    assert {
+        "external_action_state",
+        "external_action_failure_class",
+        "external_action_failure_shape",
+        "external_action_terminal_time",
+    } <= external_checks
+    indexes = {
+        index["name"]: index
+        for index in inspector.get_indexes("external_action", schema="core")
+    }
+    assert indexes["external_action_provider_request"]["unique"] is True
 
 
 def test_migrate_control_is_idempotent_and_survives_an_existing_database(
@@ -362,7 +457,7 @@ def test_failing_core_revision_marks_unavailable_and_startup_completes(
     with broken_engine.begin() as connection:
         connection.execute(
             text("INSERT INTO core.alembic_version_core (version_num) VALUES (:v)"),
-            {"v": "0013_outbox_retention"},
+            {"v": "0014_external_actions"},
         )
     repair(broken)
     assert cluster.registry_row(broken).state is WorkspaceState.ACTIVE
@@ -400,7 +495,7 @@ def test_schema_ahead_marks_unavailable_and_refuses_repair(
     with engine.begin() as connection:
         connection.execute(
             text("UPDATE core.alembic_version_core SET version_num = :v"),
-            {"v": "0013_outbox_retention"},
+            {"v": "0014_external_actions"},
         )
     repair(workspace)
     assert cluster.registry_row(workspace).state is WorkspaceState.ACTIVE

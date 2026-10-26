@@ -705,17 +705,25 @@ same rule that keeps them out of operation records
 
 ### Idempotency
 
-Release one has natural idempotency only. An operation declared `NATURAL` names the unique index
+An operation declared `NATURAL` names the unique index
 under which a repeat is the same row, and its handler returns that row on a repeat:
 `leads.intake.accept_delivery` on `(connection_id, source_event_id)` (the branch table above),
 `leads.handoff.request` on `(opportunity_id, idempotency_key)`
 ([handoffs](confirmation-and-safety.md#the-handoff-operation-fr-45-criterion-64)), and
-`relationships.party.resolve_or_create` through the per-receipt consumer dedup. There is no
-keyed idempotency and no stored-result table, because nothing in release one must return a
-*created* reference on a retry whose natural key does not already carry the answer. Phase five's
-`current.work.create_from_handoff` is the first operation that must, and `KEYED` idempotency
-with its result table and retention setting arrive with it
-([later phases](later-phases.md#phase-5-the-work-in-motion-module)).
+`relationships.party.resolve_or_create` through the per-receipt consumer dedup.
+
+`KEYED` operations declare the validated string field carrying the key and positive request and
+result schema versions. The public dispatcher stores `core.idempotency_result` in the same
+transaction as a synchronous effect: canonical UTF-8 JSON of the validated field names (defaults
+and explicit nulls included), its SHA-256 digest, the schema versions, and the terminal result or
+stable error. A retained same-request repeat returns that envelope without invoking the handler;
+a changed protected request refuses `idempotency_key_reused`; a missing or failing adapter path
+refuses `idempotency_schema_incompatible`. The default retention window is 90 days, with a hard
+30-day minimum, and `retained_until` never changes after reservation. The daily sweep removes an
+expired envelope only when no pending, executing, or unresolved external action references it.
+After removal, core makes no generic stored-envelope replay promise: a domain's own durable
+source identity may still describe the earlier outcome, but another effect requires a new
+intentional key/source identity.
 
 ### External actions
 
@@ -726,15 +734,13 @@ Introduced here because they are durable work; their approval is in
 | --- | --- |
 | `id uuid`, `operation_id`, `approval_id` | |
 | `destination_ref text` | A party reference, a connector destination, or the recording sink. |
-| `payload_digest bytea`, `payload_ref` | The approved payload; the digest is rechecked at execution. |
+| `approval_payload_digest bytea`, `approval_payload_ref` | The approved payload; the digest is rechecked at execution. |
 | `state` | `pending`, `executing`, `succeeded`, `failed`, `refused`, `unresolved`, `cancelled`. |
 | `provider_request_id null`, `attempts` | |
 
-Execution is a job of kind `core.external_action.execute` with `depends_on_ref = destination_ref`,
-so withdrawing a destination party's permission or deleting the party cancels or refuses it
-(criteria 61 and 65). Concurrent execution of one action is prevented by the job lease; a retry
-after an unknown outcome first reconciles by `provider_request_id` when the provider allows, and
-otherwise sets `unresolved`.
+Migration `0014_external_actions` creates this table together with the keyed envelope it
+references. Staging, job continuation, and reconciliation are not activated by that schema
+alone; they arrive behind the destination-registration and approval-continuation gates.
 
 ## Contact permission records (FR 46)
 

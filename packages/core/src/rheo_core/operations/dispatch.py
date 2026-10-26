@@ -145,13 +145,14 @@ import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from pydantic import BaseModel, ValidationError
 from rheo_contracts import (
+    Idempotency,
     OperationDeclaration,
     RecordRef,
     SafetyClass,
@@ -169,6 +170,7 @@ from rheo_core.audit import (
 )
 from rheo_core.boundary.context import CONTEXT_REQUIRED, Refusal
 from rheo_core.events.publish import mark_due_after_publish
+from rheo_core.operations.idempotency import IDEMPOTENCY_SCHEMA_INCOMPATIBLE
 from rheo_core.operations.records import (
     APPROVAL_REQUIRED,
     AUDIENCE_NONE,
@@ -1019,6 +1021,212 @@ def _rollback(uow: UnitOfWork) -> None:
         pass
 
 
+def _dispatch_keyed(
+    ctx: WorkspaceContext,
+    operation: RegisteredOperation,
+    model_input: BaseModel,
+    audit: _AuditWrite | None,
+    *,
+    consumers: "ConsumerRegistry | None",
+) -> OperationOutcome:
+    """Reserve, run, and retain one synchronous KEYED operation transactionally."""
+    from rheo_core.operations.idempotency import (
+        IDEMPOTENCY_SCHEMA_INCOMPATIBLE,
+        IdempotencyContractError,
+        IdempotencySchemaIncompatible,
+        canonical_request,
+        finish_error,
+        finish_success,
+        replay,
+        reserve,
+    )
+    from rheo_core.settings import resolve
+    from rheo_core.settings.storage_source import TransactionBoundOverrideSource
+
+    declaration = operation.declaration
+    try:
+        request = canonical_request(declaration, model_input)
+    except IdempotencyContractError as exc:
+        _audit_alone(ctx, audit, outcome=AUDIT_REFUSED)
+        return _refused(INPUT_INVALID, str(exc))
+    try:
+        uow = open_unit_of_work(ctx)
+    except StorageRefusal as refusal:
+        _audit_alone(ctx, audit, outcome=AUDIT_REFUSED)
+        return _refused(refusal.state, refusal.detail)
+
+    outcome: OperationOutcome
+    due_mark_requested = False
+    with uow:
+        try:
+            now = datetime.now(UTC)
+            settings = resolve(
+                workspace_id=ctx.workspace_id,
+                account_id=ctx.principal.account_id,
+                source=TransactionBoundOverrideSource(
+                    uow.connection, workspace_id=ctx.workspace_id
+                ),
+            )
+            retention_days = settings.get_int("work.idempotency_retention_days")
+            reservation = reserve(
+                uow.connection,
+                declaration=declaration,
+                request=request,
+                operation_id=None,
+                now=now,
+                retained_until=now + timedelta(days=retention_days),
+            )
+            if not reservation.created:
+                try:
+                    retained = replay(
+                        reservation.row,
+                        declaration=declaration,
+                        request=request,
+                    )
+                except IdempotencySchemaIncompatible:
+                    if audit is not None:
+                        audit.record(ctx, uow, outcome=AUDIT_REFUSED, operation_id=None)
+                    uow.commit()
+                    return _refused(
+                        IDEMPOTENCY_SCHEMA_INCOMPATIBLE,
+                        "the retained keyed result is incompatible with the current "
+                        "operation schema",
+                    )
+                if audit is not None:
+                    replay_audit: AuditOutcome = (
+                        AUDIT_SUCCEEDED
+                        if retained.state in {SUCCEEDED, PENDING}
+                        else (
+                            AUDIT_REFUSED
+                            if reservation.row.state in {"refused", "cancelled"}
+                            else AUDIT_FAILED
+                        )
+                    )
+                    audit.record(ctx, uow, outcome=replay_audit, operation_id=None)
+                uow.commit()
+                if retained.state == SUCCEEDED:
+                    return OperationOutcome(SUCCEEDED, result=retained.result)
+                if retained.state == PENDING:
+                    return OperationOutcome(PENDING, operation_id=retained.operation_id)
+                return OperationOutcome(
+                    retained.state,
+                    error=OperationError(
+                        retained.error_code or retained.state,
+                        retained.error_detail or retained.state,
+                    ),
+                    operation_id=retained.operation_id,
+                )
+
+            savepoint = uow.connection.begin_nested()
+            try:
+                from rheo_core.modules.readiness import require_ready
+
+                require_ready(uow.connection, operation.module_id)
+                view = HandlerUnitOfWork(uow, operation_id=None, consumers=consumers)
+                output = operation.handler(ctx, view, model_input)
+                if not isinstance(output, declaration.output):
+                    raise OperationRefused(
+                        OUTPUT_INVALID,
+                        f"{declaration.name} returned {type(output).__name__}, not "
+                        f"{declaration.output.__name__}",
+                    )
+                savepoint.commit()
+                finish_success(
+                    uow.connection,
+                    declaration=declaration,
+                    key=request.key,
+                    result=output,
+                    now=datetime.now(UTC),
+                )
+                if audit is not None:
+                    audit.record(ctx, uow, outcome=AUDIT_SUCCEEDED, operation_id=None)
+                due_mark_requested = view.due_mark_requested
+                uow.commit()
+                outcome = OperationOutcome(SUCCEEDED, result=output)
+            except (OperationRefused, StorageRefusal) as refusal:
+                if savepoint.is_active:
+                    savepoint.rollback()
+                state = refusal.state
+                detail = refusal.detail or state
+                finish_error(
+                    uow.connection,
+                    declaration=declaration,
+                    key=request.key,
+                    state="refused",
+                    error_code=state,
+                    error_detail=detail,
+                    now=datetime.now(UTC),
+                )
+                if audit is not None:
+                    audit.record(ctx, uow, outcome=AUDIT_REFUSED, operation_id=None)
+                uow.commit()
+                outcome = _refused(state, detail)
+            except StaleRecord as stale:
+                if savepoint.is_active:
+                    savepoint.rollback()
+                detail = str(stale) or RECORD_STALE
+                finish_error(
+                    uow.connection,
+                    declaration=declaration,
+                    key=request.key,
+                    state="refused",
+                    error_code=RECORD_STALE,
+                    error_detail=detail,
+                    now=datetime.now(UTC),
+                )
+                if audit is not None:
+                    audit.record(ctx, uow, outcome=AUDIT_REFUSED, operation_id=None)
+                uow.commit()
+                outcome = _refused(RECORD_STALE, detail)
+            except Exception as exc:
+                if savepoint.is_active:
+                    savepoint.rollback()
+                logger.error(
+                    "operation_failed",
+                    extra={
+                        "operation": declaration.name,
+                        "workspace_id": str(ctx.workspace_id),
+                        "request_id": str(ctx.request_id),
+                        "exception_type": type(exc).__name__,
+                    },
+                )
+                finish_error(
+                    uow.connection,
+                    declaration=declaration,
+                    key=request.key,
+                    state="failed",
+                    error_code=HANDLER_FAILED,
+                    error_detail=type(exc).__name__,
+                    now=datetime.now(UTC),
+                )
+                if audit is not None:
+                    audit.record(ctx, uow, outcome=AUDIT_FAILED, operation_id=None)
+                uow.commit()
+                outcome = OperationOutcome(
+                    FAILED,
+                    error=OperationError(HANDLER_FAILED, type(exc).__name__),
+                )
+        except Exception as exc:
+            _rollback(uow)
+            logger.error(
+                "keyed_dispatch_failed",
+                extra={
+                    "operation": declaration.name,
+                    "workspace_id": str(ctx.workspace_id),
+                    "request_id": str(ctx.request_id),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            _audit_alone(ctx, audit, outcome=AUDIT_FAILED)
+            return OperationOutcome(
+                FAILED,
+                error=OperationError(HANDLER_FAILED, type(exc).__name__),
+            )
+    if due_mark_requested:
+        _mark_workspace_due(ctx)
+    return outcome
+
+
 def dispatch(
     ctx: object,
     name: str,
@@ -1103,6 +1311,14 @@ def dispatch(
         # a case the branch handles.
         assert audit is not None
         return _hold_for_approval(ctx, declaration, model_input, audit)
+    if declaration.idempotency is Idempotency.KEYED:
+        if declaration.long_running:
+            _audit_alone(ctx, audit, outcome=AUDIT_REFUSED)
+            return _refused(
+                IDEMPOTENCY_SCHEMA_INCOMPATIBLE,
+                "KEYED long-running calls require the durable continuation path",
+            )
+        return _dispatch_keyed(ctx, operation, model_input, audit, consumers=consumers)
     # Minted here and nowhere else: after authorization and validation have both
     # passed, and before the work transaction is opened, so the id is readable while
     # the work is still pending. ``None`` for every declaration that is not

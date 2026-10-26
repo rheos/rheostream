@@ -28,11 +28,11 @@ grow) and can never loosen (the three upper classes cannot be moved to a standin
 setting; the class-to-behaviour table is code, not configuration). `approvals.confirm_operations`
 is not a declared setting yet, so no lower-class call requires confirmation today.
 
-The external half of the table is not built yet either. No core migration creates
-`external_action`, no production operation is external or financial class, and the one
-external-class registration, the test harness's recording sink, executes inside
-`core.approval.approve`'s transaction exactly as a destructive operation does. The financial
-`payload_ref` check is not written.
+Core migration `0014_external_actions` creates the durable `external_action` shape, but no
+production operation is external or financial class yet. Staging and job continuation are not
+activated by schema alone; until their guarded path lands, the test harness's recording sink
+continues to execute inside `core.approval.approve`'s transaction exactly as a destructive
+operation does. The financial payload check is not written.
 
 ## The approval record
 

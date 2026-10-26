@@ -1,11 +1,11 @@
 """Synthetic pipeline acceptance through installed modules and real dispatch."""
 
 import json
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import pytest
-from rheo_contracts import RecordRef, WorkspaceContext
+from rheo_contracts import ExternalSpec, RecordRef, WorkspaceContext
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_tables import audit_record
 from rheo_leads import pipeline_common as h
@@ -631,11 +631,13 @@ def test_contact_guard_blocks_held_sink_after_withdrawal(
     from rheo_leads.pipeline_contracts import PermissionCheck
 
     class SinkInput(PermissionCheck):
+        destination_ref: Literal["synthetic"] = "synthetic"
         message: str
 
     class Sent(BaseModel):
         model_config = ConfigDict(frozen=True)
         sent: bool
+        result_ref: str = "synthetic:sent"
 
     def send(ctx: Any, uow: Any, model: SinkInput) -> Sent:
         write_note(uow.connection, body=model.message)
@@ -649,6 +651,11 @@ def test_contact_guard_blocks_held_sink_after_withdrawal(
         output=Sent,
         idempotency=Idempotency.NONE,
         audit=AuditSpec(subject_field="party_ref"),
+        external=ExternalSpec(
+            destination_field="destination_ref",
+            destination_ref="synthetic",
+            result_ref_field="result_ref",
+        ),
     )
     monkeypatch.setattr(REGISTRY, "_operations", dict(REGISTRY._operations))
     REGISTRY._operations.pop(declaration.name, None)

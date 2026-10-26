@@ -14,8 +14,9 @@ family is the same shape one step further on: ``approval`` and ``approval_payloa
 are ``approvals/tables.py``'s and are created by ``0003_approvals``, and
 ``standing_grant`` and ``standing_grant_operation`` are ``approvals/grant_tables.py``'s
 and are created by ``0004_standing_grants``. Export records use
-``exports/tables.py`` and revision 0005. ``external_action`` still has no chain step,
-as do the runtime and deletion tables. A seventh table in this module is a boundary
+``exports/tables.py`` and revision 0005. External execution has
+``operations/idempotency_tables.py`` and revision 0014; runtime and deletion use their
+own metadata in the same way. A seventh table in this module is a boundary
 violation, not a head start.
 """
 

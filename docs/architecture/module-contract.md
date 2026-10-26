@@ -193,17 +193,18 @@ OperationDeclaration
   output: type[BaseModel]
   handler: Callable[[WorkspaceContext, UnitOfWork, input], output]   # travels beside the declaration, not in it
   roles: set[Role]                          # who may call; Role in {owner, member, operator, service}; default {owner, member}
-  idempotency: Idempotency                  # NONE | NATURAL(unique index); KEYED arrives with phase five
+  idempotency: Idempotency                  # NONE | NATURAL(unique index) | KEYED(retained result)
+  keyed: KeyedSpec | None                   # key field plus positive request/result schema versions
   audit: AuditSpec | None                   # required unless safety_class is READ
-  guards: list[ExecutionGuard]              # domain rechecks added to the core's; not declared yet
+  guards: tuple[str, ...]                    # ordered qualified domain-guard names
+  external: ExternalSpec | None             # exact destination and returned-reference fields
   long_running: bool                        # returns an operation id and runs as a job
 ```
 
-The shipped `rheo_contracts.OperationDeclaration` carries neither `handler` nor `guards`. The
-handler is the second half of the manifest's `(OperationDeclaration, Handler)` pair, for the
-reason [the manifest](#the-manifest) gives. `guards` has no field yet: the core's own guards are
-attached by `core_guards_for` (`packages/core/src/rheo_core/approvals/guards.py`), and the first
-module that needs a domain guard adds the field.
+The shipped `rheo_contracts.OperationDeclaration` does not carry its `handler`; the handler is
+the second half of the manifest's `(OperationDeclaration, Handler)` pair, for the reason
+[the manifest](#the-manifest) gives. Its guard names are ordered and qualified; the owned
+registrations that resolve them arrive with the first production external destination.
 
 `roles` is checked by the dispatcher against `ctx.role` on every call. `service` is the role a
 `connection` actor at `entry = intake` and a `system` actor at `entry = job` carry
@@ -255,9 +256,10 @@ Registration rules the core enforces at startup (criterion 18, criterion 14, cri
   handler is what returns the existing row on a repeat, and the declaration exists so the
   registry can assert the index is present in the module's schema at install. That assertion is
   not written yet: `Idempotency.NATURAL` carries no index name, and registration accepts it
-  without checking any schema. Release one has no
-  keyed idempotency and no stored-result table; the first operation that must return a created
-  reference on a retry is phase five's ([idempotency](intake-and-events.md#idempotency)).
+  without checking any schema. `KEYED` instead declares a validated string key field and
+  positive request/result wire versions. Core retains the canonical request identity and the
+  terminal result or error; compatibility across retained versions is explicit through pure
+  adapters ([idempotency](intake-and-events.md#idempotency)).
 - A tool registered by a module may name a core operation (the deletion tools do) only when its
   input restricts the reference to the module's own record types. This one is a contract rule
   rather than a registration check: the tool's own narrower `input_model` is what carries the
