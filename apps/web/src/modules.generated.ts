@@ -100,6 +100,7 @@ export const MODULES = [
       { operation: "leads.proposalmilestone.set", component: leadsWeb.components.ActionForm },
       { operation: "leads.jobreview.promote", component: leadsWeb.components.ActionForm },
       { operation: "leads.jobscoring.retry_failed", component: leadsWeb.components.ActionForm },
+      { operation: "leads.jobscoring.retry_waiting", component: leadsWeb.components.ActionForm },
     ],
     searchProviders: [],
     readOperations: [
@@ -140,6 +141,7 @@ export const MODULES = [
       "leads.jobproposal.update",
       "leads.jobreview.promote",
       "leads.jobscoring.retry_failed",
+      "leads.jobscoring.retry_waiting",
       "leads.opportunity.add_note",
       "leads.opportunity.create_from_observation",
       "leads.opportunity.transition",

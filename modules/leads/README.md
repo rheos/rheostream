@@ -250,8 +250,10 @@ are. A status line says whether a model call is running (and for which job and h
 long), whether every waiting job is paused on the usage limit and until when, or that
 scoring is idle, off, or waiting for a profile. Below it: how many jobs are queued, an
 upper bound on the time to clear (the median recent scoring call for each queued job),
-how many wait out a backoff, and how many failed (an owner can put failed open jobs back
-in line with `leads.jobscoring.retry_failed`). The Queue tab lists Job search jobs from
+how many wait out a backoff (an owner can end the wait with
+`leads.jobscoring.retry_waiting`, which keeps each job's attempts; if the limit still
+holds, the next call simply defers again), and how many failed (an owner can put failed
+open jobs back in line with `leads.jobscoring.retry_failed`). The Queue tab lists Job search jobs from
 the last 48 hours grouped into imports, each with its stage: queued with its position
 (newest first, as the sweep claims them), scoring now, scored with its score, retrying,
 paused, needs the full posting, failed, or held by the filters (folded away, with a link
