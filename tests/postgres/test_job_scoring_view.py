@@ -166,7 +166,10 @@ def test_an_owner_ends_the_wait_and_a_claimed_job_keeps_its_lease(
         consumers=scored.i.consumers,
     )
     assert not refused.ok
-    assert view(scored)["status"]["state"] == "paused"
+    before = view(scored)
+    assert before["status"]["state"] == "paused"
+    # The job mid-call is not waiting, so no retry is offered for it.
+    assert before["waiting_total"] == 2
 
     retried = call(scored.i, scored.c.owner, "leads.jobscoring.retry_waiting")
     assert retried.count == 2
@@ -176,7 +179,7 @@ def test_an_owner_ends_the_wait_and_a_claimed_job_keeps_its_lease(
     assert scored.state("~02102")["retry_after"] == lease
     data = view(scored)
     assert data["status"]["state"] != "paused"
-    assert data["queued_total"] == 2
+    assert data["queued_total"] == 2 and data["waiting_total"] == 0
     assert call(scored.i, scored.c.owner, "leads.jobscoring.retry_waiting").count == 0
 
     scored.model(final(7), final(6))
