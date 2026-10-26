@@ -1,10 +1,14 @@
 """Public KEYED dispatch replay/refusal, compatibility, and retention seams."""
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier, Lock
+from time import monotonic, sleep
 from typing import Any
 from uuid import UUID
 
 import pytest
+import rheo_core.operations.idempotency as idempotency_module
 from pydantic import BaseModel, ConfigDict
 from rheo_contracts import (
     AuditSpec,
@@ -39,7 +43,7 @@ from rheo_core.settings import CORE_ORIGIN
 from rheo_core.storage.backend import StorageRefusal, UnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_tables import audit_record, consumer_processed
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, insert, select, text
 
 pytestmark = pytest.mark.postgres
 
@@ -133,6 +137,110 @@ def test_keyed_dispatch_replays_defaults_nulls_unicode_and_exact_whitespace(
     assert first.ok and replayed.ok
     assert first.result == replayed.result
     assert calls == ["  Café  "]
+
+
+@pytest.mark.parametrize("_race_round", range(5))
+def test_keyed_dispatch_concurrent_same_request_runs_one_handler_and_effect(
+    workspace: UUID,
+    owner_account_id: UUID,
+    monkeypatch: pytest.MonkeyPatch,
+    _race_round: int,
+) -> None:
+    start = Barrier(2)
+    state_lock = Lock()
+    reservation_pids: set[int] = set()
+    handler_calls = 0
+    contention_observed = False
+    effect_event_id = uuid7()
+    effect_consumer_id = f"synthetic:keyed-race-{_race_round}"
+    real_reserve = idempotency_module.reserve
+
+    def synchronized_reserve(conn: Any, **kwargs: Any) -> Any:
+        pid = int(conn.execute(text("SELECT pg_backend_pid()")).scalar_one())
+        with state_lock:
+            reservation_pids.add(pid)
+        start.wait(timeout=10)
+        return real_reserve(conn, **kwargs)
+
+    def handler(ctx: Any, uow: Any, model: KeyedInput) -> KeyedOutput:
+        nonlocal contention_observed, handler_calls
+        current_pid = int(
+            uow.connection.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        )
+        with state_lock:
+            handler_calls += 1
+            other_pids = reservation_pids - {current_pid}
+        assert len(other_pids) == 1
+        other_pid = other_pids.pop()
+
+        # Hold the winning transaction open until PostgreSQL reports the losing
+        # reservation waiting on its uncommitted unique key. This proves genuine
+        # row/index contention rather than two serial calls released by a barrier.
+        deadline = monotonic() + 10
+        while monotonic() < deadline:
+            wait_event_type = uow.connection.execute(
+                text("SELECT wait_event_type FROM pg_stat_activity WHERE pid = :pid"),
+                {"pid": other_pid},
+            ).scalar_one_or_none()
+            if wait_event_type == "Lock":
+                contention_observed = True
+                break
+            sleep(0.01)
+        assert contention_observed
+
+        uow.connection.execute(
+            insert(consumer_processed).values(
+                consumer_id=effect_consumer_id,
+                event_id=effect_event_id,
+                processed_at=datetime.now(UTC),
+            )
+        )
+        return KeyedOutput(item_ref="current.item:concurrent", title=model.title)
+
+    monkeypatch.setattr(idempotency_module, "reserve", synchronized_reserve)
+    registry = OperationRegistry()
+    registry.register(_declaration(), handler, origin=CORE_ORIGIN)
+    install_sink("core", CORE_AUDIT_SINK)
+    ctx = _context(workspace, owner_account_id)
+    payload = {
+        "request_key": f"concurrent-{_race_round}",
+        "title": "Concurrent request",
+    }
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(
+                dispatch,
+                ctx,
+                "core.keyed.create",
+                payload,
+                registry=registry,
+            )
+            for _ in range(2)
+        ]
+        outcomes = [future.result(timeout=20) for future in futures]
+
+    with open_unit_of_work(ctx) as uow:
+        effect_count = uow.connection.execute(
+            select(func.count())
+            .select_from(consumer_processed)
+            .where(
+                consumer_processed.c.consumer_id == effect_consumer_id,
+                consumer_processed.c.event_id == effect_event_id,
+            )
+        ).scalar_one()
+
+    assert len(reservation_pids) == 2
+    assert contention_observed
+    assert handler_calls == 1
+    assert effect_count == 1
+    assert all(outcome.ok for outcome in outcomes)
+    assert (
+        outcomes[0].result
+        == outcomes[1].result
+        == KeyedOutput(item_ref="current.item:concurrent", title="Concurrent request")
+    )
+    assert _audit_outcomes(ctx, "core.keyed.create") == ["succeeded", "succeeded"]
 
 
 def test_keyed_dispatch_refuses_changed_protected_request_without_handler_invocation(

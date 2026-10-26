@@ -649,7 +649,9 @@ Because the sweep skips locked rows, a still-pending row whose lock holder rolls
 left for a later daily sweep; expiry therefore has no hard one-sweep-interval upper bound.
 It also deletes settled outbox events past `work.outbox_retention_days`, as described
 under [Events and the outbox](#events-and-the-outbox-fr-15), before the session-file
-walk for the same reason. Each workspace is provisioned a
+walk for the same reason, and expired keyed-result envelopes not referenced by a
+pending, executing, or unresolved external action, as described under
+[Idempotency](#idempotency). Each workspace is provisioned a
 `core.schedule` row at migrate time; the worker's schedule ticker enqueues
 `RetentionSweepPayload(workspace_id)` when the row is due
 ([module contract](module-contract.md#operations-tools-events)). `core.exports.sweep`, not
