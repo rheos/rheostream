@@ -20,6 +20,7 @@ from rheo_core.audit import CORE_AUDIT_SINK, install_sink
 from rheo_core.boundary import context_for_harness
 from rheo_core.modules import readiness
 from rheo_core.operations import (
+    HANDLER_FAILED,
     OUTPUT_INVALID,
     OperationRefused,
     OperationRegistry,
@@ -37,7 +38,7 @@ from rheo_core.refs import uuid7
 from rheo_core.settings import CORE_ORIGIN
 from rheo_core.storage.backend import StorageRefusal, UnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
-from rheo_core.storage.work_tables import audit_record
+from rheo_core.storage.work_tables import audit_record, consumer_processed
 from sqlalchemy import func, insert, select
 
 pytestmark = pytest.mark.postgres
@@ -56,6 +57,13 @@ class KeyedOutput(BaseModel):
 
     item_ref: str
     title: str
+
+
+class NonFiniteOutput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    item_ref: str
+    score: float
 
 
 def _context(workspace: UUID, owner_account_id: UUID) -> WorkspaceContext:
@@ -327,6 +335,77 @@ def test_keyed_output_invalid_is_failed_and_replayed_without_reinvocation(
     assert first.error.error_code == replayed.error.error_code == OUTPUT_INVALID
     assert calls == 1
     assert _audit_outcomes(ctx, "core.keyed.create") == ["failed", "failed"]
+
+
+def test_keyed_result_canonicalization_failure_rolls_back_handler_effect(
+    workspace: UUID, owner_account_id: UUID
+) -> None:
+    operation_name = "core.keyed.nonfinite"
+    consumer_id = "synthetic:keyed-nonfinite"
+    event_id = uuid7()
+    calls = 0
+
+    declaration = OperationDeclaration(
+        name=operation_name,
+        safety_class=SafetyClass.MUTATE,
+        roles=frozenset({Role.OWNER}),
+        input_model=KeyedInput,
+        output=NonFiniteOutput,
+        idempotency=Idempotency.KEYED,
+        keyed=KeyedSpec(
+            key_field="request_key",
+            request_schema_version=1,
+            result_schema_version=1,
+        ),
+        audit=AuditSpec(subject_field=None),
+    )
+
+    def handler(ctx: Any, uow: Any, model: KeyedInput) -> NonFiniteOutput:
+        nonlocal calls
+        calls += 1
+        uow.connection.execute(
+            insert(consumer_processed).values(
+                consumer_id=consumer_id,
+                event_id=event_id,
+                processed_at=datetime.now(UTC),
+            )
+        )
+        return NonFiniteOutput(
+            item_ref="current.item:must-roll-back", score=float("nan")
+        )
+
+    registry = OperationRegistry()
+    registry.register(declaration, handler, origin=CORE_ORIGIN)
+    install_sink("core", CORE_AUDIT_SINK)
+    ctx = _context(workspace, owner_account_id)
+    payload = {"request_key": "nonfinite", "title": "Nonfinite result"}
+
+    first = dispatch(ctx, operation_name, payload, registry=registry)
+    replayed = dispatch(ctx, operation_name, payload, registry=registry)
+
+    with open_unit_of_work(ctx) as uow:
+        effect_count = uow.connection.execute(
+            select(func.count())
+            .select_from(consumer_processed)
+            .where(
+                consumer_processed.c.consumer_id == consumer_id,
+                consumer_processed.c.event_id == event_id,
+            )
+        ).scalar_one()
+        retained = uow.connection.execute(
+            select(idempotency_result.c.state, idempotency_result.c.error_code).where(
+                idempotency_result.c.operation_name == operation_name,
+                idempotency_result.c.idempotency_key == "nonfinite",
+            )
+        ).one()
+
+    assert first.state == replayed.state == "failed"
+    assert first.error is not None and replayed.error is not None
+    assert first.error.error_code == replayed.error.error_code == HANDLER_FAILED
+    assert calls == 1
+    assert effect_count == 0
+    assert retained == ("failed", HANDLER_FAILED)
+    assert _audit_outcomes(ctx, operation_name) == ["failed", "failed"]
 
 
 class V1Input(BaseModel):

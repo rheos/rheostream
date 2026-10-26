@@ -1137,7 +1137,6 @@ def _dispatch_keyed(
                         f"{declaration.name} returned {type(output).__name__}, not "
                         f"{declaration.output.__name__}",
                     )
-                savepoint.commit()
                 finish_success(
                     uow.connection,
                     declaration=declaration,
@@ -1145,6 +1144,7 @@ def _dispatch_keyed(
                     result=output,
                     now=datetime.now(UTC),
                 )
+                savepoint.commit()
                 if audit is not None:
                     audit.record(ctx, uow, outcome=AUDIT_SUCCEEDED, operation_id=None)
                 due_mark_requested = view.due_mark_requested
