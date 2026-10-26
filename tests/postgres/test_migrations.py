@@ -187,7 +187,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
     for chain in CHAINS:
         assert not (script_location(chain) / "alembic.ini").exists()
     # Every revision the script directory holds, not the one the database records:
-    # the control chain ships four files and the core chain fourteen, so these are all
+    # the control chain ships four files and the core chain fifteen, so these are all
     # the ids each carries.
     assert known_revisions(CONTROL_CHAIN) == {
         "0001_control_plane",
@@ -210,6 +210,7 @@ def test_no_alembic_ini_is_tracked_and_each_chain_knows_its_revisions() -> None:
         "0012_evidence_retention_index",
         "0013_outbox_retention",
         "0014_external_actions",
+        "0015_terminal_action_history",
     }
 
 
@@ -238,7 +239,9 @@ def test_core_chain_creates_exactly_the_thirty_tables(
     with engine.connect() as connection:
         # The version table holds one row on a linear chain: the head, not every
         # revision the code carries.
-        assert recorded_revisions(connection, CORE_CHAIN) == {"0014_external_actions"}
+        assert recorded_revisions(connection, CORE_CHAIN) == {
+            "0015_terminal_action_history"
+        }
 
 
 def test_idempotency_and_external_action_migration_invariants(
@@ -308,12 +311,9 @@ def test_idempotency_and_external_action_migration_invariants(
         ("approval_id",),
         ("execution_job_id",),
     } <= unique_columns
-    foreign_keys = inspector.get_foreign_keys("external_action", schema="core")
-    assert any(
-        foreign_key["constrained_columns"] == ["operation_name", "idempotency_key"]
-        and foreign_key["referred_table"] == "idempotency_result"
-        for foreign_key in foreign_keys
-    )
+    # 0015 intentionally leaves copied operation/key text as terminal history rather
+    # than a live FK that would pin an expired keyed envelope.
+    assert inspector.get_foreign_keys("external_action", schema="core") == []
     idempotency_checks = {
         constraint["name"]
         for constraint in inspector.get_check_constraints(
@@ -457,7 +457,7 @@ def test_failing_core_revision_marks_unavailable_and_startup_completes(
     with broken_engine.begin() as connection:
         connection.execute(
             text("INSERT INTO core.alembic_version_core (version_num) VALUES (:v)"),
-            {"v": "0014_external_actions"},
+            {"v": "0015_terminal_action_history"},
         )
     repair(broken)
     assert cluster.registry_row(broken).state is WorkspaceState.ACTIVE
@@ -495,7 +495,7 @@ def test_schema_ahead_marks_unavailable_and_refuses_repair(
     with engine.begin() as connection:
         connection.execute(
             text("UPDATE core.alembic_version_core SET version_num = :v"),
-            {"v": "0014_external_actions"},
+            {"v": "0015_terminal_action_history"},
         )
     repair(workspace)
     assert cluster.registry_row(workspace).state is WorkspaceState.ACTIVE

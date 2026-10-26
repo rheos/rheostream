@@ -17,7 +17,12 @@ from rheo_contracts import (
 )
 from rheo_core.audit import CORE_AUDIT_SINK, install_sink
 from rheo_core.boundary import context_for_harness
-from rheo_core.operations import OperationRefused, OperationRegistry, dispatch
+from rheo_core.operations import (
+    OUTPUT_INVALID,
+    OperationRefused,
+    OperationRegistry,
+    dispatch,
+)
 from rheo_core.operations.idempotency import (
     IDEMPOTENCY_KEY_REUSED,
     IDEMPOTENCY_SCHEMA_INCOMPATIBLE,
@@ -30,6 +35,7 @@ from rheo_core.refs import uuid7
 from rheo_core.settings import CORE_ORIGIN
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
+from rheo_core.storage.work_tables import audit_record
 from sqlalchemy import func, insert, select
 
 pytestmark = pytest.mark.postgres
@@ -73,6 +79,17 @@ def _declaration(
         ),
         audit=AuditSpec(subject_field=None),
     )
+
+
+def _audit_outcomes(ctx: WorkspaceContext, operation_name: str) -> list[str]:
+    with open_unit_of_work(ctx) as uow:
+        return list(
+            uow.connection.execute(
+                select(audit_record.c.outcome)
+                .where(audit_record.c.operation_name == operation_name)
+                .order_by(audit_record.c.occurred_at, audit_record.c.id)
+            ).scalars()
+        )
 
 
 def test_keyed_dispatch_replays_defaults_nulls_unicode_and_exact_whitespace(
@@ -140,6 +157,7 @@ def test_keyed_dispatch_refuses_changed_protected_request_without_handler_invoca
     assert changed.error is not None
     assert changed.error.error_code == IDEMPOTENCY_KEY_REUSED
     assert calls == ["First"]
+    assert _audit_outcomes(ctx, "core.keyed.create") == ["succeeded", "refused"]
 
 
 @pytest.mark.parametrize("request_key", ["", "   ", "κ" * 129])
@@ -189,6 +207,32 @@ def test_keyed_dispatch_replays_terminal_refusal_and_rolls_back_effect(
     assert first.state == replayed.state == "synthetic_refusal"
     assert first.error == replayed.error
     assert calls == ["No effect"]
+
+
+def test_keyed_output_invalid_is_failed_and_replayed_without_reinvocation(
+    workspace: UUID, owner_account_id: UUID
+) -> None:
+    calls = 0
+
+    def handler(ctx: Any, uow: Any, model: KeyedInput) -> V1Output:
+        nonlocal calls
+        calls += 1
+        return V1Output(ref="synthetic:wrong-output")
+
+    registry = OperationRegistry()
+    registry.register(_declaration(), handler, origin=CORE_ORIGIN)
+    install_sink("core", CORE_AUDIT_SINK)
+    ctx = _context(workspace, owner_account_id)
+    payload = {"request_key": "wrong-output", "title": "Wrong output"}
+
+    first = dispatch(ctx, "core.keyed.create", payload, registry=registry)
+    replayed = dispatch(ctx, "core.keyed.create", payload, registry=registry)
+
+    assert first.state == replayed.state == "failed"
+    assert first.error is not None and replayed.error is not None
+    assert first.error.error_code == replayed.error.error_code == OUTPUT_INVALID
+    assert calls == 1
+    assert _audit_outcomes(ctx, "core.keyed.create") == ["failed", "failed"]
 
 
 class V1Input(BaseModel):
@@ -398,8 +442,46 @@ def test_idempotency_retention_is_fixed_at_creation_and_sweeps_expired_rows(
     assert calls == 2
 
 
-def test_idempotency_retention_preserves_nonterminal_external_action(
-    workspace: UUID, owner_account_id: UUID
+def _insert_external_action(
+    uow: UnitOfWork, *, key: str, state: str, now: datetime
+) -> UUID:
+    action_id = uuid7()
+    terminal = state not in {"pending", "executing"}
+    unresolved = state == "unresolved"
+    uow.connection.execute(
+        insert(external_action).values(
+            id=action_id,
+            operation_id=uuid7(),
+            approval_id=uuid7(),
+            operation_name="core.keyed.create",
+            subject_ref=None,
+            source_ref="synthetic.source:one",
+            destination_ref="synthetic",
+            approval_payload_ref=uuid7(),
+            approval_payload_digest=b"x" * 32,
+            idempotency_key=key,
+            request_schema_version=1,
+            result_schema_version=1,
+            provider_request_id=None,
+            execution_job_id=None,
+            state=state,
+            failure_class="outcome_unknown" if unresolved else None,
+            attempts=0,
+            result_ref="current.item:terminal" if state == "succeeded" else None,
+            result_detail=None,
+            error_code="outcome_unknown" if unresolved else None,
+            error_detail="synthetic unknown outcome" if unresolved else None,
+            created_at=now,
+            updated_at=now,
+            terminal_at=now if terminal else None,
+        )
+    )
+    return action_id
+
+
+@pytest.mark.parametrize("action_state", ["pending", "executing", "unresolved"])
+def test_idempotency_retention_preserves_nonterminal_or_unresolved_external_action(
+    workspace: UUID, owner_account_id: UUID, action_state: str
 ) -> None:
     registry = OperationRegistry()
     registry.register(
@@ -426,34 +508,7 @@ def test_idempotency_retention_preserves_nonterminal_external_action(
                 idempotency_result.c.idempotency_key == "protected",
             )
         ).scalar_one()
-        uow.connection.execute(
-            insert(external_action).values(
-                id=uuid7(),
-                operation_id=uuid7(),
-                approval_id=uuid7(),
-                operation_name="core.keyed.create",
-                subject_ref=None,
-                source_ref="synthetic.source:one",
-                destination_ref="synthetic",
-                approval_payload_ref=uuid7(),
-                approval_payload_digest=b"x" * 32,
-                idempotency_key="protected",
-                request_schema_version=1,
-                result_schema_version=1,
-                provider_request_id=None,
-                execution_job_id=None,
-                state="pending",
-                failure_class=None,
-                attempts=0,
-                result_ref=None,
-                result_detail=None,
-                error_code=None,
-                error_detail=None,
-                created_at=now,
-                updated_at=now,
-                terminal_at=None,
-            )
-        )
+        _insert_external_action(uow, key="protected", state=action_state, now=now)
         assert (
             purge_expired(uow.connection, now=retained_until + timedelta(seconds=1))
             == 0
@@ -463,3 +518,61 @@ def test_idempotency_retention_preserves_nonterminal_external_action(
         ).scalar_one()
         uow.commit()
     assert remaining == 1
+
+
+def test_idempotency_retention_sweeps_terminal_envelope_but_preserves_action_history(
+    workspace: UUID, owner_account_id: UUID
+) -> None:
+    registry = OperationRegistry()
+    registry.register(
+        _declaration(),
+        lambda ctx, uow, model: KeyedOutput(
+            item_ref="current.item:terminal", title=model.title
+        ),
+        origin=CORE_ORIGIN,
+    )
+    install_sink("core", CORE_AUDIT_SINK)
+    ctx = _context(workspace, owner_account_id)
+    assert dispatch(
+        ctx,
+        "core.keyed.create",
+        {"request_key": "terminal-history", "title": "Terminal"},
+        registry=registry,
+    ).ok
+
+    now = datetime.now(UTC)
+    with open_unit_of_work(ctx) as uow:
+        retained_until = uow.connection.execute(
+            select(idempotency_result.c.retained_until).where(
+                idempotency_result.c.operation_name == "core.keyed.create",
+                idempotency_result.c.idempotency_key == "terminal-history",
+            )
+        ).scalar_one()
+        action_id = _insert_external_action(
+            uow, key="terminal-history", state="succeeded", now=now
+        )
+
+        assert (
+            purge_expired(uow.connection, now=retained_until + timedelta(seconds=1))
+            == 1
+        )
+        envelope_count = uow.connection.execute(
+            select(func.count()).select_from(idempotency_result)
+        ).scalar_one()
+        history = uow.connection.execute(
+            select(
+                external_action.c.operation_name,
+                external_action.c.idempotency_key,
+                external_action.c.state,
+                external_action.c.result_ref,
+            ).where(external_action.c.id == action_id)
+        ).one()
+        uow.commit()
+
+    assert envelope_count == 0
+    assert history == (
+        "core.keyed.create",
+        "terminal-history",
+        "succeeded",
+        "current.item:terminal",
+    )

@@ -721,6 +721,9 @@ a changed protected request refuses `idempotency_key_reused`; a missing or faili
 refuses `idempotency_schema_incompatible`. The default retention window is 90 days, with a hard
 30-day minimum, and `retained_until` never changes after reservation. The daily sweep removes an
 expired envelope only when no pending, executing, or unresolved external action references it.
+Revision `0015_terminal_action_history` removes the original composite foreign key: a terminal
+action keeps its copied operation name and key as immutable history without pinning the expired
+envelope, while the sweep's explicit state predicate preserves every live or unknown outcome.
 After removal, core makes no generic stored-envelope replay promise: a domain's own durable
 source identity may still describe the earlier outcome, but another effect requires a new
 intentional key/source identity.
@@ -738,9 +741,11 @@ Introduced here because they are durable work; their approval is in
 | `state` | `pending`, `executing`, `succeeded`, `failed`, `refused`, `unresolved`, `cancelled`. |
 | `provider_request_id null`, `attempts` | |
 
-Migration `0014_external_actions` creates this table together with the keyed envelope it
-references. Staging, job continuation, and reconciliation are not activated by that schema
-alone; they arrive behind the destination-registration and approval-continuation gates.
+Migration `0014_external_actions` creates this table together with the keyed envelope; the
+append-only `0015_terminal_action_history` correction makes terminal operation/key fields
+historical rather than a live foreign key. Staging, job continuation, and reconciliation are not
+activated by that schema alone; they arrive behind the destination-registration and
+approval-continuation gates.
 
 ## Contact permission records (FR 46)
 

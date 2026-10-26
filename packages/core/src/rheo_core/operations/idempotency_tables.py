@@ -1,9 +1,10 @@
-"""The two durable execution tables created together by core revision 0014.
+"""The durable keyed/external schema and its post-0014 runtime shape.
 
-The migration owns one immutable schema boundary: retained keyed outcomes and the
-external action that may keep one alive are mutually referential parts of the same
-execution contract. Behaviour over the first table lives in ``idempotency.py``;
-external-action staging and continuation deliberately arrive in later changes.
+``external_action_metadata`` is the frozen revision-0014 shape, including its original
+composite foreign key. Revision 0015 removes that database constraint so a terminal
+action can remain as history after its expired keyed envelope is swept. The runtime
+tables below mirror the 0015 head: operation/key text remains immutable history, while
+``idempotency.py`` explicitly protects pending, executing, and unresolved actions.
 """
 
 from typing import Final
@@ -64,7 +65,7 @@ def _in(column: str, values: tuple[str, ...]) -> str:
     return f"{column} IN ({quoted})"
 
 
-idempotency_result = Table(
+_idempotency_result_0014 = Table(
     "idempotency_result",
     external_action_metadata,
     Column("operation_name", Text, nullable=False),
@@ -118,7 +119,7 @@ idempotency_result = Table(
 )
 
 
-external_action = Table(
+_external_action_0014 = Table(
     "external_action",
     external_action_metadata,
     Column("id", UUID(as_uuid=True), primary_key=True),
@@ -196,3 +197,20 @@ external_action = Table(
         postgresql_where=text("provider_request_id IS NOT NULL"),
     ),
 )
+
+
+# Runtime metadata at the 0015 head. Keep the 0014 metadata above unchanged so a
+# fresh migration chain still creates the original constraint before 0015 drops it.
+external_action_runtime_metadata = MetaData(schema=CORE_SCHEMA)
+idempotency_result = _idempotency_result_0014.to_metadata(
+    external_action_runtime_metadata
+)
+external_action = _external_action_0014.to_metadata(external_action_runtime_metadata)
+for _constraint in tuple(external_action.constraints):
+    if _constraint.name != "external_action_idempotency_result_fkey":
+        continue
+    external_action.constraints.remove(_constraint)
+    assert isinstance(_constraint, ForeignKeyConstraint)
+    for _foreign_key in _constraint.elements:
+        _foreign_key.parent.foreign_keys.discard(_foreign_key)
+        external_action.foreign_keys.discard(_foreign_key)

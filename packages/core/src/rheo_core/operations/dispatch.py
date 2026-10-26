@@ -1021,6 +1021,10 @@ def _rollback(uow: UnitOfWork) -> None:
         pass
 
 
+class _KeyedOutputInvalid(Exception):
+    """The keyed handler returned a value outside its declared output contract."""
+
+
 def _dispatch_keyed(
     ctx: WorkspaceContext,
     operation: RegisteredOperation,
@@ -1031,6 +1035,7 @@ def _dispatch_keyed(
 ) -> OperationOutcome:
     """Reserve, run, and retain one synchronous KEYED operation transactionally."""
     from rheo_core.operations.idempotency import (
+        IDEMPOTENCY_KEY_REUSED,
         IDEMPOTENCY_SCHEMA_INCOMPATIBLE,
         IdempotencyContractError,
         IdempotencySchemaIncompatible,
@@ -1098,7 +1103,10 @@ def _dispatch_keyed(
                         if retained.state in {SUCCEEDED, PENDING}
                         else (
                             AUDIT_REFUSED
-                            if reservation.row.state in {"refused", "cancelled"}
+                            if (
+                                retained.error_code == IDEMPOTENCY_KEY_REUSED
+                                or reservation.row.state in {"refused", "cancelled"}
+                            )
                             else AUDIT_FAILED
                         )
                     )
@@ -1125,8 +1133,7 @@ def _dispatch_keyed(
                 view = HandlerUnitOfWork(uow, operation_id=None, consumers=consumers)
                 output = operation.handler(ctx, view, model_input)
                 if not isinstance(output, declaration.output):
-                    raise OperationRefused(
-                        OUTPUT_INVALID,
+                    raise _KeyedOutputInvalid(
                         f"{declaration.name} returned {type(output).__name__}, not "
                         f"{declaration.output.__name__}",
                     )
@@ -1143,6 +1150,26 @@ def _dispatch_keyed(
                 due_mark_requested = view.due_mark_requested
                 uow.commit()
                 outcome = OperationOutcome(SUCCEEDED, result=output)
+            except _KeyedOutputInvalid as invalid:
+                if savepoint.is_active:
+                    savepoint.rollback()
+                detail = str(invalid)
+                finish_error(
+                    uow.connection,
+                    declaration=declaration,
+                    key=request.key,
+                    state="failed",
+                    error_code=OUTPUT_INVALID,
+                    error_detail=detail,
+                    now=datetime.now(UTC),
+                )
+                if audit is not None:
+                    audit.record(ctx, uow, outcome=AUDIT_FAILED, operation_id=None)
+                uow.commit()
+                outcome = OperationOutcome(
+                    FAILED,
+                    error=OperationError(OUTPUT_INVALID, detail),
+                )
             except (OperationRefused, StorageRefusal) as refusal:
                 if savepoint.is_active:
                     savepoint.rollback()
