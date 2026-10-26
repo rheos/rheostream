@@ -13,10 +13,12 @@ from rheo_contracts import (
     OperationDeclaration,
     Role,
     SafetyClass,
+    StaleRecord,
     WorkspaceContext,
 )
 from rheo_core.audit import CORE_AUDIT_SINK, install_sink
 from rheo_core.boundary import context_for_harness
+from rheo_core.modules import readiness
 from rheo_core.operations import (
     OUTPUT_INVALID,
     OperationRefused,
@@ -33,7 +35,7 @@ from rheo_core.operations.idempotency import (
 from rheo_core.operations.idempotency_tables import external_action, idempotency_result
 from rheo_core.refs import uuid7
 from rheo_core.settings import CORE_ORIGIN
-from rheo_core.storage.backend import UnitOfWork
+from rheo_core.storage.backend import StorageRefusal, UnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_tables import audit_record
 from sqlalchemy import func, insert, select
@@ -207,6 +209,98 @@ def test_keyed_dispatch_replays_terminal_refusal_and_rolls_back_effect(
     assert first.state == replayed.state == "synthetic_refusal"
     assert first.error == replayed.error
     assert calls == ["No effect"]
+    assert _audit_outcomes(ctx, "core.keyed.create") == ["refused", "refused"]
+
+
+@pytest.mark.parametrize(
+    ("transient", "expected_state"),
+    [("stale", "record_stale"), ("storage", "workspace_unavailable")],
+)
+def test_keyed_dispatch_leaves_key_unbound_after_transient_handler_refusal(
+    workspace: UUID,
+    owner_account_id: UUID,
+    transient: str,
+    expected_state: str,
+) -> None:
+    attempts = 0
+    successes = 0
+
+    def handler(ctx: Any, uow: Any, model: KeyedInput) -> KeyedOutput:
+        nonlocal attempts, successes
+        attempts += 1
+        if attempts == 1:
+            if transient == "stale":
+                raise StaleRecord("synthetic record moved")
+            raise StorageRefusal(
+                "workspace_unavailable", "synthetic transient storage refusal"
+            )
+        successes += 1
+        return KeyedOutput(item_ref="current.item:retried", title=model.title)
+
+    registry = OperationRegistry()
+    registry.register(_declaration(), handler, origin=CORE_ORIGIN)
+    install_sink("core", CORE_AUDIT_SINK)
+    ctx = _context(workspace, owner_account_id)
+    payload = {"request_key": f"retry-{transient}", "title": "Retry safely"}
+
+    first = dispatch(ctx, "core.keyed.create", payload, registry=registry)
+    retried = dispatch(ctx, "core.keyed.create", payload, registry=registry)
+    replayed = dispatch(ctx, "core.keyed.create", payload, registry=registry)
+
+    assert first.state == expected_state
+    assert retried.ok and replayed.ok
+    assert retried.result == replayed.result
+    assert attempts == 2
+    assert successes == 1
+    assert _audit_outcomes(ctx, "core.keyed.create") == [
+        "refused",
+        "succeeded",
+        "succeeded",
+    ]
+
+
+def test_keyed_dispatch_leaves_key_unbound_after_transient_module_readiness(
+    workspace: UUID, owner_account_id: UUID, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    readiness_checks = 0
+    handler_calls = 0
+    real_require_ready = readiness.require_ready
+
+    def require_ready_once(conn: Any, module_id: str) -> None:
+        nonlocal readiness_checks
+        readiness_checks += 1
+        if readiness_checks == 1:
+            raise readiness.ModuleNotReady(
+                "module_unavailable", "synthetic module upgrade in progress"
+            )
+        real_require_ready(conn, module_id)
+
+    def handler(ctx: Any, uow: Any, model: KeyedInput) -> KeyedOutput:
+        nonlocal handler_calls
+        handler_calls += 1
+        return KeyedOutput(item_ref="current.item:ready", title=model.title)
+
+    monkeypatch.setattr(readiness, "require_ready", require_ready_once)
+    registry = OperationRegistry()
+    registry.register(_declaration(), handler, origin=CORE_ORIGIN)
+    install_sink("core", CORE_AUDIT_SINK)
+    ctx = _context(workspace, owner_account_id)
+    payload = {"request_key": "retry-readiness", "title": "Retry readiness"}
+
+    first = dispatch(ctx, "core.keyed.create", payload, registry=registry)
+    retried = dispatch(ctx, "core.keyed.create", payload, registry=registry)
+    replayed = dispatch(ctx, "core.keyed.create", payload, registry=registry)
+
+    assert first.state == "module_unavailable"
+    assert retried.ok and replayed.ok
+    assert retried.result == replayed.result
+    assert readiness_checks == 2
+    assert handler_calls == 1
+    assert _audit_outcomes(ctx, "core.keyed.create") == [
+        "refused",
+        "succeeded",
+        "succeeded",
+    ]
 
 
 def test_keyed_output_invalid_is_failed_and_replayed_without_reinvocation(

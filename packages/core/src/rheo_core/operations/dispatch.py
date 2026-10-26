@@ -1125,10 +1125,10 @@ def _dispatch_keyed(
                     operation_id=retained.operation_id,
                 )
 
+            from rheo_core.modules.readiness import ModuleNotReady, require_ready
+
             savepoint = uow.connection.begin_nested()
             try:
-                from rheo_core.modules.readiness import require_ready
-
                 require_ready(uow.connection, operation.module_id)
                 view = HandlerUnitOfWork(uow, operation_id=None, consumers=consumers)
                 output = operation.handler(ctx, view, model_input)
@@ -1170,7 +1170,22 @@ def _dispatch_keyed(
                     FAILED,
                     error=OperationError(OUTPUT_INVALID, detail),
                 )
-            except (OperationRefused, StorageRefusal) as refusal:
+            except ModuleNotReady as refusal:
+                # Readiness is retryable despite inheriting OperationRefused. These
+                # three pre-effect paths must release the key before auditing alone.
+                _rollback(uow)
+                _audit_alone(ctx, audit, outcome=AUDIT_REFUSED)
+                return _refused(refusal.state, refusal.detail)
+            except StorageRefusal as refusal:
+                _rollback(uow)
+                _audit_alone(ctx, audit, outcome=AUDIT_REFUSED)
+                return _refused(refusal.state, refusal.detail)
+            except StaleRecord as stale:
+                _rollback(uow)
+                detail = str(stale) or RECORD_STALE
+                _audit_alone(ctx, audit, outcome=AUDIT_REFUSED)
+                return _refused(RECORD_STALE, detail)
+            except OperationRefused as refusal:
                 if savepoint.is_active:
                     savepoint.rollback()
                 state = refusal.state
@@ -1188,23 +1203,6 @@ def _dispatch_keyed(
                     audit.record(ctx, uow, outcome=AUDIT_REFUSED, operation_id=None)
                 uow.commit()
                 outcome = _refused(state, detail)
-            except StaleRecord as stale:
-                if savepoint.is_active:
-                    savepoint.rollback()
-                detail = str(stale) or RECORD_STALE
-                finish_error(
-                    uow.connection,
-                    declaration=declaration,
-                    key=request.key,
-                    state="refused",
-                    error_code=RECORD_STALE,
-                    error_detail=detail,
-                    now=datetime.now(UTC),
-                )
-                if audit is not None:
-                    audit.record(ctx, uow, outcome=AUDIT_REFUSED, operation_id=None)
-                uow.commit()
-                outcome = _refused(RECORD_STALE, detail)
             except Exception as exc:
                 if savepoint.is_active:
                     savepoint.rollback()
