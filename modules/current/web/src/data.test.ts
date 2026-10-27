@@ -10,10 +10,9 @@ import {
   TRANSITIONS,
 } from "./data";
 import {
-  attachChoices,
-  attachInput,
   formInput,
-  type AttachCandidate,
+  pickableProjects,
+  projectInput,
   type Field,
 } from "./forms";
 import { queueFilters } from "./screens";
@@ -127,28 +126,29 @@ describe("update forms", () => {
   });
 });
 
-describe("attaching items to a project", () => {
-  const PROJECT = "current.project:sample";
-  const candidates: AttachCandidate[] = [
-    { ref: "current.item:a", title: "Renew the domain", revision: 3, elsewhere: null },
-    { ref: "current.item:b", title: "Pay the hosting bill", revision: 7, elsewhere: "Studio move" },
-  ];
-  it("puts the chosen item in the project at the revision it was read at", () => {
-    expect(attachInput(candidates, "current.item:b", PROJECT)).toEqual({
-      ref: "current.item:b",
-      revision: 7,
-      project_ref: PROJECT,
-    });
+describe("moving an item between projects", () => {
+  const ITEM = "current.item:sample";
+  const A = "current.project:a";
+  const B = "current.project:b";
+  it("puts the item in the picked project at the revision it was read at", () => {
+    expect(projectInput(ITEM, 5, null, A)).toEqual({ ref: ITEM, revision: 5, project_ref: A });
+    expect(projectInput(ITEM, 5, A, B)).toEqual({ ref: ITEM, revision: 5, project_ref: B });
   });
-  it("sends nothing for the empty choice or an item no longer offered", () => {
-    expect(attachInput(candidates, "", PROJECT)).toBeNull();
-    expect(attachInput(candidates, "current.item:gone", PROJECT)).toBeNull();
+  it("takes it out through clear, since a null project_ref means leave it", () => {
+    expect(projectInput(ITEM, 5, A, null)).toEqual({ ref: ITEM, revision: 5, clear: ["project_ref"] });
   });
-  it("filters by every word, in the title or the project it sits in now", () => {
-    expect(attachChoices(candidates, "")).toHaveLength(2);
-    expect(attachChoices(candidates, "  DOMAIN ").map((c) => c.ref)).toEqual(["current.item:a"]);
-    expect(attachChoices(candidates, "studio bill").map((c) => c.ref)).toEqual(["current.item:b"]);
-    expect(attachChoices(candidates, "domain bill")).toEqual([]);
+  it("sends nothing when the pick is the project it already has", () => {
+    expect(projectInput(ITEM, 5, A, A)).toBeNull();
+    expect(projectInput(ITEM, 5, null, null)).toBeNull();
+  });
+  it("offers live and paused projects, and a done one only when already held", () => {
+    const projects = [
+      { ref: A, title: "Studio move", status: "active" },
+      { ref: B, title: "Tax season", status: "paused" },
+      { ref: "current.project:c", title: "Old launch", status: "done" },
+    ];
+    expect(pickableProjects(projects, null).map((p) => p.ref)).toEqual([A, B]);
+    expect(pickableProjects(projects, "current.project:c")).toHaveLength(3);
   });
 });
 

@@ -1,6 +1,7 @@
 "use client";
 import {
   useId,
+  useRef,
   useState,
   useTransition,
   type FormEvent,
@@ -272,70 +273,106 @@ export function ActionForm({
   );
 }
 
-/** An active item a project page can attach, with the project it sits in now. */
-export interface AttachCandidate {
+/** A project the picker offers. */
+export interface PickableProject {
   ref: string;
   title: string;
-  revision: number;
-  /** The title of the project the item is in now, if any: attaching moves it. */
-  elsewhere: string | null;
-}
-
-/** The candidates whose title (or current project) holds every typed word. */
-export function attachChoices(
-  candidates: readonly AttachCandidate[],
-  words: string,
-): AttachCandidate[] {
-  const terms = words.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!terms.length) return [...candidates];
-  return candidates.filter((c) => {
-    const text = `${c.title} ${c.elsewhere ?? ""}`.toLowerCase();
-    return terms.every((term) => text.includes(term));
-  });
-}
-
-/** The update that puts the chosen item in the project, or null with no choice. */
-export function attachInput(
-  candidates: readonly AttachCandidate[],
-  chosen: string,
-  projectRef: string,
-): Record<string, unknown> | null {
-  const picked = candidates.find((c) => c.ref === chosen);
-  return picked
-    ? { ref: picked.ref, revision: picked.revision, project_ref: projectRef }
-    : null;
+  status: string;
 }
 
 /**
- * Attach an existing item to a project. The select opens on an empty choice, so
- * a stray click attaches nothing; the filter narrows a long list by words.
+ * The projects an item can move to: live ones, paused marked as such, and a
+ * done one only when the item already sits in it.
  */
-export function AttachItem({
+export function pickableProjects<T extends PickableProject>(
+  projects: readonly T[],
+  held: string | null,
+): T[] {
+  return projects.filter((p) => p.status !== "done" || p.ref === held);
+}
+
+/** The update a pick makes, or null when it names the project already held. */
+export function projectInput(
+  itemRef: string,
+  revision: number,
+  held: string | null,
+  picked: string | null,
+): Record<string, unknown> | null {
+  if (picked === held) return null;
+  return picked === null
+    ? { ref: itemRef, revision, clear: ["project_ref"] }
+    : { ref: itemRef, revision, project_ref: picked };
+}
+
+function FolderIcon({ plus }: { plus: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+      {plus ? <path d="M12 10v6M9 13h6" /> : null}
+    </svg>
+  );
+}
+
+/**
+ * The project control for one item: an icon that opens a modal list of
+ * projects. Picking one saves and closes; "No project" takes the item out.
+ * A native modal dialog, like the Leads edit dialogs: focus moves in, Escape
+ * closes, the page behind is inert.
+ */
+export function ProjectPicker({
   submit,
-  projectRef,
-  candidates,
+  itemRef,
+  revision,
+  subject,
+  held,
+  projects,
   reloadHref,
 }: {
   submit: Submit;
-  projectRef: string;
-  candidates: readonly AttachCandidate[];
+  itemRef: string;
+  revision: number;
+  /** The item's title, for the button's accessible name in a list. */
+  subject: string;
+  /** The project the item is in now. */
+  held: string | null;
+  projects: readonly PickableProject[];
   reloadHref?: string;
 }) {
-  const id = useId();
-  const [words, setWords] = useState("");
-  const [chosen, setChosen] = useState("");
+  const dialog = useRef<HTMLDialogElement | null>(null);
+  const heading = useId();
   const [result, setResult] = useState<OperationOutcome | null>(null);
   const [pending, startTransition] = useTransition();
-  const shown = attachChoices(candidates, words);
-  function filter(value: string) {
-    setWords(value);
-    if (!attachChoices(candidates, value).some((c) => c.ref === chosen))
-      setChosen("");
+  // The opening a save belongs to, so a slow save cannot close a later one.
+  const opening = useRef(0);
+  const offered = pickableProjects(projects, held);
+  const verb = held ? "Change project" : "Add to project";
+  function open() {
+    opening.current += 1;
+    setResult(null);
+    dialog.current?.showModal();
+    // Straight to the list, on the project held if there is one, not Close.
+    const list = dialog.current;
+    (
+      list?.querySelector<HTMLElement>('[aria-current="true"]') ??
+      list?.querySelector<HTMLElement>("li button")
+    )?.focus();
   }
-  function attach(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const input = attachInput(candidates, chosen, projectRef);
-    if (input === null) return;
+  function pick(picked: string | null) {
+    const input = projectInput(itemRef, revision, held, picked);
+    if (input === null) {
+      dialog.current?.close();
+      return;
+    }
+    const mine = opening.current;
     startTransition(async () => {
       let outcome: OperationOutcome;
       try {
@@ -344,99 +381,106 @@ export function AttachItem({
         outcome = { state: "unavailable" };
       }
       setResult(outcome);
-      if (outcome.state === "ok") {
-        setChosen("");
-        setWords("");
-      }
+      if (outcome.state === "ok" && mine === opening.current)
+        dialog.current?.close();
     });
   }
   return (
-    <form
-      onSubmit={attach}
-      method="post"
-      className={styles.attachForm}
-      aria-label="Attach an existing item"
-      aria-busy={pending}
-    >
-      <fieldset disabled={pending} className={styles.attachFields}>
-        {candidates.length > 8 ? (
-          <div className={styles.field}>
-            <label htmlFor={`${id}-words`} className={styles.visuallyHidden}>
-              Filter items by words
-            </label>
-            <input
-              id={`${id}-words`}
-              value={words}
-              onChange={(e) => filter(e.target.value)}
-              placeholder="Filter by words"
-              maxLength={200}
-            />
-          </div>
-        ) : null}
-        <div className={`${styles.field} ${styles.grow}`}>
-          <label htmlFor={`${id}-item`} className={styles.visuallyHidden}>
-            Item to attach
-          </label>
-          <select
-            id={`${id}-item`}
-            value={chosen}
-            onChange={(e) => setChosen(e.target.value)}
+    <>
+      <button
+        type="button"
+        className={styles.iconButton}
+        aria-label={`${verb}: ${subject}`}
+        title={verb}
+        aria-haspopup="dialog"
+        onClick={open}
+      >
+        <FolderIcon plus={!held} />
+      </button>
+      <dialog ref={dialog} className={styles.modal} aria-labelledby={heading}>
+        <div className={styles.modalHead}>
+          <h2 id={heading} className={styles.modalTitle}>
+            {verb}
+          </h2>
+          <button
+            type="button"
+            className={styles.modalClose}
+            aria-label="Close"
+            onClick={() => dialog.current?.close()}
           >
-            <option value="">
-              {shown.length ? "Choose an item to attach" : "No item matches"}
-            </option>
-            {shown.map((c) => (
-              <option key={c.ref} value={c.ref}>
-                {c.elsewhere ? `${c.title} (in ${c.elsewhere})` : c.title}
-              </option>
-            ))}
-          </select>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
         </div>
-        <button type="submit" className={styles.secondary} disabled={!chosen}>
-          {pending ? "Saving…" : "Attach"}
-        </button>
-      </fieldset>
-      <div aria-live="polite" aria-atomic="true">
-        {result?.state === "ok" ? (
-          <p className={styles.success}>Attached.</p>
-        ) : null}
-        {result?.state === "refused" ? (
-          <p className={styles.error} role="alert">
-            {refusalText(result.code, result.text)}
-            {result.code === "record_stale" && reloadHref ? (
-              <>
-                {" "}
-                <a href={reloadHref}>Reload</a>
-              </>
+        <p className={styles.modalSubject}>{subject}</p>
+        {offered.length || held ? (
+          <ul className={styles.choices} aria-busy={pending}>
+            {offered.map((p) => (
+              <li key={p.ref}>
+                <button
+                  type="button"
+                  className={styles.choice}
+                  aria-current={p.ref === held ? "true" : undefined}
+                  disabled={pending}
+                  onClick={() => pick(p.ref)}
+                >
+                  <span>{p.title}</span>
+                  {p.ref === held ? (
+                    <span className={styles.choiceNote}>Current</span>
+                  ) : p.status !== "active" ? (
+                    <span className={styles.choiceNote}>
+                      {p.status === "paused" ? "Paused" : "Done"}
+                    </span>
+                  ) : null}
+                </button>
+              </li>
+            ))}
+            {held ? (
+              <li>
+                <button
+                  type="button"
+                  className={`${styles.choice} ${styles.choiceNone}`}
+                  disabled={pending}
+                  onClick={() => pick(null)}
+                >
+                  No project
+                </button>
+              </li>
             ) : null}
-          </p>
-        ) : null}
-        {result?.state === "unavailable" ? (
-          <p className={styles.error} role="alert">
-            We could not confirm the change. Reload to check the project.
-          </p>
-        ) : null}
-      </div>
-    </form>
-  );
-}
-
-/** A remove mark for an icon button; the button carries the words. */
-function DetachIcon() {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="16"
-      height="16"
-      aria-hidden="true"
-      focusable="false"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-    >
-      <path d="M4 4l8 8M12 4l-8 8" />
-    </svg>
+          </ul>
+        ) : (
+          <p className={styles.meta}>No projects yet. Create one under Projects.</p>
+        )}
+        <div aria-live="polite" aria-atomic="true">
+          {pending ? <p className={styles.meta}>Saving…</p> : null}
+          {result?.state === "refused" ? (
+            <p className={styles.error} role="alert">
+              {refusalText(result.code, result.text)}
+              {result.code === "record_stale" && reloadHref ? (
+                <>
+                  {" "}
+                  <a href={reloadHref}>Reload</a>
+                </>
+              ) : null}
+            </p>
+          ) : null}
+          {result?.state === "unavailable" ? (
+            <p className={styles.error} role="alert">
+              We could not confirm the change. Reload to check the item.
+            </p>
+          ) : null}
+        </div>
+      </dialog>
+    </>
   );
 }
 
@@ -447,7 +491,6 @@ export function ActionButton({
   input,
   label,
   description,
-  icon = false,
 }: {
   submit: Submit;
   operation: string;
@@ -455,8 +498,6 @@ export function ActionButton({
   label: string;
   /** The accessible name when the visible label alone is ambiguous in a list. */
   description?: string;
-  /** Show a remove mark instead of the label; the label becomes the tooltip. */
-  icon?: boolean;
 }) {
   const [result, setResult] = useState<OperationOutcome | null>(null);
   const [pending, startTransition] = useTransition();
@@ -473,14 +514,13 @@ export function ActionButton({
     <span className={styles.buttonCell}>
       <button
         type="button"
-        className={icon ? `${styles.quiet} ${styles.iconButton}` : styles.quiet}
+        className={styles.quiet}
         onClick={run}
         disabled={pending}
         aria-busy={pending}
-        aria-label={description ?? (icon ? label : undefined)}
-        title={icon ? label : undefined}
+        aria-label={description}
       >
-        {icon ? <DetachIcon /> : pending ? "Saving…" : label}
+        {pending ? "Saving…" : label}
       </button>
       {result?.state === "refused" ? (
         <span className={styles.error} role="alert">

@@ -7,10 +7,9 @@ import type {
 import {
   ActionButton,
   ActionForm,
-  AttachItem,
   LocalTime,
+  ProjectPicker,
   StatusActions,
-  type AttachCandidate,
   type Field,
   type FormProps,
 } from "./forms";
@@ -187,15 +186,15 @@ function ItemRows({
   labels,
   projects,
   label,
-  detachFrom,
+  pick,
 }: {
   shell: ShellApi;
   items: readonly ItemSummary[];
   labels: ReadonlyMap<string, string>;
   projects: ReadonlyMap<string, string>;
   label: string;
-  /** On a project page, its title: each row gets a control to take it out. */
-  detachFrom?: string;
+  /** The projects a row's project control offers; without them, no control. */
+  pick?: readonly Project[];
 }) {
   return (
     <ul className={styles.rows} aria-label={label}>
@@ -246,20 +245,16 @@ function ItemRows({
                 ) : null}
               </p>
             </div>
-            {detachFrom && shell.submit ? (
+            {pick && shell.submit ? (
               <div className={styles.rowEnd}>
                 {status}
-                <ActionButton
+                <ProjectPicker
                   submit={shell.submit}
-                  operation="current.item.update"
-                  input={{
-                    ref: item.ref,
-                    revision: item.revision,
-                    clear: ["project_ref"],
-                  }}
-                  label="Remove from project"
-                  description={`Remove ${item.title} from ${detachFrom}`}
-                  icon
+                  itemRef={item.ref}
+                  revision={item.revision}
+                  subject={item.title}
+                  held={item.projectRef}
+                  projects={pick}
                 />
               </div>
             ) : (
@@ -393,7 +388,12 @@ export async function queue({ shell, query }: ScreenProps) {
         filters.overdue ||
         filters.blocked,
     );
-  const rowsProps = { shell, labels, projects: projectTitles };
+  const rowsProps = {
+    shell,
+    labels,
+    projects: projectTitles,
+    pick: projectResult.state === "ok" ? projects : undefined,
+  };
   return (
     <Frame
       shell={shell}
@@ -748,6 +748,29 @@ export async function item({ shell, query }: ScreenProps) {
                   {record.dueOn ? day(record.dueOn) : "No due date"}
                 </dd>
               </div>
+              <div>
+                <dt>Project</dt>
+                <dd className={styles.factWithAction}>
+                  {record.project ? (
+                    <a href={shell.href("project", { ref: record.project.ref })}>
+                      {record.project.title}
+                    </a>
+                  ) : (
+                    <span>No project</span>
+                  )}
+                  {shell.submit && projectResult.state === "ok" ? (
+                    <ProjectPicker
+                      submit={shell.submit}
+                      itemRef={record.ref}
+                      revision={record.revision}
+                      subject={record.title}
+                      held={record.projectRef}
+                      projects={projects}
+                      reloadHref={here}
+                    />
+                  ) : null}
+                </dd>
+              </div>
             </dl>
             {record.body ? (
               <p className={styles.body}>{record.body}</p>
@@ -838,39 +861,6 @@ export async function item({ shell, query }: ScreenProps) {
               <p className={styles.meta}>
                 Still blocked. You can complete it anyway.
               </p>
-            ) : null}
-          </section>
-          <section className={styles.section} aria-labelledby="project">
-            <h2 id="project">Project</h2>
-            {record.project ? (
-              <p>
-                <a href={shell.href("project", { ref: record.project.ref })}>
-                  {record.project.title}
-                </a>
-              </p>
-            ) : !shell.submit ? (
-              <p className={styles.meta}>Not in a project.</p>
-            ) : null}
-            {shell.submit ? (
-              <ActionForm
-                submit={shell.submit}
-                operation="current.item.update"
-                base={base}
-                fields={[
-                  {
-                    name: "project_ref",
-                    label: "Project",
-                    value: record.projectRef ?? "",
-                    type: "select",
-                    clearable: true,
-                    hideLabel: true,
-                    options: projectOptions(projects, record.projectRef),
-                  },
-                ]}
-                button={record.projectRef ? "Move" : "Add to project"}
-                reloadHref={here}
-                inline
-              />
             ) : null}
           </section>
           <section className={styles.section} aria-labelledby="dependencies">
@@ -1192,7 +1182,7 @@ export async function project({ shell, query }: ScreenProps) {
     ? query.status
     : "active";
   const offset = pageOffset(query.offset);
-  const [result, areaResult, itemResult, projectResult, candidateResult] =
+  const [result, areaResult, itemResult, projectResult] =
     await Promise.all([
       read(shell, "current.project.get", { ref: query.ref }),
       read(shell, "current.area.list", { include_retired: true }),
@@ -1204,9 +1194,6 @@ export async function project({ shell, query }: ScreenProps) {
       }),
       shell.submit
         ? read(shell, "current.project.list")
-        : Promise.resolve(null),
-      shell.submit
-        ? read(shell, "current.item.list", { status: "active", limit: 100 })
         : Promise.resolve(null),
     ]);
   if (result.state !== "ok")
@@ -1223,18 +1210,7 @@ export async function project({ shell, query }: ScreenProps) {
   const labels = areaLabels(areas);
   const list = page(itemResult, itemSummary);
   const here = shell.href("project", { ref: record.ref });
-  const projectTitles = new Map(
-    page(projectResult, projectOf).items.map((p) => [p.ref, p.title]),
-  );
-  const pool = page(candidateResult, itemSummary);
-  const candidates: AttachCandidate[] = pool.items
-    .filter((c) => c.projectRef !== record.ref)
-    .map((c) => ({
-      ref: c.ref,
-      title: c.title,
-      revision: c.revision,
-      elsewhere: c.projectRef ? (projectTitles.get(c.projectRef) ?? null) : null,
-    }));
+  const allProjects = page(projectResult, projectOf).items;
   return (
     <Frame
       shell={shell}
@@ -1263,31 +1239,10 @@ export async function project({ shell, query }: ScreenProps) {
                   className={styles.secondary}
                   href={shell.href("new", { project: record.ref })}
                 >
-                  New item
+                  Add an item
                 </a>
               ) : null}
             </div>
-            {shell.submit && candidateResult?.state === "ok" ? (
-              candidates.length ? (
-                <>
-                  <AttachItem
-                    submit={shell.submit}
-                    projectRef={record.ref}
-                    candidates={candidates}
-                    reloadHref={here}
-                  />
-                  {pool.nextOffset !== null ? (
-                    <p className={styles.meta}>
-                      Lists the 100 most urgent active items.
-                    </p>
-                  ) : null}
-                </>
-              ) : (
-                <p className={styles.meta}>
-                  Every active item is already in this project.
-                </p>
-              )
-            ) : null}
             <nav className={styles.segmented} aria-label="Item status">
               {(
                 [
@@ -1314,12 +1269,12 @@ export async function project({ shell, query }: ScreenProps) {
                 labels={labels}
                 projects={new Map()}
                 label="Project items"
-                detachFrom={record.title}
+                pick={projectResult?.state === "ok" ? allProjects : undefined}
               />
             ) : (
               <p className={styles.meta}>
                 {status === "active"
-                  ? "Nothing active in this project yet."
+                  ? "Nothing active in this project."
                   : "No items here."}
               </p>
             )}

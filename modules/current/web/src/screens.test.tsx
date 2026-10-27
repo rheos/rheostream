@@ -117,6 +117,9 @@ describe("queue", () => {
     );
     const html = renderToStaticMarkup(await screens.queue({ shell: api, query: {} }));
     expect(html).toMatch(/<h2 id="woke">Woke up<\/h2>[\s\S]*Call the landlord back[\s\S]*In motion[\s\S]*Renew the example.com domain/);
+    // Each row carries the project control.
+    expect(html).toContain('aria-label="Change project: Renew the example.com domain"');
+    expect(html).toContain('aria-label="Change project: Call the landlord back"');
     expect(html).toContain("Overdue");
     expect(html).toContain("Blocked");
     expect(html).toContain("Studio move");
@@ -272,22 +275,25 @@ describe("item detail", () => {
     expect(html).not.toContain("Garden (retired)");
     expect(api.submit).not.toHaveBeenCalled();
   });
-  it("changes the project in view, outside the edit form", async () => {
+  it("changes the project from an icon beside it, outside the edit form", async () => {
     const html = renderToStaticMarkup(
       await screens.item({ shell: detailShell(detail()), query: { ref: ITEM } }),
     );
-    expect(html).toContain('<h2 id="project">Project</h2>');
-    expect(html.match(/name="project_ref"/g)).toHaveLength(1);
-    expect(html).toContain(`<option value="${PROJECT}" selected="">Studio move</option>`);
-    expect(html).toContain(">Move</button>");
+    // The edit form no longer carries the project.
+    expect(html).not.toContain('name="project_ref"');
+    expect(html).toContain('aria-label="Change project: Renew the example.com domain"');
+    expect(html).toContain('aria-haspopup="dialog"');
+    // The dialog lists the projects, marks the one held and offers a way out.
+    expect(html).toMatch(/aria-current="true"[^>]*><span>Studio move<\/span><span[^>]*>Current<\/span>/);
+    expect(html).toContain(">No project</button>");
     const loose = renderToStaticMarkup(
       await screens.item({
         shell: detailShell(detail({ project_ref: null, project: null })),
         query: { ref: ITEM },
       }),
     );
-    expect(loose).toContain('<option value="" selected="">No project</option>');
-    expect(loose).toContain(">Add to project</button>");
+    expect(loose).toContain('aria-label="Add to project: Renew the example.com domain"');
+    expect(loose).not.toContain(">No project</button>");
   });
   it("offers only reopen for a done item", async () => {
     const html = renderToStaticMarkup(
@@ -359,90 +365,37 @@ describe("new item, projects and areas", () => {
     expect(html).toContain("Create project");
   });
   function projectShell(submit = true) {
-    const otherProject = "current.project:01900000-0000-7000-8000-000000000004";
-    const api = shell((name, input) =>
+    const api = shell((name) =>
       ({
         "current.project.get": ok((projectList as { result: { items: unknown[] } }).result.items[0]),
         "current.area.list": areaList,
-        "current.project.list": ok({
-          items: [
-            ...(projectList as { result: { items: unknown[] } }).result.items,
-            {
-              ref: otherProject,
-              title: "Tax season",
-              description: "",
-              status: "active",
-              area: null,
-              due_on: null,
-              revision: 1,
-              created_at: "2026-01-01T00:00:00Z",
-              updated_at: "2026-01-01T00:00:00Z",
-              item_counts: { open: 1, waiting: 0, snoozed: 0, done: 0 },
-            },
-          ],
-        }),
-        "current.item.list": input.project_ref
-          ? ok({ items: [item()], next_offset: null })
-          : ok({
-              items: [
-                item(),
-                item({ ref: OTHER, title: "Find the registrar login", project_ref: null }),
-                item({
-                  ref: "current.item:01900000-0000-7000-8000-000000000009",
-                  title: "File the quarterly return",
-                  project_ref: otherProject,
-                }),
-              ],
-              next_offset: 100,
-            }),
+        "current.project.list": projectList,
+        "current.item.list": ok({ items: [item()], next_offset: null }),
       })[name],
     );
     if (!submit) delete (api as Partial<typeof api>).submit;
     return api;
   }
-  it("shows a project's items with their quick actions and a way out", async () => {
+  it("shows a project's items with their quick actions and project control", async () => {
     const api = projectShell();
     const html = renderToStaticMarkup(
       await screens.project({ shell: api, query: { ref: PROJECT } }),
     );
     expect(html).toContain("Renew the example.com domain");
     expect(html).toContain(`/current/new?project=${encodeURIComponent(PROJECT)}`);
-    expect(html).toContain(">New item</a>");
-    expect(html).toContain('aria-label="Remove Renew the example.com domain from Studio move"');
-    expect(html).toContain('title="Remove from project"');
-    const list = api.call.mock.calls.find(
-      ([name, input]) =>
-        name === "current.item.list" &&
-        (input as Record<string, unknown>).project_ref !== undefined,
-    );
+    expect(html).toContain('aria-label="Change project: Renew the example.com domain"');
+    const list = api.call.mock.calls.find(([name]) => name === "current.item.list");
     expect(list?.[1]).toMatchObject({ project_ref: PROJECT, status: "active" });
     expect(api.submit).not.toHaveBeenCalled();
   });
-  it("offers active items from outside the project, opening on an empty choice", async () => {
-    const html = renderToStaticMarkup(
-      await screens.project({ shell: projectShell(), query: { ref: PROJECT } }),
-    );
-    expect(html).toContain('aria-label="Attach an existing item"');
-    expect(html).toContain('<option value="" selected="">Choose an item to attach</option>');
-    expect(html).toMatch(/<option value="current\.item:[^"]*02">Find the registrar login<\/option>/);
-    // An item in another project is offered, and says where it is now.
-    expect(html).toContain("File the quarterly return (in Tax season)</option>");
-    // An item already in this project is not offered again.
-    expect(html).not.toMatch(/<option value="current\.item:[^"]*01">/);
-    expect(html).toContain("Lists the 100 most urgent active items.");
-  });
-  it("shows no attach or remove controls, and reads no candidates, without editing", async () => {
+  it("shows no project control, and reads no project list, without editing", async () => {
     const api = projectShell(false);
     const html = renderToStaticMarkup(
       await screens.project({ shell: api, query: { ref: PROJECT } }),
     );
     expect(html).toContain("Renew the example.com domain");
-    expect(html).not.toContain("Attach an existing item");
-    expect(html).not.toContain("Remove from project");
+    expect(html).not.toContain("<dialog");
     expect(api.call.mock.calls.map(([name]) => name)).not.toContain("current.project.list");
-    expect(
-      api.call.mock.calls.filter(([name]) => name === "current.item.list"),
-    ).toHaveLength(1);
   });
   it("refuses area management to members without reading anything", async () => {
     const api = shell(standard(() => ok({ items: [] })), "member");

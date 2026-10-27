@@ -416,42 +416,138 @@ a.rowTitle:hover {
   gap: var(--rs-space-2);
   min-width: 0;
 }
+/* A square icon control, the Leads icon geometry (#441); touch keeps the full size. */
 .iconButton {
-  inline-size: var(--rs-size-control);
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--rs-space-6);
+  block-size: var(--rs-space-6);
+  min-block-size: var(--rs-space-6);
   padding: 0;
+  border: var(--rs-size-hairline) solid var(--rs-color-control-border);
+  border-radius: var(--rs-radius-sm);
+  background: var(--rs-color-control-bg);
+  color: var(--rs-color-ink-dim);
+  cursor: pointer;
 }
-.attachForm {
-  margin-bottom: var(--rs-space-4);
+.iconButton svg {
+  inline-size: calc(var(--rs-space-4) + var(--rs-space-1) / 4);
+  block-size: calc(var(--rs-space-4) + var(--rs-space-1) / 4);
 }
-.attachFields {
-  border: 0;
-  padding: 0;
-  margin: 0;
+.iconButton:hover {
+  color: var(--rs-color-accent-strong);
+  border-color: var(--rs-color-accent);
+}
+.rowEnd .iconButton {
+  align-self: center;
+}
+.factWithAction {
   display: flex;
-  align-items: end;
+  flex-wrap: wrap;
+  align-items: center;
   gap: var(--rs-space-2);
-  min-width: 0;
 }
-/* One row, one height: the filter and select match the button beside them. */
-.attachFields input,
-.attachFields select {
-  block-size: var(--rs-size-control);
-  padding-block: 0;
+/* The modal picker: one list, centred over a dimmed page. */
+.modal {
+  inline-size: min(calc(var(--rs-space-6) * 14), calc(100vw - var(--rs-space-6)));
+  padding: var(--rs-space-5);
+  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border-radius: var(--rs-radius-md);
+  background: var(--rs-color-surface-1);
+  color: var(--rs-color-ink);
+  box-shadow: 0 var(--rs-space-4) calc(var(--rs-space-6) * 2)
+    color-mix(in srgb, var(--rs-color-ground) 80%, transparent);
 }
-.attachFields > .field {
-  flex: 0 1 calc(var(--rs-space-6) * 6);
+.modal::backdrop {
+  background: color-mix(in srgb, var(--rs-color-ground) 70%, transparent);
 }
-.attachFields > .grow {
-  flex: 1 1 calc(var(--rs-space-6) * 8);
+.modalHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rs-space-3);
 }
-.attachFields > button {
-  flex: none;
+/* Doubled with .modal so a host section's h2 rule (the woke list's) cannot restyle it. */
+.modal .modalTitle {
+  margin: 0;
+  color: var(--rs-color-ink);
+  font-size: var(--rs-font-size-lg);
+  font-weight: 600;
 }
-.attachFields:disabled {
+.modalClose {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--rs-space-6);
+  block-size: var(--rs-space-6);
+  min-block-size: var(--rs-space-6);
+  padding: 0;
+  border: 0;
+  border-radius: var(--rs-radius-sm);
+  background: transparent;
+  color: var(--rs-color-ink-dim);
+  cursor: pointer;
+}
+.modalClose svg {
+  inline-size: var(--rs-space-4);
+  block-size: var(--rs-space-4);
+}
+.modalClose:hover {
+  color: var(--rs-color-ink);
+}
+.modalSubject {
+  margin: var(--rs-space-1) 0 var(--rs-space-4);
+  color: var(--rs-color-ink-dim);
+  font-size: var(--rs-font-size-sm);
+  overflow-wrap: anywhere;
+}
+.choices {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--rs-space-1);
+}
+.choice {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--rs-space-3);
+  inline-size: 100%;
+  min-block-size: var(--rs-size-control);
+  padding: var(--rs-space-2) var(--rs-space-3);
+  border: var(--rs-size-hairline) solid transparent;
+  border-radius: var(--rs-radius-sm);
+  background: transparent;
+  color: var(--rs-color-ink);
+  font: inherit;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.choice:hover {
+  background: var(--rs-color-surface-2);
+}
+.choice[aria-current="true"] {
+  border-color: var(--rs-color-accent);
+}
+.choice:disabled {
+  cursor: progress;
   opacity: 0.65;
 }
-.attachForm p {
-  margin: var(--rs-space-2) 0 0;
+.choiceNone {
+  color: var(--rs-color-ink-dim);
+}
+.choiceNote {
+  flex: none;
+  color: var(--rs-color-ink-dim);
+  font-size: var(--rs-font-size-sm);
+}
+.modal .error,
+.modal .meta {
+  margin: var(--rs-space-3) 0 0;
 }
 
 /* Priority reads in words first; the tone only reinforces it. */
@@ -725,13 +821,6 @@ a.rowTitle:hover {
   .rowEnd {
     justify-content: flex-start;
   }
-  .attachFields {
-    flex-wrap: wrap;
-  }
-  .attachFields > .field,
-  .attachFields > .grow {
-    flex: 1 1 100%;
-  }
   .areaControls,
   .areaControls .inlineForm {
     min-width: 0;
@@ -739,6 +828,14 @@ a.rowTitle:hover {
   }
   .wokeSection {
     padding-inline: var(--rs-space-4);
+  }
+}
+@media (pointer: coarse) {
+  .iconButton,
+  .modalClose {
+    inline-size: var(--rs-size-control);
+    block-size: var(--rs-size-control);
+    min-block-size: var(--rs-size-control);
   }
 }
 @media (prefers-reduced-motion: no-preference) {
