@@ -84,6 +84,9 @@ importers:
       eslint-config-next:
         specifier: ^16
         version: 16.3.6(eslint@9.39.5)(typescript@5.9.3)
+      happy-dom:
+        specifier: ^18
+        version: 18.0.1
       react:
         specifier: ^19
         version: 19.3.0

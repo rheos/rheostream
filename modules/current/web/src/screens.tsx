@@ -8,8 +8,10 @@ import {
   ActionButton,
   ActionForm,
   LocalTime,
+  ProjectPicker,
   StatusActions,
   type Field,
+  type PickableProject,
   type FormProps,
 } from "./forms";
 import {
@@ -148,6 +150,10 @@ function projectOptions(
       })),
   ];
 }
+/** Only what the project picker shows, so descriptions stay on the server. */
+function pickable(projects: readonly Project[]): PickableProject[] {
+  return projects.map(({ ref, title, status }) => ({ ref, title, status }));
+}
 const priorityOptions = PRIORITIES.map((p) => ({
   value: p,
   label: PRIORITY_LABEL[p],
@@ -185,12 +191,18 @@ function ItemRows({
   labels,
   projects,
   label,
+  pick,
+  reloadHref,
 }: {
   shell: ShellApi;
   items: readonly ItemSummary[];
   labels: ReadonlyMap<string, string>;
   projects: ReadonlyMap<string, string>;
   label: string;
+  /** The projects a row's project control offers; without them, no control. */
+  pick?: readonly PickableProject[];
+  /** Where "reload" goes when a row's item changed underneath it. */
+  reloadHref?: string;
 }) {
   return (
     <ul className={styles.rows} aria-label={label}>
@@ -198,6 +210,31 @@ function ItemRows({
         const projectTitle = item.projectRef
           ? projects.get(item.projectRef)
           : undefined;
+        const status = shell.submit ? (
+          <StatusActions
+            zone={shell.timeZone}
+            submit={shell.submit}
+            itemRef={item.ref}
+            revision={item.revision}
+            status={item.status}
+            subject={item.title}
+            compact
+            reloadHref={reloadHref}
+            extra={
+              pick ? (
+                <ProjectPicker
+                  submit={shell.submit}
+                  itemRef={item.ref}
+                  revision={item.revision}
+                  subject={item.title}
+                  held={item.projectRef}
+                  projects={pick}
+                  reloadHref={reloadHref}
+                />
+              ) : null
+            }
+          />
+        ) : null;
         return (
           <li className={styles.row} key={item.ref}>
             <div className={styles.rowMain}>
@@ -230,17 +267,7 @@ function ItemRows({
                 ) : null}
               </p>
             </div>
-            {shell.submit ? (
-              <StatusActions
-                zone={shell.timeZone}
-                submit={shell.submit}
-                itemRef={item.ref}
-                revision={item.revision}
-                status={item.status}
-                subject={item.title}
-                compact
-              />
-            ) : null}
+            {status}
           </li>
         );
       })}
@@ -369,7 +396,13 @@ export async function queue({ shell, query }: ScreenProps) {
         filters.overdue ||
         filters.blocked,
     );
-  const rowsProps = { shell, labels, projects: projectTitles };
+  const rowsProps = {
+    shell,
+    labels,
+    projects: projectTitles,
+    pick: projectResult.state === "ok" ? pickable(projects) : undefined,
+    reloadHref: shell.href("queue", query),
+  };
   return (
     <Frame
       shell={shell}
@@ -679,14 +712,6 @@ export async function item({ shell, query }: ScreenProps) {
       options: areaOptions(areas, record.area),
     },
     {
-      name: "project_ref",
-      label: "Project",
-      value: record.projectRef ?? "",
-      type: "select",
-      clearable: true,
-      options: projectOptions(projects, record.projectRef),
-    },
-    {
       name: "due_on",
       label: "Due date",
       value: record.dueOn ?? "",
@@ -734,14 +759,25 @@ export async function item({ shell, query }: ScreenProps) {
               </div>
               <div>
                 <dt>Project</dt>
-                <dd>
+                <dd className={styles.factWithAction}>
                   {record.project ? (
                     <a href={shell.href("project", { ref: record.project.ref })}>
                       {record.project.title}
                     </a>
                   ) : (
-                    "No project"
+                    <span>No project</span>
                   )}
+                  {shell.submit && projectResult.state === "ok" ? (
+                    <ProjectPicker
+                      submit={shell.submit}
+                      itemRef={record.ref}
+                      revision={record.revision}
+                      subject={record.title}
+                      held={record.projectRef}
+                      projects={pickable(projects)}
+                      reloadHref={here}
+                    />
+                  ) : null}
                 </dd>
               </div>
             </dl>
@@ -1155,16 +1191,20 @@ export async function project({ shell, query }: ScreenProps) {
     ? query.status
     : "active";
   const offset = pageOffset(query.offset);
-  const [result, areaResult, itemResult] = await Promise.all([
-    read(shell, "current.project.get", { ref: query.ref }),
-    read(shell, "current.area.list", { include_retired: true }),
-    read(shell, "current.item.list", {
-      project_ref: query.ref,
-      status,
-      limit: PAGE,
-      offset,
-    }),
-  ]);
+  const [result, areaResult, itemResult, projectResult] =
+    await Promise.all([
+      read(shell, "current.project.get", { ref: query.ref }),
+      read(shell, "current.area.list", { include_retired: true }),
+      read(shell, "current.item.list", {
+        project_ref: query.ref,
+        status,
+        limit: PAGE,
+        offset,
+      }),
+      shell.submit
+        ? read(shell, "current.project.list")
+        : Promise.resolve(null),
+    ]);
   if (result.state !== "ok")
     return (
       <Frame shell={shell} active="projects" title="Project">
@@ -1179,6 +1219,7 @@ export async function project({ shell, query }: ScreenProps) {
   const labels = areaLabels(areas);
   const list = page(itemResult, itemSummary);
   const here = shell.href("project", { ref: record.ref });
+  const allProjects = page(projectResult, projectOf).items;
   return (
     <Frame
       shell={shell}
@@ -1237,6 +1278,10 @@ export async function project({ shell, query }: ScreenProps) {
                 labels={labels}
                 projects={new Map()}
                 label="Project items"
+                pick={
+                  projectResult?.state === "ok" ? pickable(allProjects) : undefined
+                }
+                reloadHref={here}
               />
             ) : (
               <p className={styles.meta}>

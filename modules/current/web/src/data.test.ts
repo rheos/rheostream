@@ -9,7 +9,12 @@ import {
   snoozeAt,
   TRANSITIONS,
 } from "./data";
-import { formInput, type Field } from "./forms";
+import {
+  formInput,
+  pickableProjects,
+  projectInput,
+  type Field,
+} from "./forms";
 import { queueFilters } from "./screens";
 
 // Local wall-clock dates, so every case reads the same in any time zone.
@@ -118,6 +123,32 @@ describe("update forms", () => {
         { label: "Garden & Yard", key: "" },
       ),
     ).toEqual({ label: "Garden & Yard", key: "garden_yard" });
+  });
+});
+
+describe("moving an item between projects", () => {
+  const ITEM = "current.item:sample";
+  const A = "current.project:a";
+  const B = "current.project:b";
+  it("puts the item in the picked project at the revision it was read at", () => {
+    expect(projectInput(ITEM, 5, null, A)).toEqual({ ref: ITEM, revision: 5, project_ref: A });
+    expect(projectInput(ITEM, 5, A, B)).toEqual({ ref: ITEM, revision: 5, project_ref: B });
+  });
+  it("takes it out through clear, since a null project_ref means leave it", () => {
+    expect(projectInput(ITEM, 5, A, null)).toEqual({ ref: ITEM, revision: 5, clear: ["project_ref"] });
+  });
+  it("sends nothing when the pick is the project it already has", () => {
+    expect(projectInput(ITEM, 5, A, A)).toBeNull();
+    expect(projectInput(ITEM, 5, null, null)).toBeNull();
+  });
+  it("offers live and paused projects, and a done one only when already held", () => {
+    const projects = [
+      { ref: A, title: "Studio move", status: "active" },
+      { ref: B, title: "Tax season", status: "paused" },
+      { ref: "current.project:c", title: "Old launch", status: "done" },
+    ];
+    expect(pickableProjects(projects, null).map((p) => p.ref)).toEqual([A, B]);
+    expect(pickableProjects(projects, "current.project:c")).toHaveLength(3);
   });
 });
 
