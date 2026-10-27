@@ -40,7 +40,8 @@
   color: var(--rs-color-ink);
   font-weight: 600;
 }
-.failedTotal {
+.failedTotal,
+.waitingTotal {
   display: inline-flex;
   align-items: center;
   gap: var(--rs-space-2);

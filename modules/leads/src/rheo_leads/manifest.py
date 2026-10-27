@@ -290,8 +290,9 @@ MANIFEST = ModuleManifest(
                 "proposalmilestone.set",
                 # The review queue's override.
                 "jobreview.promote",
-                # The Scoring view's re-queue of failed jobs.
+                # The Scoring view's re-queue of failed jobs and end of a wait.
                 "jobscoring.retry_failed",
+                "jobscoring.retry_waiting",
             )
         ),
     ),
