@@ -1731,7 +1731,7 @@ registry would not catch a harness consumer there either`. Reverted.
 diff --git a/packages/core/src/rheo_core/approvals/gate.py b/packages/core/src/rheo_core/approvals/gate.py
 --- a/packages/core/src/rheo_core/approvals/gate.py
 +++ b/packages/core/src/rheo_core/approvals/gate.py
-@@ -457,16 +457,6 @@ def execute_approved(
+@@ -478,16 +478,6 @@ def execute_approved(
      # only a rebuild failure they did *not* catch — a tampered ``purpose`` column, a
      # missing provenance row — reaches the raise below, where a rollback is the right
      # answer because nothing was decided.
@@ -1741,7 +1741,7 @@ diff --git a/packages/core/src/rheo_core/approvals/gate.py b/packages/core/src/r
 -        approval=approval,
 -        model_input=model_input,
 -        now=now,
--        guards=core_guards_for(declaration),
+-        guards=effective_guards_for(declaration),
 -    )
 -    if refusal is not None:
 -        return _record_guard_refusal(uow, approval=approval, refusal=refusal, now=now)

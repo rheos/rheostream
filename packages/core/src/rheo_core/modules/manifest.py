@@ -40,6 +40,7 @@ the manifest and the installer agree on what a sink is.
 import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Final, Protocol, Self, TypeVar
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -51,7 +52,13 @@ from pydantic import (
     StringConstraints,
     model_validator,
 )
-from rheo_contracts import OperationDeclaration, Role, SafetyClass, ToolDeclaration
+from rheo_contracts import (
+    OperationDeclaration,
+    Role,
+    SafetyClass,
+    ToolDeclaration,
+    WorkspaceContext,
+)
 from rheo_contracts.refs import is_reserved_module
 
 from rheo_core.audit.sink import AuditSink
@@ -109,6 +116,94 @@ class ManifestInvalid(Exception):
         super().__init__(f"{module_id}: {detail}")
         self.module_id = module_id
         self.detail = detail
+
+
+class DestinationMode(StrEnum):
+    """How a registered destination performs its exact external operation."""
+
+    IN_PROCESS = "in_process"
+    PROVIDER = "provider"
+
+
+class KeyedAdapterKind(StrEnum):
+    """Which retained wire value a compatibility adapter advances."""
+
+    REQUEST = "request"
+    RESULT = "result"
+
+
+DestinationInstalledCheck = Callable[[], bool]
+DestinationEnabledCheck = Callable[[WorkspaceContext], bool]
+DestinationReadyCheck = Callable[[WorkspaceContext, UnitOfWork], bool]
+DestinationCredentialCheck = Callable[[WorkspaceContext, UnitOfWork], bool]
+DestinationExecute = Callable[[WorkspaceContext, UnitOfWork, BaseModel], BaseModel]
+DestinationReconcile = Callable[
+    [WorkspaceContext, UnitOfWork, str | None], BaseModel | None
+]
+KeyedAdapter = Callable[[Mapping[str, object]], Mapping[str, object]]
+
+
+def _execution_guard(value: object) -> object:
+    if isinstance(getattr(value, "name", None), str) and callable(
+        getattr(value, "check", None)
+    ):
+        return value
+    raise ValueError("an execution guard must provide a string name and check()")
+
+
+class GuardRegistration(BaseModel):
+    """One module-owned qualified guard name and its executable implementation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    guard: Annotated[object, PlainValidator(_execution_guard)]
+
+
+class DestinationRegistration(BaseModel):
+    """One exact destination and the checks/callbacks that can act for it."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    destination_ref: str
+    operation_name: str
+    mode: DestinationMode
+    is_installed: DestinationInstalledCheck
+    is_enabled: DestinationEnabledCheck
+    is_ready: DestinationReadyCheck
+    credentials_available: DestinationCredentialCheck | None = None
+    execute: DestinationExecute
+    reconcile: DestinationReconcile | None = None
+
+    @model_validator(mode="after")
+    def _closed_mode_contract(self) -> Self:
+        if not self.destination_ref or not self.destination_ref.strip():
+            raise ValueError("destination_ref must be nonblank")
+        if not self.operation_name or not self.operation_name.strip():
+            raise ValueError("operation_name must be nonblank")
+        if self.mode is DestinationMode.PROVIDER and self.reconcile is None:
+            raise ValueError("provider destinations require a reconcile callback")
+        return self
+
+
+class KeyedCompatibilityRegistration(BaseModel):
+    """One module-owned retained request/result adapter edge."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    operation_name: str
+    kind: KeyedAdapterKind
+    from_version: int
+    to_version: int
+    adapter: KeyedAdapter
+
+    @model_validator(mode="after")
+    def _versions_advance(self) -> Self:
+        if self.from_version <= 0 or self.to_version <= 0:
+            raise ValueError("keyed adapter versions must be positive")
+        if self.from_version == self.to_version:
+            raise ValueError("a keyed adapter must advance to a different version")
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -1032,6 +1127,11 @@ class ModuleManifest(BaseModel):
     typed against ``UnitOfWork``, which ``rheo_contracts`` may not import.
     """
 
+    execution_guards: tuple[GuardRegistration, ...] = ()
+    destinations: tuple[DestinationRegistration, ...] = ()
+    keyed_compatibility: tuple[KeyedCompatibilityRegistration, ...] = ()
+    """Default-empty, module-owned external execution registrations."""
+
     tools: tuple[ToolDeclaration, ...]
     events: tuple[EventDeclaration, ...]
     subscriptions: tuple[ConsumerSubscription, ...]
@@ -1089,10 +1189,106 @@ class ModuleManifest(BaseModel):
         module_id = self.module_id
         check_module_id(module_id)
         declarations = {d.name: d for d, _ in self.operations}
+        guard_names: set[str] = set()
+        for registration in self.execution_guards:
+            if not registration.name.startswith(f"{module_id}."):
+                raise ValueError(
+                    f"execution guard {registration.name!r} is not owned by module "
+                    f"{module_id!r}"
+                )
+            if registration.name in guard_names:
+                raise ValueError(
+                    f"execution guard {registration.name!r} is declared twice"
+                )
+            guard_names.add(registration.name)
+            if getattr(registration.guard, "name", None) != registration.name:
+                raise ValueError(
+                    f"execution guard {registration.name!r} disagrees with its "
+                    "implementation name"
+                )
+        for declaration in declarations.values():
+            for guard_name in declaration.guards:
+                if guard_name not in guard_names:
+                    raise ValueError(
+                        f"operation {declaration.name!r} names undeclared execution "
+                        f"guard {guard_name!r}"
+                    )
+
+        destination_refs: set[str] = set()
+        destination_operations: set[str] = set()
+        for destination in self.destinations:
+            if destination.destination_ref in destination_refs:
+                raise ValueError(
+                    f"destination {destination.destination_ref!r} is declared twice"
+                )
+            if destination.operation_name in destination_operations:
+                raise ValueError(
+                    f"destination operation {destination.operation_name!r} is "
+                    "declared twice"
+                )
+            destination_refs.add(destination.destination_ref)
+            destination_operations.add(destination.operation_name)
+            if not destination.operation_name.startswith(f"{module_id}."):
+                raise ValueError(
+                    f"destination operation {destination.operation_name!r} is not "
+                    f"owned by module {module_id!r}"
+                )
+            destination_declaration = declarations.get(destination.operation_name)
+            if (
+                destination_declaration is None
+                or destination_declaration.external is None
+            ):
+                raise ValueError(
+                    f"destination {destination.destination_ref!r} names no external "
+                    f"operation {destination.operation_name!r} in this manifest"
+                )
+            if (
+                destination_declaration.external.destination_ref
+                != destination.destination_ref
+            ):
+                raise ValueError(
+                    f"destination {destination.destination_ref!r} disagrees with "
+                    f"{destination.operation_name!r}'s ExternalSpec"
+                )
+
+        adapter_sources: set[tuple[str, KeyedAdapterKind, int]] = set()
+        for adapter in self.keyed_compatibility:
+            if not adapter.operation_name.startswith(f"{module_id}."):
+                raise ValueError(
+                    f"keyed adapter operation {adapter.operation_name!r} is not "
+                    f"owned by module {module_id!r}"
+                )
+            adapter_declaration = declarations.get(adapter.operation_name)
+            if adapter_declaration is None or adapter_declaration.keyed is None:
+                raise ValueError(
+                    f"keyed adapter names no KEYED operation "
+                    f"{adapter.operation_name!r} in this manifest"
+                )
+            current_version = (
+                adapter_declaration.keyed.request_schema_version
+                if adapter.kind is KeyedAdapterKind.REQUEST
+                else adapter_declaration.keyed.result_schema_version
+            )
+            if adapter.to_version != current_version:
+                raise ValueError(
+                    f"{adapter.kind.value} adapter for {adapter.operation_name!r} "
+                    f"ends at version {adapter.to_version}, not declared current "
+                    f"version {current_version}"
+                )
+            source = (adapter.operation_name, adapter.kind, adapter.from_version)
+            if source in adapter_sources:
+                raise ValueError(
+                    f"{adapter.kind.value} adapter for {adapter.operation_name!r} "
+                    f"from version {adapter.from_version} is declared twice"
+                )
+            adapter_sources.add(source)
         routes: set[str] = set()
         for binding in self.connector_bindings:
-            declaration = declarations.get(binding.service_operation)
-            if declaration is None or Role.SERVICE not in declaration.roles:
+            connector_declaration = declarations.get(binding.service_operation)
+            if (
+                connector_declaration is None
+                or Role.SERVICE not in connector_declaration.roles
+            ):
                 raise ValueError(
                     "connector operation must belong to its module and allow service"
                 )

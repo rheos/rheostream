@@ -976,6 +976,68 @@ def _hold_for_approval(
     )
 
 
+def _stage_external(
+    ctx: WorkspaceContext,
+    operation: RegisteredOperation,
+    model_input: BaseModel,
+    audit: _AuditWrite,
+    *,
+    registry: OperationRegistry,
+) -> OperationOutcome:
+    """Stage a KEYED upper-class call without invoking its destination."""
+    from rheo_core.operations.transaction import stage_external_in_transaction
+
+    try:
+        uow = open_unit_of_work(ctx)
+    except StorageRefusal as refusal:
+        _audit_alone(ctx, audit, outcome=AUDIT_REFUSED)
+        return _refused(refusal.state, refusal.detail)
+    with uow:
+        try:
+            staged = stage_external_in_transaction(
+                ctx,
+                uow,
+                operation.declaration.name,
+                model_input,
+                now=datetime.now(UTC),
+                registry=registry,
+            )
+            uow.commit()
+        except OperationRefused as refusal:
+            _rollback(uow)
+            _audit_alone(ctx, audit, outcome=AUDIT_REFUSED)
+            return _refused(refusal.state, refusal.detail)
+        except StorageRefusal as refusal:
+            _rollback(uow)
+            _audit_alone(ctx, audit, outcome=AUDIT_REFUSED)
+            return _refused(refusal.state, refusal.detail)
+        except Exception as exc:
+            _rollback(uow)
+            logger.error(
+                "external_staging_failed",
+                extra={
+                    "operation": operation.declaration.name,
+                    "workspace_id": str(ctx.workspace_id),
+                    "request_id": str(ctx.request_id),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            _audit_alone(ctx, audit, outcome=AUDIT_FAILED)
+            return OperationOutcome(
+                FAILED, error=OperationError(HANDLER_FAILED, type(exc).__name__)
+            )
+    return OperationOutcome(
+        APPROVAL_REQUIRED,
+        error=OperationError(
+            APPROVAL_REQUIRED,
+            f"{operation.declaration.name} is staged as external action "
+            f"{staged.action_id}; approval {staged.approval_id} is pending",
+        ),
+        operation_id=staged.operation_id,
+        approval_id=staged.approval_id,
+    )
+
+
 def _output_invalid(
     ctx: WorkspaceContext,
     uow: UnitOfWork,
@@ -1325,6 +1387,12 @@ def dispatch(
     # ``subject_ref``, which is what the column is nullable for.
     if audit is not None:
         audit = replace(audit, subject_ref=_subject_ref(declaration, model_input))
+    if (
+        declaration.safety_class in {SafetyClass.EXTERNAL, SafetyClass.FINANCIAL}
+        and declaration.idempotency is Idempotency.KEYED
+    ):
+        assert audit is not None
+        return _stage_external(ctx, operation, model_input, audit, registry=registry)
     if declaration.safety_class in _APPROVAL_CLASSES:
         # The one class branch over *running* an operation, and it is placed here for
         # two reasons: the input has been validated, so the payload digest is taken

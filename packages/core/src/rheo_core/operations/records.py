@@ -256,6 +256,7 @@ def _row(row: Row[Any]) -> OperationRow:
 def mint(
     conn: Connection,
     *,
+    operation_id: UUID | None = None,
     name: str,
     safety_class: str,
     actor_kind: str,
@@ -273,7 +274,7 @@ def mint(
     terminal-check constraint is scoped to ``succeeded`` rather than written over the
     whole table.
     """
-    operation_id = uuid7()
+    operation_id = uuid7() if operation_id is None else operation_id
     conn.execute(
         insert(t.operation).values(
             id=operation_id,

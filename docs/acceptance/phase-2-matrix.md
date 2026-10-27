@@ -152,8 +152,8 @@ the TypeScript half in both routing modes.
 
 **Demonstrator:**
 - `pytest:tests/test_module_manifest.py::test_an_omitted_field_is_refused_by_name`
-- `pytest:tests/test_module_manifest.py::test_the_model_carries_the_ratified_fields_plus_audit_sink`
-- `pytest:tests/test_module_manifest.py::test_only_web_agent_guidance_and_audit_sink_are_optional`
+- `pytest:tests/test_module_manifest.py::test_the_model_carries_ratified_and_external_execution_fields`
+- `pytest:tests/test_module_manifest.py::test_only_explicit_optional_and_default_empty_fields_are_optional`
 - `pytest:tests/test_module_manifest.py::test_a_storage_schema_that_is_not_the_module_id_is_refused`
 
 **Mutation:**

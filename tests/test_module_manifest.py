@@ -77,7 +77,15 @@ RATIFIED_FIELDS = (
 ratifies, in its own order."""
 
 OPTIONAL_FIELDS = frozenset(
-    {"web", "agent_guidance", "audit_sink", "authorization_completion"}
+    {
+        "web",
+        "agent_guidance",
+        "audit_sink",
+        "authorization_completion",
+        "execution_guards",
+        "destinations",
+        "keyed_compatibility",
+    }
 )
 
 DEFERRED_COLLECTIONS = (
@@ -194,18 +202,19 @@ def test_an_omitted_field_is_refused_by_name(omitted: str) -> None:
 # --- FR 3: twenty-four fields, and exactly three of them optional ---------------------
 
 
-def test_the_model_carries_the_ratified_fields_plus_audit_sink() -> None:
-    """Plus ``authorization_completion``, the optional connector-callback field."""
+def test_the_model_carries_ratified_and_external_execution_fields() -> None:
     assert set(ModuleManifest.model_fields) == {
         *RATIFIED_FIELDS,
         "audit_sink",
         "authorization_completion",
+        "execution_guards",
+        "destinations",
+        "keyed_compatibility",
     }
-    assert len(ModuleManifest.model_fields) == 25
+    assert len(ModuleManifest.model_fields) == 28
 
 
-def test_only_web_agent_guidance_and_audit_sink_are_optional() -> None:
-    """Every other field is required, including the eight nothing reads yet."""
+def test_only_explicit_optional_and_default_empty_fields_are_optional() -> None:
     optional = {
         name
         for name, field in ModuleManifest.model_fields.items()

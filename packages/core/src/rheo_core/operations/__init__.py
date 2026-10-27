@@ -112,6 +112,12 @@ from rheo_core.operations.registry import (
     register,
     reserved_input_fields,
 )
+from rheo_core.operations.transaction import (
+    DESTINATION_GUARD_REFUSED,
+    StagedExternalAction,
+    call_in_transaction,
+    stage_external_in_transaction,
+)
 
 __all__ = [
     "AUDIT_LIST",
@@ -119,6 +125,7 @@ __all__ = [
     "AUTHORIZATION_STATES",
     "CONSUMERS_MISSING",
     "CORE_MODULE_ID",
+    "DESTINATION_GUARD_REFUSED",
     "FAILED",
     "HANDLER_FAILED",
     "HANDLER_MAY_NOT_COMMIT",
@@ -165,10 +172,12 @@ __all__ = [
     "RegistrationRefused",
     "SettingWrite",
     "SettingWritten",
+    "StagedExternalAction",
     "WorkspaceStatus",
     "WorkspaceStatusInput",
     "authorize",
     "build_document",
+    "call_in_transaction",
     "check_origin",
     "dispatch",
     "module_id_for_origin",
@@ -176,4 +185,5 @@ __all__ = [
     "register",
     "register_core_operations",
     "reserved_input_fields",
+    "stage_external_in_transaction",
 ]

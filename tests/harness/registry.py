@@ -373,11 +373,10 @@ class FixtureActed(BaseModel):
 class SinkSendInput(BaseModel):
     """``destination`` is who it would have sent to, ``message`` is what.
 
-    ``destination`` is a payload field rather than something the declaration names,
-    because no declaration surface carries a destination at all
-    (``rheo_contracts.manifest``) — which is the same reason
-    ``core.approval.destination_ref`` is written null in release one, and why a
-    differing destination is caught as a differing payload digest.
+    ``destination`` is the payload field the declaration's ``ExternalSpec`` names,
+    constrained to its exact destination, so a differing destination is caught as a
+    differing payload digest and the hold records it as
+    ``core.approval.destination_ref``.
     """
 
     model_config = _IGNORE_EXTRA

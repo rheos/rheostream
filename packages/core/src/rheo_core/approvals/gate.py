@@ -55,7 +55,7 @@ from rheo_core.approvals.binding import (
     payload_bytes,
     payload_digest,
 )
-from rheo_core.approvals.guards import GuardRefusal, core_guards_for, run_guards
+from rheo_core.approvals.guards import GuardRefusal, effective_guards_for, run_guards
 from rheo_core.audit import AUDIT_SUCCEEDED
 from rheo_core.boundary.context import Refusal
 from rheo_core.boundary.factories import context_for_approved_execution
@@ -148,6 +148,23 @@ def window_seconds(ctx: WorkspaceContext) -> int:
         settings.get_int("approvals.default_window_seconds"),
         settings.get_int("approvals.max_window_seconds"),
     )
+
+
+def _bound_destination(
+    declaration: OperationDeclaration, model_input: BaseModel
+) -> str | None:
+    """The exact destination an EXTERNAL/FINANCIAL hold binds, or null.
+
+    Null for a declaration without an ``ExternalSpec``. For one with a spec, the
+    validated input's destination is recorded only when it is the declared exact
+    destination; anything else stays null, which ``DestinationGuard`` refuses at
+    execution rather than trusting.
+    """
+    external = declaration.external
+    if external is None:
+        return None
+    supplied = getattr(model_input, external.destination_field, None)
+    return supplied if supplied == external.destination_ref else None
 
 
 def _subject_revision(
@@ -252,10 +269,9 @@ def hold_for_approval(
             actor_id=ctx.actor.id,
             operation_name=declaration.name,
             operation_id=operation_id,
-            # Null in release one: nothing declares a destination. See
-            # ``approvals/tables.py``'s own comment for why that is a recorded gap
-            # rather than a missing write.
-            destination_ref=None,
+            # The declared exact destination for EXTERNAL/FINANCIAL, which
+            # ``DestinationGuard`` compares at execution; null for every other class.
+            destination_ref=_bound_destination(declaration, model_input),
             subject_ref=None if subject_ref is None else subject_ref.format(),
             subject_revision=_subject_revision(ctx, uow, subject_ref),
             payload_digest=payload_digest(body),
@@ -468,7 +484,7 @@ def execute_approved(
         approval=approval,
         model_input=model_input,
         now=now,
-        guards=core_guards_for(declaration),
+        guards=effective_guards_for(declaration),
     )
     if refusal is not None:
         return _record_guard_refusal(uow, approval=approval, refusal=refusal, now=now)
