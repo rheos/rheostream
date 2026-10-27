@@ -70,6 +70,23 @@ describe("the project picker", () => {
     expect(button("No project")).toBeTruthy();
   });
 
+  it("starts on the first project when the item has none", () => {
+    mount(vi.fn(), null);
+    openPicker();
+    expect(document.activeElement?.textContent).toBe("Studio move");
+  });
+
+  it("opens again after it was closed, with a fresh list", () => {
+    mount(vi.fn(), null);
+    openPicker();
+    act(() => dialog().close());
+    expect(dialog().open).toBe(false);
+    expect(dialog().querySelector("li")).toBeNull();
+    openPicker();
+    expect(dialog().open).toBe(true);
+    expect(dialog().querySelectorAll("li")).toHaveLength(2);
+  });
+
   it("saves the pick with the item's revision and closes", async () => {
     const submit = vi.fn().mockResolvedValue({ state: "ok", result: {} });
     mount(submit, null);

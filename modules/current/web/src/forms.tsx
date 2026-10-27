@@ -359,20 +359,21 @@ export function ProjectPicker({
   const opening = useRef(0);
   const offered = pickableProjects(projects, held);
   const verb = held ? "Change project" : "Add to project";
-  // Once the list is in, straight to it, on the project held if any, not Close.
+  // Open once the list is in, so the browser's own dialog focusing cannot
+  // land after ours; then straight to the list, on the project held if any.
   useEffect(() => {
-    if (!isOpen) return;
     const box = dialog.current;
+    if (!isOpen || !box) return;
+    if (!box.open) box.showModal();
     (
-      box?.querySelector<HTMLElement>('[aria-current="true"]') ??
-      box?.querySelector<HTMLElement>("li button")
+      box.querySelector<HTMLElement>('[aria-current="true"]') ??
+      box.querySelector<HTMLElement>("li button")
     )?.focus();
   }, [isOpen]);
   function open() {
     opening.current += 1;
     setResult(null);
     setIsOpen(true);
-    dialog.current?.showModal();
   }
   function pick(picked: string | null) {
     const input = projectInput(itemRef, revision, held, picked);
