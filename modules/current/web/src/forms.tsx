@@ -366,7 +366,6 @@ export function AttachItem({
             </label>
             <input
               id={`${id}-words`}
-              type="search"
               value={words}
               onChange={(e) => filter(e.target.value)}
               placeholder="Filter by words"
