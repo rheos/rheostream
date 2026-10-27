@@ -29,17 +29,31 @@ afterEach(() => {
   host.remove();
 });
 
-function mount(submit: ReturnType<typeof vi.fn>, held: string | null, revision = 4) {
+function mount(
+  submit: ReturnType<typeof vi.fn>,
+  held: string | null,
+  revision = 4,
+  inRow = false,
+) {
+  const picker = (
+    <ProjectPicker
+      submit={submit as unknown as NonNullable<ShellApi["submit"]>}
+      itemRef={ITEM}
+      revision={revision}
+      subject="Renew the example.com domain"
+      held={held}
+      projects={PROJECTS}
+    />
+  );
   act(() =>
     root.render(
-      <ProjectPicker
-        submit={submit as unknown as NonNullable<ShellApi["submit"]>}
-        itemRef={ITEM}
-        revision={revision}
-        subject="Renew the example.com domain"
-        held={held}
-        projects={PROJECTS}
-      />,
+      inRow ? (
+        <ul>
+          <li>{picker}</li>
+        </ul>
+      ) : (
+        picker
+      ),
     ),
   );
 }
@@ -72,6 +86,15 @@ describe("the project picker", () => {
 
   it("starts on the first project when the item has none", () => {
     mount(vi.fn(), null);
+    openPicker();
+    expect(document.activeElement?.textContent).toBe("Studio move");
+  });
+
+  // In a browser, box.querySelector("li button") also matches Close through the
+  // row's own <li>; happy-dom scopes the match to the box, so this pins the
+  // intent but could not catch that (#490 was checked in Chrome).
+  it("starts on the first project inside a row's <li> too, not on Close (#490)", () => {
+    mount(vi.fn(), null, 4, true);
     openPicker();
     expect(document.activeElement?.textContent).toBe("Studio move");
   });
