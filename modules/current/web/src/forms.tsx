@@ -360,19 +360,21 @@ export function ProjectPicker({
   const offered = pickableProjects(projects, held);
   const verb = held ? "Change project" : "Add to project";
   // Once the list is in, straight to it, on the project held if any, not Close.
+  // By class, not "li button": a selector matches against the whole page, and a
+  // row's dialog sits inside the row's <li>, so Close would match first.
   useEffect(() => {
     if (!isOpen) return;
     const box = dialog.current;
     (
       box?.querySelector<HTMLElement>('[aria-current="true"]') ??
-      box?.querySelector<HTMLElement>("li button")
+      box?.querySelector<HTMLElement>(`.${styles.choice}`)
     )?.focus();
   }, [isOpen]);
   function open() {
     opening.current += 1;
     setResult(null);
     setIsOpen(true);
-    dialog.current?.showModal();
+    if (!dialog.current?.open) dialog.current?.showModal();
   }
   function pick(picked: string | null) {
     const input = projectInput(itemRef, revision, held, picked);
