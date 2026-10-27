@@ -1,9 +1,11 @@
 """Declared external registries and effective guard composition."""
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict
+import pytest
+from pydantic import BaseModel, ConfigDict, ValidationError
 from rheo_contracts import (
     AuditSpec,
     ExternalSpec,
@@ -190,3 +192,107 @@ def test_staging_guard_composition_is_core_record_destination_then_declared() ->
         "probe.first",
         "probe.second",
     ]
+
+
+def test_registries_refuse_an_origin_that_does_not_own_the_name() -> None:
+    guards = GuardRegistry()
+    with pytest.raises(ValueError, match="is not owned by origin"):
+        guards.register(
+            GuardRegistration(name="probe.first", guard=_Guard("probe.first")),
+            origin="elsewhere",
+        )
+    destinations = DestinationRegistry()
+    with pytest.raises(ValueError, match="is not owned by origin"):
+        destinations.register(_destination(), origin="elsewhere")
+
+
+def test_registries_refuse_a_second_different_registration() -> None:
+    guards = GuardRegistry()
+    first = GuardRegistration(name="probe.first", guard=_Guard("probe.first"))
+    guards.register(first, origin="probe")
+    guards.register(first, origin="probe")  # the exact same registration is idempotent
+    with pytest.raises(ValueError, match="already registered"):
+        guards.register(
+            GuardRegistration(name="probe.first", guard=_Guard("probe.first")),
+            origin="probe",
+        )
+    destinations = DestinationRegistry()
+    destinations.register(_destination(), origin="probe")
+    with pytest.raises(ValueError, match="already registered"):
+        destinations.register(_destination(credentials=False), origin="probe")
+
+
+def test_registered_guard_lookup_returns_the_guard_itself() -> None:
+    guards = GuardRegistry()
+    guard = _Guard("probe.first")
+    guards.register(GuardRegistration(name="probe.first", guard=guard), origin="probe")
+    assert guards.lookup("probe.first") is guard
+    assert guards.lookup("probe.missing") is None
+
+
+def test_a_provider_destination_requires_a_credentials_check() -> None:
+    with pytest.raises(ValidationError, match="require a credentials check"):
+        DestinationRegistration(
+            destination_ref="synthetic",
+            operation_name="probe.send.create",
+            mode=DestinationMode.PROVIDER,
+            is_installed=lambda: True,
+            is_enabled=lambda ctx: True,
+            is_ready=lambda ctx, uow: True,
+            execute=lambda ctx, uow, model: _Output(item_ref="synthetic:item"),
+            reconcile=lambda ctx, uow, request_id: None,
+        )
+    accepted = DestinationRegistration(
+        destination_ref="synthetic",
+        operation_name="probe.send.create",
+        mode=DestinationMode.PROVIDER,
+        is_installed=lambda: True,
+        is_enabled=lambda ctx: True,
+        is_ready=lambda ctx, uow: True,
+        credentials_available=lambda ctx, uow: True,
+        execute=lambda ctx, uow, model: _Output(item_ref="synthetic:item"),
+        reconcile=lambda ctx, uow, request_id: None,
+    )
+    assert accepted.mode is DestinationMode.PROVIDER
+
+
+def test_a_raising_availability_check_fails_closed_and_logs_only_its_type(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def explode(ctx: object, uow: object) -> bool:
+        raise RuntimeError("synthetic-secret-value")
+
+    registry = DestinationRegistry()
+    registry.register(
+        DestinationRegistration(
+            destination_ref="synthetic",
+            operation_name="probe.send.create",
+            mode=DestinationMode.IN_PROCESS,
+            is_installed=lambda: True,
+            is_enabled=lambda ctx: True,
+            is_ready=explode,
+            execute=lambda ctx, uow, model: _Output(item_ref="synthetic:item"),
+        ),
+        origin="probe",
+    )
+    ctx = cast(Any, object())
+    uow = cast(Any, object())
+
+    with caplog.at_level(logging.WARNING, logger="rheo_core.modules"):
+        problem = registry.availability_problem(
+            ctx,
+            uow,
+            destination_ref="synthetic",
+            operation_name="probe.send.create",
+        )
+
+    assert problem is not None and "could not be proven" in problem
+    [record] = [
+        r
+        for r in caplog.records
+        if r.message == "destination_availability_check_failed"
+    ]
+    assert record.__dict__["destination_ref"] == "synthetic"
+    assert record.__dict__["operation"] == "probe.send.create"
+    assert record.__dict__["exception_type"] == "RuntimeError"
+    assert "synthetic-secret-value" not in caplog.text

@@ -38,7 +38,7 @@ of any module-level import of this package, which is the import direction
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Final, Protocol, cast
+from typing import TYPE_CHECKING, Final, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -500,9 +500,7 @@ def effective_guards_for(
     for name in declaration.guards:
         registered = guards.lookup(name)
         effective.append(
-            _UnavailableDeclaredGuard(name)
-            if registered is None
-            else cast(Guard, registered)
+            _UnavailableDeclaredGuard(name) if registered is None else registered
         )
     return tuple(effective)
 

@@ -1026,6 +1026,24 @@ def _stage_external(
             return OperationOutcome(
                 FAILED, error=OperationError(HANDLER_FAILED, type(exc).__name__)
             )
+    retained = staged.retained
+    if retained is not None and retained.state != PENDING:
+        # A settled envelope answers with its retained outcome, as the synchronous
+        # keyed replay does; only an unsettled one is still waiting on its approval.
+        if retained.state == SUCCEEDED:
+            return OperationOutcome(
+                SUCCEEDED,
+                result=retained.result,
+                operation_id=staged.operation_id,
+            )
+        return OperationOutcome(
+            retained.state,
+            error=OperationError(
+                retained.error_code or retained.state,
+                retained.error_detail or retained.state,
+            ),
+            operation_id=staged.operation_id,
+        )
     return OperationOutcome(
         APPROVAL_REQUIRED,
         error=OperationError(

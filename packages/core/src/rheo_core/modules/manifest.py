@@ -85,7 +85,16 @@ from rheo_core.storage.backend import UnitOfWork
 from rheo_core.work.kinds import JobHandler
 
 if TYPE_CHECKING:  # pragma: no cover - see ``Exporter`` on why this cannot be runtime
+    from rheo_core.approvals.guards import Guard
     from rheo_core.exports.artifact import ExportSnapshot
+
+    _GuardField = Guard
+else:
+    # The approvals package imports, through the gate, the module execution registries
+    # and so this manifest: a runtime import of ``Guard`` would close that cycle. The
+    # field is typed as the ``Guard`` protocol for the checker and validated by shape
+    # (``_execution_guard``) at run time, since the protocol is not runtime-checkable.
+    _GuardField = object
 
 _MODULE_ID: Final = re.compile(r"[a-z][a-z0-9_]{0,31}")
 """``identifiers.md``'s configuration-identifier grammar, which module ids follow.
@@ -157,7 +166,7 @@ class GuardRegistration(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
-    guard: Annotated[object, PlainValidator(_execution_guard)]
+    guard: Annotated[_GuardField, PlainValidator(_execution_guard)]
 
 
 class DestinationRegistration(BaseModel):
@@ -183,6 +192,8 @@ class DestinationRegistration(BaseModel):
             raise ValueError("operation_name must be nonblank")
         if self.mode is DestinationMode.PROVIDER and self.reconcile is None:
             raise ValueError("provider destinations require a reconcile callback")
+        if self.mode is DestinationMode.PROVIDER and self.credentials_available is None:
+            raise ValueError("provider destinations require a credentials check")
         return self
 
 
@@ -1251,7 +1262,8 @@ class ModuleManifest(BaseModel):
                     f"{destination.operation_name!r}'s ExternalSpec"
                 )
 
-        adapter_sources: set[tuple[str, KeyedAdapterKind, int]] = set()
+        adapter_edges: dict[tuple[str, KeyedAdapterKind], dict[int, int]] = {}
+        current_versions: dict[tuple[str, KeyedAdapterKind], int] = {}
         for adapter in self.keyed_compatibility:
             if not adapter.operation_name.startswith(f"{module_id}."):
                 raise ValueError(
@@ -1264,24 +1276,40 @@ class ModuleManifest(BaseModel):
                     f"keyed adapter names no KEYED operation "
                     f"{adapter.operation_name!r} in this manifest"
                 )
-            current_version = (
+            graph = (adapter.operation_name, adapter.kind)
+            current_versions[graph] = (
                 adapter_declaration.keyed.request_schema_version
                 if adapter.kind is KeyedAdapterKind.REQUEST
                 else adapter_declaration.keyed.result_schema_version
             )
-            if adapter.to_version != current_version:
-                raise ValueError(
-                    f"{adapter.kind.value} adapter for {adapter.operation_name!r} "
-                    f"ends at version {adapter.to_version}, not declared current "
-                    f"version {current_version}"
-                )
-            source = (adapter.operation_name, adapter.kind, adapter.from_version)
-            if source in adapter_sources:
+            edges = adapter_edges.setdefault(graph, {})
+            if adapter.from_version in edges:
                 raise ValueError(
                     f"{adapter.kind.value} adapter for {adapter.operation_name!r} "
                     f"from version {adapter.from_version} is declared twice"
                 )
-            adapter_sources.add(source)
+            edges[adapter.from_version] = adapter.to_version
+        # Each graph is unique (one edge per source, checked above), acyclic, and
+        # every path ends at the declaration's current version, possibly over
+        # several hops: v1 -> v2 -> v3 is valid when v3 is current.
+        for (operation_name, kind), edges in adapter_edges.items():
+            current_version = current_versions[(operation_name, kind)]
+            for start in edges:
+                cursor = start
+                visited: set[int] = set()
+                while cursor in edges:
+                    if cursor in visited:
+                        raise ValueError(
+                            f"{kind.value} adapters for {operation_name!r} form a cycle"
+                        )
+                    visited.add(cursor)
+                    cursor = edges[cursor]
+                if cursor != current_version:
+                    raise ValueError(
+                        f"{kind.value} adapter path for {operation_name!r} from "
+                        f"version {start} ends at version {cursor}, not declared "
+                        f"current version {current_version}"
+                    )
         routes: set[str] = set()
         for binding in self.connector_bindings:
             connector_declaration = declarations.get(binding.service_operation)

@@ -716,19 +716,20 @@ under which a repeat is the same row, and its handler returns that row on a repe
 
 `KEYED` operations declare the validated string field carrying the key and positive request and
 result schema versions. The public dispatcher stores `core.idempotency_result` in the same
-transaction as a synchronous effect: canonical UTF-8 JSON of the validated field names (defaults
-and explicit nulls included), its SHA-256 digest, the schema versions, and the terminal result or
-stable error. A retained same-request repeat returns that envelope without invoking the handler;
-a changed protected request refuses `idempotency_key_reused`; a missing or failing adapter path
-refuses `idempotency_schema_incompatible`. The default retention window is 90 days, with a hard
-30-day minimum, and `retained_until` never changes after reservation. The daily sweep removes an
-expired envelope only when no pending, executing, or unresolved external action references it.
+transaction as a synchronous effect: canonical UTF-8 JSON of the validated input fields and values
+(defaults and explicit nulls included), its SHA-256 digest, the schema versions, and the terminal
+result or stable error. A retained same-request repeat returns that envelope without invoking the
+handler; a changed protected request refuses `idempotency_key_reused`; a missing or failing adapter
+path refuses `idempotency_schema_incompatible`. The default retention window is 90 days, with a
+hard 30-day minimum, and `retained_until` never changes after reservation. The daily sweep removes
+an expired envelope only when no pending, executing, or unresolved external action references it.
 Revision `0015_terminal_action_history` removes the original composite foreign key: a terminal
 action keeps its copied operation name and key as immutable history without pinning the expired
-envelope, while the sweep's explicit state predicate preserves every live or unknown outcome.
-After removal, core makes no generic stored-envelope replay promise: a domain's own durable
-source identity may still describe the earlier outcome, but another effect requires a new
-intentional key/source identity.
+envelope, while the sweep's explicit state predicate preserves every live or unknown outcome. After
+removal, core makes no generic stored-envelope replay promise: a domain's own durable source
+identity may still describe the earlier outcome, but another effect requires a new intentional
+key/source identity. External staging enforces this: a key whose envelope was swept but whose
+external action survives as history refuses `idempotency_key_reused` and writes nothing.
 
 ### External actions
 

@@ -8,6 +8,7 @@ operations. A failure propagates to the caller, rolling back the entire delivery
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from pydantic import BaseModel, ValidationError
@@ -20,23 +21,41 @@ from rheo_core.operations.dispatch import (
     _request_digest,
     record_operation_audit,
 )
+from rheo_core.operations.idempotency import (
+    CanonicalRequest,
+    IdempotencyRow,
+    RetainedReplay,
+)
 from rheo_core.operations.refusals import OperationRefused
-from rheo_core.operations.registry import REGISTRY, OperationRegistry
+from rheo_core.operations.registry import (
+    REGISTRY,
+    OperationRegistry,
+    RegisteredOperation,
+)
 from rheo_core.refs.resolver import UnitOfWork
 from rheo_core.refs.short import validation_context
+
+if TYPE_CHECKING:
+    from rheo_core.modules.execution import DestinationRegistry
 
 DESTINATION_GUARD_REFUSED = "destination_guard_refused"
 
 
 @dataclass(frozen=True, slots=True)
 class StagedExternalAction:
-    """The durable identities created, or replayed, for one exact keyed request."""
+    """The durable identities created, or replayed, for one exact keyed request.
+
+    ``retained`` is ``None`` for a fresh stage. On a replay it is the retained
+    envelope's outcome: ``pending`` while the action is unsettled, otherwise the
+    stored success or terminal error, which the caller returns instead of a hold.
+    """
 
     action_id: UUID
     approval_id: UUID
     operation_id: UUID
     state: str
     created: bool
+    retained: RetainedReplay | None = None
 
 
 def call_in_transaction(
@@ -98,7 +117,7 @@ def stage_external_in_transaction(
     now: datetime,
     source_ref: str | None = None,
     registry: OperationRegistry | None = None,
-    destinations: object | None = None,
+    destinations: "DestinationRegistry | None" = None,
 ) -> StagedExternalAction:
     """Atomically reserve and hold one KEYED EXTERNAL/FINANCIAL request.
 
@@ -112,17 +131,16 @@ def stage_external_in_transaction(
         payload_digest,
     )
     from rheo_core.audit import AUDIT_REFUSED
-    from rheo_core.modules.execution import DESTINATIONS, DestinationRegistry
+    from rheo_core.modules.execution import DESTINATIONS
     from rheo_core.modules.readiness import require_ready
-    from rheo_core.operations.dispatch import record_operation_audit
-    from rheo_core.operations.external_actions import create_pending, get_for_key
+    from rheo_core.operations.external_actions import (
+        create_pending,
+        has_action_for_key,
+    )
     from rheo_core.operations.idempotency import (
         IDEMPOTENCY_KEY_REUSED,
-        IDEMPOTENCY_SCHEMA_INCOMPATIBLE,
         IdempotencyContractError,
-        IdempotencySchemaIncompatible,
         canonical_request,
-        replay,
         reserve,
     )
     from rheo_core.operations.records import (
@@ -137,8 +155,6 @@ def stage_external_in_transaction(
 
     chosen_registry = REGISTRY if registry is None else registry
     destination_registry = DESTINATIONS if destinations is None else destinations
-    if not isinstance(destination_registry, DestinationRegistry):
-        raise TypeError("destinations must be a DestinationRegistry")
     authorized = chosen_registry.authorize(ctx, name)
     if isinstance(authorized, Refusal):
         raise OperationRefused(authorized.state, authorized.detail)
@@ -197,20 +213,17 @@ def stage_external_in_transaction(
         raise OperationRefused("input_invalid", str(exc)) from exc
 
     require_ready(uow.connection, operation.module_id)
-    destination_problem = destination_registry.availability_problem(
-        ctx,
-        uow,
-        destination_ref=destination_ref,
-        operation_name=declaration.name,
-    )
-    if destination_problem is not None:
-        raise OperationRefused(
-            DESTINATION_GUARD_REFUSED,
-            f"DestinationGuard: {destination_problem}",
-        )
 
     retention_days = settings.get_int("work.idempotency_retention_days")
     operation_id = uuid7()
+    # Concurrent first reservations of one key serialize on the idempotency_result
+    # primary key (operation_name, idempotency_key): a second INSERT ... ON CONFLICT
+    # DO NOTHING waits for the first transaction and, once it commits, sees the
+    # conflict and takes the replay branch, so only one caller reaches
+    # ``create_pending``. The savepoint lets a refusal found after reserving (the
+    # retired-key history below, or an unavailable destination) undo the reservation
+    # even when the caller catches the refusal and commits its own transaction.
+    reservation_savepoint = uow.connection.begin_nested()
     reservation = reserve(
         uow.connection,
         declaration=declaration,
@@ -220,44 +233,44 @@ def stage_external_in_transaction(
         retained_until=now + timedelta(days=retention_days),
     )
     if not reservation.created:
-        try:
-            retained = replay(reservation.row, declaration=declaration, request=request)
-        except IdempotencySchemaIncompatible as exc:
-            raise OperationRefused(
-                IDEMPOTENCY_SCHEMA_INCOMPATIBLE,
-                "the retained keyed result is incompatible with this declaration",
-            ) from exc
-        if retained.error_code == IDEMPOTENCY_KEY_REUSED:
-            raise OperationRefused(
-                IDEMPOTENCY_KEY_REUSED,
-                retained.error_detail or IDEMPOTENCY_KEY_REUSED,
-            )
-        action = get_for_key(
-            uow.connection,
-            operation_name=declaration.name,
-            idempotency_key=request.key,
-        )
-        if action is None:
-            raise OperationRefused(
-                IDEMPOTENCY_SCHEMA_INCOMPATIBLE,
-                "the retained external request has no durable action",
-            )
-        record_operation_audit(
+        reservation_savepoint.commit()
+        return _replay_staged(
             ctx,
             uow,
             operation,
-            request_digest=payload_digest(body),
+            reservation.row,
+            request,
             model_input=model_input,
-            outcome=AUDIT_REFUSED,
-            operation_id=action.operation_id,
+            digest=payload_digest(body),
         )
-        return StagedExternalAction(
-            action.id,
-            action.approval_id,
-            action.operation_id,
-            action.state,
-            False,
+
+    # The primary key stops remembering a key once the retention sweep deletes its
+    # envelope, but the settled external action keeps the operation name and key as
+    # history. After that boundary another effect needs a new intentional key.
+    if has_action_for_key(
+        uow.connection, operation_name=declaration.name, idempotency_key=request.key
+    ):
+        reservation_savepoint.rollback()
+        raise OperationRefused(
+            IDEMPOTENCY_KEY_REUSED,
+            "this idempotency key already staged an external action whose retained "
+            "result has expired; another effect requires a new key",
         )
+    # Availability gates only a new reservation: a same-identity replay above returns
+    # the original identifiers or retained outcome even while the destination is down.
+    destination_problem = destination_registry.availability_problem(
+        ctx,
+        uow,
+        destination_ref=destination_ref,
+        operation_name=declaration.name,
+    )
+    if destination_problem is not None:
+        reservation_savepoint.rollback()
+        raise OperationRefused(
+            DESTINATION_GUARD_REFUSED,
+            f"DestinationGuard: {destination_problem}",
+        )
+    reservation_savepoint.commit()
 
     subject_ref: RecordRef | None = None
     if declaration.audit is not None and declaration.audit.subject_field is not None:
@@ -341,4 +354,88 @@ def stage_external_in_transaction(
         )
     return StagedExternalAction(
         action.id, approval_id, operation_id, action.state, True
+    )
+
+
+def _replay_staged(
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    operation: RegisteredOperation,
+    row: IdempotencyRow,
+    request: CanonicalRequest,
+    *,
+    model_input: BaseModel,
+    digest: bytes,
+) -> StagedExternalAction:
+    """Answer a repeat of a retained keyed request from its envelope and action.
+
+    Writes only the audit row, so the caller's transaction gains nothing else.
+    """
+    from rheo_core.audit import AUDIT_FAILED, AUDIT_REFUSED, AuditOutcome
+    from rheo_core.operations.external_actions import get_for_key
+    from rheo_core.operations.idempotency import (
+        IDEMPOTENCY_KEY_REUSED,
+        IDEMPOTENCY_SCHEMA_INCOMPATIBLE,
+        IdempotencySchemaIncompatible,
+        replay,
+    )
+
+    declaration = operation.declaration
+    try:
+        retained = replay(row, declaration=declaration, request=request)
+    except IdempotencySchemaIncompatible as exc:
+        raise OperationRefused(
+            IDEMPOTENCY_SCHEMA_INCOMPATIBLE,
+            "the retained keyed result is incompatible with this declaration",
+        ) from exc
+    if retained.error_code == IDEMPOTENCY_KEY_REUSED:
+        raise OperationRefused(
+            IDEMPOTENCY_KEY_REUSED,
+            retained.error_detail or IDEMPOTENCY_KEY_REUSED,
+        )
+    action = get_for_key(
+        uow.connection,
+        operation_name=declaration.name,
+        idempotency_key=request.key,
+    )
+    if action is None:
+        raise OperationRefused(
+            IDEMPOTENCY_SCHEMA_INCOMPATIBLE,
+            "the retained external request has no durable action",
+        )
+    if action.operation_id != retained.operation_id:
+        raise OperationRefused(
+            IDEMPOTENCY_SCHEMA_INCOMPATIBLE,
+            "the retained external request belongs to a different operation",
+        )
+    # A pending repeat is still a hold, audited as the first stage was; a settled one
+    # is audited by its retained outcome, as the synchronous keyed replay does.
+    outcome: AuditOutcome
+    if retained.state == "pending":
+        outcome = AUDIT_REFUSED
+    elif retained.state == "succeeded":
+        outcome = AUDIT_SUCCEEDED
+    elif row.state in {"refused", "cancelled"}:
+        outcome = AUDIT_REFUSED
+    else:
+        outcome = AUDIT_FAILED
+    if not record_operation_audit(
+        ctx,
+        uow,
+        operation,
+        request_digest=digest,
+        model_input=model_input,
+        outcome=outcome,
+        operation_id=action.operation_id,
+    ):
+        raise OperationRefused(
+            "audit_sink_missing", "external staging requires an installed audit sink"
+        )
+    return StagedExternalAction(
+        action.id,
+        action.approval_id,
+        action.operation_id,
+        action.state,
+        False,
+        retained,
     )

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Connection, RowMapping, insert, select
+from sqlalchemy import Connection, RowMapping, exists, insert, select
 
 from rheo_core.operations.idempotency_tables import external_action
 from rheo_core.refs import uuid7
@@ -118,3 +118,23 @@ def get_for_key(
         .one_or_none()
     )
     return None if found is None else _row(found)
+
+
+def has_action_for_key(
+    conn: Connection, *, operation_name: str, idempotency_key: str
+) -> bool:
+    """Whether any action, settled or not, was ever staged under this exact key.
+
+    Terminal actions outlive their swept keyed envelope as history, so this answers
+    for keys the idempotency table no longer remembers.
+    """
+    return bool(
+        conn.execute(
+            select(
+                exists().where(
+                    external_action.c.operation_name == operation_name,
+                    external_action.c.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one()
+    )

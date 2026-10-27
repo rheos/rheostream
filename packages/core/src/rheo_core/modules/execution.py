@@ -1,12 +1,20 @@
 """Process-wide module guard and exact external-destination registrations."""
 
+import logging
 from dataclasses import dataclass
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from rheo_contracts import WorkspaceContext
 
 from rheo_core.modules.manifest import DestinationRegistration, GuardRegistration
 from rheo_core.storage.backend import UnitOfWork
+
+if TYPE_CHECKING:
+    # Type-only: the approvals package imports these registries at call time, and a
+    # runtime import back into it from here would close an import cycle at startup.
+    from rheo_core.approvals.guards import Guard
+
+logger = logging.getLogger("rheo_core.modules")
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +42,7 @@ class GuardRegistry:
             raise ValueError(f"guard {registration.name!r} is already registered")
         self._guards[registration.name] = candidate
 
-    def lookup(self, name: str) -> object | None:
+    def lookup(self, name: str) -> "Guard | None":
         found = self._guards.get(name)
         return None if found is None else found.registration.guard
 
@@ -103,7 +111,18 @@ class DestinationRegistry:
             credentials = registration.credentials_available
             if credentials is not None and not credentials(ctx, uow):
                 return f"destination {destination_ref!r} credentials are unavailable"
-        except Exception:
+        except Exception as exc:
+            # Fail closed, but keep the cause findable. Only the destination, the
+            # operation and the exception type are logged: never its message or the
+            # request, which may carry payload or credential material.
+            logger.warning(
+                "destination_availability_check_failed",
+                extra={
+                    "destination_ref": destination_ref,
+                    "operation": operation_name,
+                    "exception_type": type(exc).__name__,
+                },
+            )
             return f"destination {destination_ref!r} availability could not be proven"
         return None
 
