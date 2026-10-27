@@ -11,6 +11,7 @@ import {
   ProjectPicker,
   StatusActions,
   type Field,
+  type PickableProject,
   type FormProps,
 } from "./forms";
 import {
@@ -149,6 +150,10 @@ function projectOptions(
       })),
   ];
 }
+/** Only what the project picker shows, so descriptions stay on the server. */
+function pickable(projects: readonly Project[]): PickableProject[] {
+  return projects.map(({ ref, title, status }) => ({ ref, title, status }));
+}
 const priorityOptions = PRIORITIES.map((p) => ({
   value: p,
   label: PRIORITY_LABEL[p],
@@ -187,6 +192,7 @@ function ItemRows({
   projects,
   label,
   pick,
+  reloadHref,
 }: {
   shell: ShellApi;
   items: readonly ItemSummary[];
@@ -194,7 +200,9 @@ function ItemRows({
   projects: ReadonlyMap<string, string>;
   label: string;
   /** The projects a row's project control offers; without them, no control. */
-  pick?: readonly Project[];
+  pick?: readonly PickableProject[];
+  /** Where "reload" goes when a row's item changed underneath it. */
+  reloadHref?: string;
 }) {
   return (
     <ul className={styles.rows} aria-label={label}>
@@ -211,6 +219,20 @@ function ItemRows({
             status={item.status}
             subject={item.title}
             compact
+            reloadHref={reloadHref}
+            extra={
+              pick ? (
+                <ProjectPicker
+                  submit={shell.submit}
+                  itemRef={item.ref}
+                  revision={item.revision}
+                  subject={item.title}
+                  held={item.projectRef}
+                  projects={pick}
+                  reloadHref={reloadHref}
+                />
+              ) : null
+            }
           />
         ) : null;
         return (
@@ -245,21 +267,7 @@ function ItemRows({
                 ) : null}
               </p>
             </div>
-            {pick && shell.submit ? (
-              <div className={styles.rowEnd}>
-                {status}
-                <ProjectPicker
-                  submit={shell.submit}
-                  itemRef={item.ref}
-                  revision={item.revision}
-                  subject={item.title}
-                  held={item.projectRef}
-                  projects={pick}
-                />
-              </div>
-            ) : (
-              status
-            )}
+            {status}
           </li>
         );
       })}
@@ -392,7 +400,8 @@ export async function queue({ shell, query }: ScreenProps) {
     shell,
     labels,
     projects: projectTitles,
-    pick: projectResult.state === "ok" ? projects : undefined,
+    pick: projectResult.state === "ok" ? pickable(projects) : undefined,
+    reloadHref: shell.href("queue", query),
   };
   return (
     <Frame
@@ -765,7 +774,7 @@ export async function item({ shell, query }: ScreenProps) {
                       revision={record.revision}
                       subject={record.title}
                       held={record.projectRef}
-                      projects={projects}
+                      projects={pickable(projects)}
                       reloadHref={here}
                     />
                   ) : null}
@@ -1269,7 +1278,10 @@ export async function project({ shell, query }: ScreenProps) {
                 labels={labels}
                 projects={new Map()}
                 label="Project items"
-                pick={projectResult?.state === "ok" ? allProjects : undefined}
+                pick={
+                  projectResult?.state === "ok" ? pickable(allProjects) : undefined
+                }
+                reloadHref={here}
               />
             ) : (
               <p className={styles.meta}>

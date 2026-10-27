@@ -5,8 +5,8 @@ import { defineConfig } from "vitest/config";
  * apps/web/vitest.config.ts. `esbuild.jsx` is set here for the reason that file's
  * docstring gives: without it esbuild emits the classic `React.createElement` and
  * nothing in this package imports the `React` namespace. `environment: "node"` is
- * enough because every view is rendered with `renderToStaticMarkup`, which needs
- * no DOM.
+ * enough for the views, rendered with `renderToStaticMarkup`; the project picker's
+ * dialog test opts into happy-dom per file.
  */
 export default defineConfig({
   esbuild: { jsx: "automatic", jsxImportSource: "react" },

@@ -29,13 +29,13 @@ afterEach(() => {
   host.remove();
 });
 
-function mount(submit: ReturnType<typeof vi.fn>, held: string | null) {
+function mount(submit: ReturnType<typeof vi.fn>, held: string | null, revision = 4) {
   act(() =>
     root.render(
       <ProjectPicker
         submit={submit as unknown as NonNullable<ShellApi["submit"]>}
         itemRef={ITEM}
-        revision={4}
+        revision={revision}
         subject="Renew the example.com domain"
         held={held}
         projects={PROJECTS}
@@ -54,10 +54,20 @@ describe("the project picker", () => {
   it("shows only its icon until opened, then lists live and paused projects", () => {
     mount(vi.fn(), null);
     expect(dialog().open).toBe(false);
+    expect(dialog().querySelector("li")).toBeNull();
     openPicker();
     expect(dialog().open).toBe(true);
     const names = Array.from(dialog().querySelectorAll("li")).map((li) => li.textContent);
     expect(names).toEqual(["Studio move", "Tax seasonPaused"]);
+  });
+
+  it("marks the project held, offers a way out, and starts there", () => {
+    mount(vi.fn(), A);
+    openPicker();
+    const held = dialog().querySelector('[aria-current="true"]');
+    expect(held?.textContent).toBe("Studio moveNow in");
+    expect(document.activeElement).toBe(held);
+    expect(button("No project")).toBeTruthy();
   });
 
   it("saves the pick with the item's revision and closes", async () => {
@@ -102,6 +112,39 @@ describe("the project picker", () => {
     openPicker();
     await act(async () => button("Tax season").click());
     expect(dialog().open).toBe(true);
-    expect(dialog().querySelector('[role="alert"]')?.textContent).toMatch(/still here/);
+    expect(dialog().querySelector('[role="alert"]')?.textContent).toMatch(
+      /changed since the page loaded/,
+    );
+  });
+
+  it("uses the revision of the latest render, not the one it opened with", async () => {
+    const submit = vi.fn().mockResolvedValue({ state: "ok", result: {} });
+    mount(submit, null, 4);
+    openPicker();
+    mount(submit, null, 5);
+    await act(async () => button("Studio move").click());
+    expect(submit).toHaveBeenCalledWith("current.item.update", {
+      ref: ITEM,
+      revision: 5,
+      project_ref: A,
+    });
+  });
+
+  it("keeps a slow save from an earlier opening out of a later one", async () => {
+    let finish: (value: unknown) => void = () => {};
+    const submit = vi.fn(
+      () => new Promise((resolve) => (finish = resolve)),
+    );
+    mount(submit, null);
+    openPicker();
+    act(() => button("Studio move").click());
+    // Closed while saving (as a reload or Close would), then opened again.
+    act(() => dialog().close());
+    openPicker();
+    await act(async () =>
+      finish({ state: "refused", code: "record_stale", text: "item changed" }),
+    );
+    expect(dialog().open).toBe(true);
+    expect(dialog().querySelector('[role="alert"]')).toBeNull();
   });
 });

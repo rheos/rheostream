@@ -409,13 +409,6 @@ a.rowTitle:hover {
   margin: 0;
   text-align: right;
 }
-.rowEnd {
-  display: flex;
-  align-items: start;
-  justify-content: flex-end;
-  gap: var(--rs-space-2);
-  min-width: 0;
-}
 /* A square icon control, the Leads icon geometry (#441); touch keeps the full size. */
 .iconButton {
   display: inline-flex;
@@ -440,7 +433,7 @@ a.rowTitle:hover {
   color: var(--rs-color-accent-strong);
   border-color: var(--rs-color-accent);
 }
-.rowEnd .iconButton {
+.actionButtons .iconButton {
   align-self: center;
 }
 .factWithAction {
@@ -497,8 +490,10 @@ a.rowTitle:hover {
 .modalClose:hover {
   color: var(--rs-color-ink);
 }
-.modalSubject {
+/* .modal-scoped: a row's dialog sits inside .rowActions, whose p rule aligns right. */
+.modal .modalSubject {
   margin: var(--rs-space-1) 0 var(--rs-space-4);
+  text-align: start;
   color: var(--rs-color-ink-dim);
   font-size: var(--rs-font-size-sm);
   overflow-wrap: anywhere;
@@ -529,13 +524,14 @@ a.rowTitle:hover {
 }
 .choice:hover {
   background: var(--rs-color-surface-2);
+  border-color: transparent;
 }
 .choice[aria-current="true"] {
   border-color: var(--rs-color-accent);
 }
 .choice:disabled {
   cursor: progress;
-  opacity: 0.65;
+  color: var(--rs-color-ink-dim);
 }
 .choiceNone {
   color: var(--rs-color-ink-dim);
@@ -548,6 +544,7 @@ a.rowTitle:hover {
 .modal .error,
 .modal .meta {
   margin: var(--rs-space-3) 0 0;
+  text-align: start;
 }
 
 /* Priority reads in words first; the tone only reinforces it. */
@@ -817,9 +814,6 @@ a.rowTitle:hover {
   }
   .rowActions p {
     text-align: left;
-  }
-  .rowEnd {
-    justify-content: flex-start;
   }
   .areaControls,
   .areaControls .inlineForm {

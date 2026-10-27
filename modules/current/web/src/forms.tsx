@@ -1,10 +1,12 @@
 "use client";
 import {
+  useEffect,
   useId,
   useRef,
   useState,
   useTransition,
   type FormEvent,
+  type ReactNode,
 } from "react";
 import type {
   OperationOutcome,
@@ -350,21 +352,27 @@ export function ProjectPicker({
   const dialog = useRef<HTMLDialogElement | null>(null);
   const heading = useId();
   const [result, setResult] = useState<OperationOutcome | null>(null);
+  // The list renders only while open: a queue has a picker on every row.
+  const [isOpen, setIsOpen] = useState(false);
   const [pending, startTransition] = useTransition();
-  // The opening a save belongs to, so a slow save cannot close a later one.
+  // The opening a save belongs to, so a slow save cannot touch a later one.
   const opening = useRef(0);
   const offered = pickableProjects(projects, held);
   const verb = held ? "Change project" : "Add to project";
+  // Once the list is in, straight to it, on the project held if any, not Close.
+  useEffect(() => {
+    if (!isOpen) return;
+    const box = dialog.current;
+    (
+      box?.querySelector<HTMLElement>('[aria-current="true"]') ??
+      box?.querySelector<HTMLElement>("li button")
+    )?.focus();
+  }, [isOpen]);
   function open() {
     opening.current += 1;
     setResult(null);
+    setIsOpen(true);
     dialog.current?.showModal();
-    // Straight to the list, on the project held if there is one, not Close.
-    const list = dialog.current;
-    (
-      list?.querySelector<HTMLElement>('[aria-current="true"]') ??
-      list?.querySelector<HTMLElement>("li button")
-    )?.focus();
   }
   function pick(picked: string | null) {
     const input = projectInput(itemRef, revision, held, picked);
@@ -380,9 +388,9 @@ export function ProjectPicker({
       } catch {
         outcome = { state: "unavailable" };
       }
+      if (mine !== opening.current) return;
       setResult(outcome);
-      if (outcome.state === "ok" && mine === opening.current)
-        dialog.current?.close();
+      if (outcome.state === "ok") dialog.current?.close();
     });
   }
   return (
@@ -397,7 +405,16 @@ export function ProjectPicker({
       >
         <FolderIcon plus={!held} />
       </button>
-      <dialog ref={dialog} className={styles.modal} aria-labelledby={heading}>
+      <dialog
+        ref={dialog}
+        className={styles.modal}
+        aria-labelledby={heading}
+        onClose={() => setIsOpen(false)}
+        // Escape while a save is in flight would hide its outcome.
+        onCancel={(e) => {
+          if (pending) e.preventDefault();
+        }}
+      >
         <div className={styles.modalHead}>
           <h2 id={heading} className={styles.modalTitle}>
             {verb}
@@ -406,6 +423,7 @@ export function ProjectPicker({
             type="button"
             className={styles.modalClose}
             aria-label="Close"
+            disabled={pending}
             onClick={() => dialog.current?.close()}
           >
             <svg
@@ -422,7 +440,7 @@ export function ProjectPicker({
           </button>
         </div>
         <p className={styles.modalSubject}>{subject}</p>
-        {offered.length || held ? (
+        {!isOpen ? null : offered.length || held ? (
           <ul className={styles.choices} aria-busy={pending}>
             {offered.map((p) => (
               <li key={p.ref}>
@@ -435,7 +453,7 @@ export function ProjectPicker({
                 >
                   <span>{p.title}</span>
                   {p.ref === held ? (
-                    <span className={styles.choiceNote}>Current</span>
+                    <span className={styles.choiceNote}>Now in</span>
                   ) : p.status !== "active" ? (
                     <span className={styles.choiceNote}>
                       {p.status === "paused" ? "Paused" : "Done"}
@@ -464,7 +482,9 @@ export function ProjectPicker({
           {pending ? <p className={styles.meta}>Saving…</p> : null}
           {result?.state === "refused" ? (
             <p className={styles.error} role="alert">
-              {refusalText(result.code, result.text)}
+              {result.code === "record_stale"
+                ? "This item changed since the page loaded. Reload, then pick again."
+                : refusalText(result.code, result.text)}
               {result.code === "record_stale" && reloadHref ? (
                 <>
                   {" "}
@@ -587,11 +607,14 @@ export function StatusActions({
   compact = false,
   reloadHref,
   zone,
+  extra,
 }: {
   submit: Submit;
   itemRef: string;
   revision: number;
   status: Status;
+  /** One more control at the end of the button row (the row's project icon). */
+  extra?: ReactNode;
   /** The item's title, for accessible names on repeated row controls. */
   subject: string;
   compact?: boolean;
@@ -677,6 +700,7 @@ export function StatusActions({
             </button>
           ),
         )}
+        {extra}
       </div>
       {pickerOpenedAt ? (
         <div

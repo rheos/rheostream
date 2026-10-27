@@ -283,9 +283,9 @@ describe("item detail", () => {
     expect(html).not.toContain('name="project_ref"');
     expect(html).toContain('aria-label="Change project: Renew the example.com domain"');
     expect(html).toContain('aria-haspopup="dialog"');
-    // The dialog lists the projects, marks the one held and offers a way out.
-    expect(html).toMatch(/aria-current="true"[^>]*><span>Studio move<\/span><span[^>]*>Current<\/span>/);
-    expect(html).toContain(">No project</button>");
+    // The dialog's list renders only once it is opened.
+    expect(html).toContain("<dialog");
+    expect(html).not.toContain(">No project</button>");
     const loose = renderToStaticMarkup(
       await screens.item({
         shell: detailShell(detail({ project_ref: null, project: null })),
@@ -293,7 +293,6 @@ describe("item detail", () => {
       }),
     );
     expect(loose).toContain('aria-label="Add to project: Renew the example.com domain"');
-    expect(loose).not.toContain(">No project</button>");
   });
   it("offers only reopen for a done item", async () => {
     const html = renderToStaticMarkup(
