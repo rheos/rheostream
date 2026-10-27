@@ -272,6 +272,175 @@ export function ActionForm({
   );
 }
 
+/** An active item a project page can attach, with the project it sits in now. */
+export interface AttachCandidate {
+  ref: string;
+  title: string;
+  revision: number;
+  /** The title of the project the item is in now, if any: attaching moves it. */
+  elsewhere: string | null;
+}
+
+/** The candidates whose title (or current project) holds every typed word. */
+export function attachChoices(
+  candidates: readonly AttachCandidate[],
+  words: string,
+): AttachCandidate[] {
+  const terms = words.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return [...candidates];
+  return candidates.filter((c) => {
+    const text = `${c.title} ${c.elsewhere ?? ""}`.toLowerCase();
+    return terms.every((term) => text.includes(term));
+  });
+}
+
+/** The update that puts the chosen item in the project, or null with no choice. */
+export function attachInput(
+  candidates: readonly AttachCandidate[],
+  chosen: string,
+  projectRef: string,
+): Record<string, unknown> | null {
+  const picked = candidates.find((c) => c.ref === chosen);
+  return picked
+    ? { ref: picked.ref, revision: picked.revision, project_ref: projectRef }
+    : null;
+}
+
+/**
+ * Attach an existing item to a project. The select opens on an empty choice, so
+ * a stray click attaches nothing; the filter narrows a long list by words.
+ */
+export function AttachItem({
+  submit,
+  projectRef,
+  candidates,
+  reloadHref,
+}: {
+  submit: Submit;
+  projectRef: string;
+  candidates: readonly AttachCandidate[];
+  reloadHref?: string;
+}) {
+  const id = useId();
+  const [words, setWords] = useState("");
+  const [chosen, setChosen] = useState("");
+  const [result, setResult] = useState<OperationOutcome | null>(null);
+  const [pending, startTransition] = useTransition();
+  const shown = attachChoices(candidates, words);
+  function filter(value: string) {
+    setWords(value);
+    if (!attachChoices(candidates, value).some((c) => c.ref === chosen))
+      setChosen("");
+  }
+  function attach(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const input = attachInput(candidates, chosen, projectRef);
+    if (input === null) return;
+    startTransition(async () => {
+      let outcome: OperationOutcome;
+      try {
+        outcome = await submit("current.item.update", input);
+      } catch {
+        outcome = { state: "unavailable" };
+      }
+      setResult(outcome);
+      if (outcome.state === "ok") {
+        setChosen("");
+        setWords("");
+      }
+    });
+  }
+  return (
+    <form
+      onSubmit={attach}
+      method="post"
+      className={styles.attachForm}
+      aria-label="Attach an existing item"
+      aria-busy={pending}
+    >
+      <fieldset disabled={pending} className={styles.attachFields}>
+        {candidates.length > 8 ? (
+          <div className={styles.field}>
+            <label htmlFor={`${id}-words`} className={styles.visuallyHidden}>
+              Filter items by words
+            </label>
+            <input
+              id={`${id}-words`}
+              type="search"
+              value={words}
+              onChange={(e) => filter(e.target.value)}
+              placeholder="Filter by words"
+              maxLength={200}
+            />
+          </div>
+        ) : null}
+        <div className={`${styles.field} ${styles.grow}`}>
+          <label htmlFor={`${id}-item`} className={styles.visuallyHidden}>
+            Item to attach
+          </label>
+          <select
+            id={`${id}-item`}
+            value={chosen}
+            onChange={(e) => setChosen(e.target.value)}
+          >
+            <option value="">
+              {shown.length ? "Choose an item to attach" : "No item matches"}
+            </option>
+            {shown.map((c) => (
+              <option key={c.ref} value={c.ref}>
+                {c.elsewhere ? `${c.title} (in ${c.elsewhere})` : c.title}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button type="submit" className={styles.secondary} disabled={!chosen}>
+          {pending ? "Saving…" : "Attach"}
+        </button>
+      </fieldset>
+      <div aria-live="polite" aria-atomic="true">
+        {result?.state === "ok" ? (
+          <p className={styles.success}>Attached.</p>
+        ) : null}
+        {result?.state === "refused" ? (
+          <p className={styles.error} role="alert">
+            {refusalText(result.code, result.text)}
+            {result.code === "record_stale" && reloadHref ? (
+              <>
+                {" "}
+                <a href={reloadHref}>Reload</a>
+              </>
+            ) : null}
+          </p>
+        ) : null}
+        {result?.state === "unavailable" ? (
+          <p className={styles.error} role="alert">
+            We could not confirm the change. Reload to check the project.
+          </p>
+        ) : null}
+      </div>
+    </form>
+  );
+}
+
+/** A remove mark for an icon button; the button carries the words. */
+function DetachIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="16"
+      height="16"
+      aria-hidden="true"
+      focusable="false"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+    >
+      <path d="M4 4l8 8M12 4l-8 8" />
+    </svg>
+  );
+}
+
 /** One button that submits a fixed input, for small reversible actions. */
 export function ActionButton({
   submit,
@@ -279,6 +448,7 @@ export function ActionButton({
   input,
   label,
   description,
+  icon = false,
 }: {
   submit: Submit;
   operation: string;
@@ -286,6 +456,8 @@ export function ActionButton({
   label: string;
   /** The accessible name when the visible label alone is ambiguous in a list. */
   description?: string;
+  /** Show a remove mark instead of the label; the label becomes the tooltip. */
+  icon?: boolean;
 }) {
   const [result, setResult] = useState<OperationOutcome | null>(null);
   const [pending, startTransition] = useTransition();
@@ -302,13 +474,14 @@ export function ActionButton({
     <span className={styles.buttonCell}>
       <button
         type="button"
-        className={styles.quiet}
+        className={icon ? `${styles.quiet} ${styles.iconButton}` : styles.quiet}
         onClick={run}
         disabled={pending}
         aria-busy={pending}
-        aria-label={description}
+        aria-label={description ?? (icon ? label : undefined)}
+        title={icon ? label : undefined}
       >
-        {pending ? "Saving…" : label}
+        {icon ? <DetachIcon /> : pending ? "Saving…" : label}
       </button>
       {result?.state === "refused" ? (
         <span className={styles.error} role="alert">

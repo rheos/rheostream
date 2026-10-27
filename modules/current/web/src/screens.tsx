@@ -7,8 +7,10 @@ import type {
 import {
   ActionButton,
   ActionForm,
+  AttachItem,
   LocalTime,
   StatusActions,
+  type AttachCandidate,
   type Field,
   type FormProps,
 } from "./forms";
@@ -185,12 +187,15 @@ function ItemRows({
   labels,
   projects,
   label,
+  detachFrom,
 }: {
   shell: ShellApi;
   items: readonly ItemSummary[];
   labels: ReadonlyMap<string, string>;
   projects: ReadonlyMap<string, string>;
   label: string;
+  /** On a project page, its title: each row gets a control to take it out. */
+  detachFrom?: string;
 }) {
   return (
     <ul className={styles.rows} aria-label={label}>
@@ -198,6 +203,17 @@ function ItemRows({
         const projectTitle = item.projectRef
           ? projects.get(item.projectRef)
           : undefined;
+        const status = shell.submit ? (
+          <StatusActions
+            zone={shell.timeZone}
+            submit={shell.submit}
+            itemRef={item.ref}
+            revision={item.revision}
+            status={item.status}
+            subject={item.title}
+            compact
+          />
+        ) : null;
         return (
           <li className={styles.row} key={item.ref}>
             <div className={styles.rowMain}>
@@ -230,17 +246,25 @@ function ItemRows({
                 ) : null}
               </p>
             </div>
-            {shell.submit ? (
-              <StatusActions
-                zone={shell.timeZone}
-                submit={shell.submit}
-                itemRef={item.ref}
-                revision={item.revision}
-                status={item.status}
-                subject={item.title}
-                compact
-              />
-            ) : null}
+            {detachFrom && shell.submit ? (
+              <div className={styles.rowEnd}>
+                {status}
+                <ActionButton
+                  submit={shell.submit}
+                  operation="current.item.update"
+                  input={{
+                    ref: item.ref,
+                    revision: item.revision,
+                    clear: ["project_ref"],
+                  }}
+                  label="Remove from project"
+                  description={`Remove ${item.title} from ${detachFrom}`}
+                  icon
+                />
+              </div>
+            ) : (
+              status
+            )}
           </li>
         );
       })}
@@ -679,14 +703,6 @@ export async function item({ shell, query }: ScreenProps) {
       options: areaOptions(areas, record.area),
     },
     {
-      name: "project_ref",
-      label: "Project",
-      value: record.projectRef ?? "",
-      type: "select",
-      clearable: true,
-      options: projectOptions(projects, record.projectRef),
-    },
-    {
       name: "due_on",
       label: "Due date",
       value: record.dueOn ?? "",
@@ -730,18 +746,6 @@ export async function item({ shell, query }: ScreenProps) {
                 <dt>Due</dt>
                 <dd className={record.overdue ? styles.late : undefined}>
                   {record.dueOn ? day(record.dueOn) : "No due date"}
-                </dd>
-              </div>
-              <div>
-                <dt>Project</dt>
-                <dd>
-                  {record.project ? (
-                    <a href={shell.href("project", { ref: record.project.ref })}>
-                      {record.project.title}
-                    </a>
-                  ) : (
-                    "No project"
-                  )}
                 </dd>
               </div>
             </dl>
@@ -834,6 +838,39 @@ export async function item({ shell, query }: ScreenProps) {
               <p className={styles.meta}>
                 Still blocked. You can complete it anyway.
               </p>
+            ) : null}
+          </section>
+          <section className={styles.section} aria-labelledby="project">
+            <h2 id="project">Project</h2>
+            {record.project ? (
+              <p>
+                <a href={shell.href("project", { ref: record.project.ref })}>
+                  {record.project.title}
+                </a>
+              </p>
+            ) : !shell.submit ? (
+              <p className={styles.meta}>Not in a project.</p>
+            ) : null}
+            {shell.submit ? (
+              <ActionForm
+                submit={shell.submit}
+                operation="current.item.update"
+                base={base}
+                fields={[
+                  {
+                    name: "project_ref",
+                    label: "Project",
+                    value: record.projectRef ?? "",
+                    type: "select",
+                    clearable: true,
+                    hideLabel: true,
+                    options: projectOptions(projects, record.projectRef),
+                  },
+                ]}
+                button={record.projectRef ? "Move" : "Add to project"}
+                reloadHref={here}
+                inline
+              />
             ) : null}
           </section>
           <section className={styles.section} aria-labelledby="dependencies">
@@ -1155,16 +1192,23 @@ export async function project({ shell, query }: ScreenProps) {
     ? query.status
     : "active";
   const offset = pageOffset(query.offset);
-  const [result, areaResult, itemResult] = await Promise.all([
-    read(shell, "current.project.get", { ref: query.ref }),
-    read(shell, "current.area.list", { include_retired: true }),
-    read(shell, "current.item.list", {
-      project_ref: query.ref,
-      status,
-      limit: PAGE,
-      offset,
-    }),
-  ]);
+  const [result, areaResult, itemResult, projectResult, candidateResult] =
+    await Promise.all([
+      read(shell, "current.project.get", { ref: query.ref }),
+      read(shell, "current.area.list", { include_retired: true }),
+      read(shell, "current.item.list", {
+        project_ref: query.ref,
+        status,
+        limit: PAGE,
+        offset,
+      }),
+      shell.submit
+        ? read(shell, "current.project.list")
+        : Promise.resolve(null),
+      shell.submit
+        ? read(shell, "current.item.list", { status: "active", limit: 100 })
+        : Promise.resolve(null),
+    ]);
   if (result.state !== "ok")
     return (
       <Frame shell={shell} active="projects" title="Project">
@@ -1179,6 +1223,18 @@ export async function project({ shell, query }: ScreenProps) {
   const labels = areaLabels(areas);
   const list = page(itemResult, itemSummary);
   const here = shell.href("project", { ref: record.ref });
+  const projectTitles = new Map(
+    page(projectResult, projectOf).items.map((p) => [p.ref, p.title]),
+  );
+  const pool = page(candidateResult, itemSummary);
+  const candidates: AttachCandidate[] = pool.items
+    .filter((c) => c.projectRef !== record.ref)
+    .map((c) => ({
+      ref: c.ref,
+      title: c.title,
+      revision: c.revision,
+      elsewhere: c.projectRef ? (projectTitles.get(c.projectRef) ?? null) : null,
+    }));
   return (
     <Frame
       shell={shell}
@@ -1207,10 +1263,31 @@ export async function project({ shell, query }: ScreenProps) {
                   className={styles.secondary}
                   href={shell.href("new", { project: record.ref })}
                 >
-                  Add an item
+                  New item
                 </a>
               ) : null}
             </div>
+            {shell.submit && candidateResult?.state === "ok" ? (
+              candidates.length ? (
+                <>
+                  <AttachItem
+                    submit={shell.submit}
+                    projectRef={record.ref}
+                    candidates={candidates}
+                    reloadHref={here}
+                  />
+                  {pool.nextOffset !== null ? (
+                    <p className={styles.meta}>
+                      Lists the 100 most urgent active items.
+                    </p>
+                  ) : null}
+                </>
+              ) : (
+                <p className={styles.meta}>
+                  Every active item is already in this project.
+                </p>
+              )
+            ) : null}
             <nav className={styles.segmented} aria-label="Item status">
               {(
                 [
@@ -1237,11 +1314,12 @@ export async function project({ shell, query }: ScreenProps) {
                 labels={labels}
                 projects={new Map()}
                 label="Project items"
+                detachFrom={record.title}
               />
             ) : (
               <p className={styles.meta}>
                 {status === "active"
-                  ? "Nothing active in this project."
+                  ? "Nothing active in this project yet."
                   : "No items here."}
               </p>
             )}

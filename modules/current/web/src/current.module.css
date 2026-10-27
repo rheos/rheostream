@@ -409,6 +409,50 @@ a.rowTitle:hover {
   margin: 0;
   text-align: right;
 }
+.rowEnd {
+  display: flex;
+  align-items: start;
+  justify-content: flex-end;
+  gap: var(--rs-space-2);
+  min-width: 0;
+}
+.iconButton {
+  inline-size: var(--rs-size-control);
+  padding: 0;
+}
+.attachForm {
+  margin-bottom: var(--rs-space-4);
+}
+.attachFields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  align-items: end;
+  gap: var(--rs-space-2);
+  min-width: 0;
+}
+/* One row, one height: the filter and select match the button beside them. */
+.attachFields input,
+.attachFields select {
+  block-size: var(--rs-size-control);
+  padding-block: 0;
+}
+.attachFields > .field {
+  flex: 0 1 calc(var(--rs-space-6) * 6);
+}
+.attachFields > .grow {
+  flex: 1 1 calc(var(--rs-space-6) * 8);
+}
+.attachFields > button {
+  flex: none;
+}
+.attachFields:disabled {
+  opacity: 0.65;
+}
+.attachForm p {
+  margin: var(--rs-space-2) 0 0;
+}
 
 /* Priority reads in words first; the tone only reinforces it. */
 .priority {
@@ -677,6 +721,16 @@ a.rowTitle:hover {
   }
   .rowActions p {
     text-align: left;
+  }
+  .rowEnd {
+    justify-content: flex-start;
+  }
+  .attachFields {
+    flex-wrap: wrap;
+  }
+  .attachFields > .field,
+  .attachFields > .grow {
+    flex: 1 1 100%;
   }
   .areaControls,
   .areaControls .inlineForm {

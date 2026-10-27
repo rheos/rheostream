@@ -9,7 +9,13 @@ import {
   snoozeAt,
   TRANSITIONS,
 } from "./data";
-import { formInput, type Field } from "./forms";
+import {
+  attachChoices,
+  attachInput,
+  formInput,
+  type AttachCandidate,
+  type Field,
+} from "./forms";
 import { queueFilters } from "./screens";
 
 // Local wall-clock dates, so every case reads the same in any time zone.
@@ -118,6 +124,31 @@ describe("update forms", () => {
         { label: "Garden & Yard", key: "" },
       ),
     ).toEqual({ label: "Garden & Yard", key: "garden_yard" });
+  });
+});
+
+describe("attaching items to a project", () => {
+  const PROJECT = "current.project:sample";
+  const candidates: AttachCandidate[] = [
+    { ref: "current.item:a", title: "Renew the domain", revision: 3, elsewhere: null },
+    { ref: "current.item:b", title: "Pay the hosting bill", revision: 7, elsewhere: "Studio move" },
+  ];
+  it("puts the chosen item in the project at the revision it was read at", () => {
+    expect(attachInput(candidates, "current.item:b", PROJECT)).toEqual({
+      ref: "current.item:b",
+      revision: 7,
+      project_ref: PROJECT,
+    });
+  });
+  it("sends nothing for the empty choice or an item no longer offered", () => {
+    expect(attachInput(candidates, "", PROJECT)).toBeNull();
+    expect(attachInput(candidates, "current.item:gone", PROJECT)).toBeNull();
+  });
+  it("filters by every word, in the title or the project it sits in now", () => {
+    expect(attachChoices(candidates, "")).toHaveLength(2);
+    expect(attachChoices(candidates, "  DOMAIN ").map((c) => c.ref)).toEqual(["current.item:a"]);
+    expect(attachChoices(candidates, "studio bill").map((c) => c.ref)).toEqual(["current.item:b"]);
+    expect(attachChoices(candidates, "domain bill")).toEqual([]);
   });
 });
 
