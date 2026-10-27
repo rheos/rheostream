@@ -220,141 +220,144 @@ def stage_external_in_transaction(
     # primary key (operation_name, idempotency_key): a second INSERT ... ON CONFLICT
     # DO NOTHING waits for the first transaction and, once it commits, sees the
     # conflict and takes the replay branch, so only one caller reaches
-    # ``create_pending``. The savepoint lets a refusal found after reserving (the
-    # retired-key history below, or an unavailable destination) undo the reservation
-    # even when the caller catches the refusal and commits its own transaction.
-    reservation_savepoint = uow.connection.begin_nested()
-    reservation = reserve(
-        uow.connection,
-        declaration=declaration,
-        request=request,
-        operation_id=operation_id,
-        now=now,
-        retained_until=now + timedelta(days=retention_days),
-    )
-    if not reservation.created:
-        reservation_savepoint.commit()
-        return _replay_staged(
+    # ``create_pending``. One savepoint spans the reservation, the replay and the whole
+    # create path through the audit row: any refusal or error raised inside it (the
+    # retired-key history, an unavailable destination, a missing audit sink) rolls
+    # back every row staging wrote, even when the caller catches the refusal and
+    # commits its own transaction. It is released only when staging returns.
+    with uow.connection.begin_nested():
+        reservation = reserve(
+            uow.connection,
+            declaration=declaration,
+            request=request,
+            operation_id=operation_id,
+            now=now,
+            retained_until=now + timedelta(days=retention_days),
+        )
+        if not reservation.created:
+            return _replay_staged(
+                ctx,
+                uow,
+                operation,
+                reservation.row,
+                request,
+                model_input=model_input,
+                digest=payload_digest(body),
+            )
+
+        # The primary key stops remembering a key once the retention sweep deletes its
+        # envelope, but the settled external action keeps the operation name and key as
+        # history. After that boundary another effect needs a new intentional key.
+        if has_action_for_key(
+            uow.connection, operation_name=declaration.name, idempotency_key=request.key
+        ):
+            raise OperationRefused(
+                IDEMPOTENCY_KEY_REUSED,
+                "this idempotency key already staged an external action whose retained "
+                "result has expired; another effect requires a new key",
+            )
+        # Availability gates only a new reservation: a same-identity replay above
+        # returns the original identifiers or retained outcome even while the
+        # destination is down.
+        destination_problem = destination_registry.availability_problem(
+            ctx,
+            uow,
+            destination_ref=destination_ref,
+            operation_name=declaration.name,
+        )
+        if destination_problem is not None:
+            raise OperationRefused(
+                DESTINATION_GUARD_REFUSED,
+                f"DestinationGuard: {destination_problem}",
+            )
+
+        subject_ref: RecordRef | None = None
+        if (
+            declaration.audit is not None
+            and declaration.audit.subject_field is not None
+        ):
+            candidate = getattr(model_input, declaration.audit.subject_field, None)
+            if isinstance(candidate, RecordRef):
+                subject_ref = candidate
+        subject_text = None if subject_ref is None else subject_ref.format()
+        subject_revision: int | None = None
+        if subject_ref is not None:
+            head = resolve_in(subject_ref, ctx, uow)
+            subject_revision = None if isinstance(head, Unavailable) else head.revision
+
+        mint(
+            uow.connection,
+            operation_id=operation_id,
+            name=declaration.name,
+            safety_class=declaration.safety_class.value,
+            actor_kind=ctx.actor.kind.value,
+            actor_id=ctx.actor.id,
+            entry=ctx.entry.value,
+            audience_kind=(
+                AUDIENCE_NONE if ctx.audience is None else ctx.audience.kind.value
+            ),
+            audience_id=None if ctx.audience is None else ctx.audience.id,
+            now=now,
+        )
+        digest = payload_digest(body)
+        window_seconds = min(
+            settings.get_int("approvals.default_window_seconds"),
+            settings.get_int("approvals.max_window_seconds"),
+        )
+        approval_id = approval_records.create(
+            uow.connection,
+            actor_kind=ctx.actor.kind.value,
+            actor_id=ctx.actor.id,
+            operation_name=declaration.name,
+            operation_id=operation_id,
+            destination_ref=destination_ref,
+            subject_ref=subject_text,
+            subject_revision=subject_revision,
+            payload_digest=digest,
+            body=body,
+            byte_length=byte_length,
+            purpose=(
+                None
+                if ctx.principal.bound_purpose is None
+                else ctx.principal.bound_purpose.value
+            ),
+            window_start=now,
+            window_end=now + timedelta(seconds=window_seconds),
+        )
+        if not mark_approval_required(
+            uow.connection, operation_id=operation_id, approval_id=approval_id
+        ):
+            raise RuntimeError("staged operation could not enter approval_required")
+        action = create_pending(
+            uow.connection,
+            operation_id=operation_id,
+            approval_id=approval_id,
+            operation_name=declaration.name,
+            subject_ref=subject_text,
+            source_ref=source_ref if source_ref is not None else subject_text,
+            destination_ref=destination_ref,
+            approval_payload_digest=digest,
+            idempotency_key=request.key,
+            request_schema_version=declaration.keyed.request_schema_version,
+            result_schema_version=declaration.keyed.result_schema_version,
+            now=now,
+        )
+        if not record_operation_audit(
             ctx,
             uow,
             operation,
-            reservation.row,
-            request,
+            request_digest=digest,
             model_input=model_input,
-            digest=payload_digest(body),
+            outcome=AUDIT_REFUSED,
+            operation_id=operation_id,
+        ):
+            raise OperationRefused(
+                "audit_sink_missing",
+                "external staging requires an installed audit sink",
+            )
+        return StagedExternalAction(
+            action.id, approval_id, operation_id, action.state, True
         )
-
-    # The primary key stops remembering a key once the retention sweep deletes its
-    # envelope, but the settled external action keeps the operation name and key as
-    # history. After that boundary another effect needs a new intentional key.
-    if has_action_for_key(
-        uow.connection, operation_name=declaration.name, idempotency_key=request.key
-    ):
-        reservation_savepoint.rollback()
-        raise OperationRefused(
-            IDEMPOTENCY_KEY_REUSED,
-            "this idempotency key already staged an external action whose retained "
-            "result has expired; another effect requires a new key",
-        )
-    # Availability gates only a new reservation: a same-identity replay above returns
-    # the original identifiers or retained outcome even while the destination is down.
-    destination_problem = destination_registry.availability_problem(
-        ctx,
-        uow,
-        destination_ref=destination_ref,
-        operation_name=declaration.name,
-    )
-    if destination_problem is not None:
-        reservation_savepoint.rollback()
-        raise OperationRefused(
-            DESTINATION_GUARD_REFUSED,
-            f"DestinationGuard: {destination_problem}",
-        )
-    reservation_savepoint.commit()
-
-    subject_ref: RecordRef | None = None
-    if declaration.audit is not None and declaration.audit.subject_field is not None:
-        candidate = getattr(model_input, declaration.audit.subject_field, None)
-        if isinstance(candidate, RecordRef):
-            subject_ref = candidate
-    subject_text = None if subject_ref is None else subject_ref.format()
-    subject_revision: int | None = None
-    if subject_ref is not None:
-        head = resolve_in(subject_ref, ctx, uow)
-        subject_revision = None if isinstance(head, Unavailable) else head.revision
-
-    mint(
-        uow.connection,
-        operation_id=operation_id,
-        name=declaration.name,
-        safety_class=declaration.safety_class.value,
-        actor_kind=ctx.actor.kind.value,
-        actor_id=ctx.actor.id,
-        entry=ctx.entry.value,
-        audience_kind=(
-            AUDIENCE_NONE if ctx.audience is None else ctx.audience.kind.value
-        ),
-        audience_id=None if ctx.audience is None else ctx.audience.id,
-        now=now,
-    )
-    digest = payload_digest(body)
-    window_seconds = min(
-        settings.get_int("approvals.default_window_seconds"),
-        settings.get_int("approvals.max_window_seconds"),
-    )
-    approval_id = approval_records.create(
-        uow.connection,
-        actor_kind=ctx.actor.kind.value,
-        actor_id=ctx.actor.id,
-        operation_name=declaration.name,
-        operation_id=operation_id,
-        destination_ref=destination_ref,
-        subject_ref=subject_text,
-        subject_revision=subject_revision,
-        payload_digest=digest,
-        body=body,
-        byte_length=byte_length,
-        purpose=(
-            None
-            if ctx.principal.bound_purpose is None
-            else ctx.principal.bound_purpose.value
-        ),
-        window_start=now,
-        window_end=now + timedelta(seconds=window_seconds),
-    )
-    if not mark_approval_required(
-        uow.connection, operation_id=operation_id, approval_id=approval_id
-    ):
-        raise RuntimeError("staged operation could not enter approval_required")
-    action = create_pending(
-        uow.connection,
-        operation_id=operation_id,
-        approval_id=approval_id,
-        operation_name=declaration.name,
-        subject_ref=subject_text,
-        source_ref=source_ref if source_ref is not None else subject_text,
-        destination_ref=destination_ref,
-        approval_payload_digest=digest,
-        idempotency_key=request.key,
-        request_schema_version=declaration.keyed.request_schema_version,
-        result_schema_version=declaration.keyed.result_schema_version,
-        now=now,
-    )
-    if not record_operation_audit(
-        ctx,
-        uow,
-        operation,
-        request_digest=digest,
-        model_input=model_input,
-        outcome=AUDIT_REFUSED,
-        operation_id=operation_id,
-    ):
-        raise OperationRefused(
-            "audit_sink_missing", "external staging requires an installed audit sink"
-        )
-    return StagedExternalAction(
-        action.id, approval_id, operation_id, action.state, True
-    )
 
 
 def _replay_staged(

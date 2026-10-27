@@ -18,17 +18,29 @@ from rheo_contracts import (
     WorkspaceContext,
 )
 from rheo_core.approvals.tables import approval
-from rheo_core.audit import CORE_AUDIT_SINK, install_sink
+from rheo_core.audit import (
+    AUDIT_REFUSED,
+    AUDIT_SUCCEEDED,
+    CORE_AUDIT_SINK,
+    install_sink,
+    reset_sinks,
+)
 from rheo_core.boundary import context_for_harness
 from rheo_core.modules import (
     DestinationMode,
     DestinationRegistration,
     DestinationRegistry,
 )
-from rheo_core.operations import OperationRefused, OperationRegistry, dispatch
+from rheo_core.operations import (
+    AUDIT_SINK_MISSING,
+    OperationRefused,
+    OperationRegistry,
+    dispatch,
+)
 from rheo_core.operations.external_actions import external_action
 from rheo_core.operations.idempotency import (
     IDEMPOTENCY_KEY_REUSED,
+    IDEMPOTENCY_SCHEMA_INCOMPATIBLE,
     finish_error,
     finish_success,
     purge_expired,
@@ -40,10 +52,11 @@ from rheo_core.operations.transaction import (
     StagedExternalAction,
     stage_external_in_transaction,
 )
+from rheo_core.refs import uuid7
 from rheo_core.settings import CORE_ORIGIN
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
-from rheo_core.storage.work_tables import job, operation
+from rheo_core.storage.work_tables import audit_record, job, operation
 from sqlalchemy import func, select, update
 
 pytestmark = pytest.mark.postgres
@@ -174,6 +187,23 @@ def _counts(
             ),
             int(conn.execute(select(func.count()).select_from(job)).scalar_one()),
         )
+
+
+def _audit_rows(
+    ctx: WorkspaceContext, operation_id: UUID
+) -> list[tuple[str, str, str]]:
+    """(operation name, safety class, outcome) of each audit row, oldest first."""
+    with open_unit_of_work(ctx) as uow:
+        rows = uow.connection.execute(
+            select(
+                audit_record.c.operation_name,
+                audit_record.c.safety_class,
+                audit_record.c.outcome,
+            )
+            .where(audit_record.c.operation_id == operation_id)
+            .order_by(audit_record.c.occurred_at, audit_record.c.id)
+        ).all()
+    return [(str(r[0]), str(r[1]), str(r[2])) for r in rows]
 
 
 def test_external_action_staging_is_atomic_bound_and_never_invokes_destination(
@@ -473,6 +503,11 @@ def test_replay_returns_retained_success_not_approval_pending(
     assert replayed.retained.result == _Output(item_ref="synthetic:item")
     assert calls == []
     assert _counts(ctx, "settled") == (1, 1, 1, 1, 0)
+    # The first stage is audited as a hold; the settled replay by its retained outcome.
+    assert _audit_rows(ctx, staged.operation_id) == [
+        (OPERATION, SafetyClass.EXTERNAL.value, AUDIT_REFUSED),
+        (OPERATION, SafetyClass.EXTERNAL.value, AUDIT_SUCCEEDED),
+    ]
 
 
 def test_replay_returns_retained_terminal_error(
@@ -492,6 +527,65 @@ def test_replay_returns_retained_terminal_error(
     assert replayed.retained.state == "cancelled"
     assert replayed.retained.error_code == "synthetic_cancelled"
     assert replayed.retained.result is None
+    assert calls == []
+    # A retained cancellation replays as a refusal row, never as a success.
+    assert _audit_rows(ctx, staged.operation_id) == [
+        (OPERATION, SafetyClass.EXTERNAL.value, AUDIT_REFUSED),
+        (OPERATION, SafetyClass.EXTERNAL.value, AUDIT_REFUSED),
+    ]
+
+
+def test_replay_refuses_an_envelope_and_action_from_different_operations(
+    workspace: UUID, owner_account_id: UUID
+) -> None:
+    calls: list[str] = []
+    operations, destinations = _registries(calls)
+    install_sink("core", CORE_AUDIT_SINK)
+    ctx = _context(workspace, owner_account_id)
+
+    staged = _stage(ctx, _payload("mismatch"), operations, destinations)
+    # Hand-written corruption: the retained envelope now names another operation id
+    # than the durable action for the same key.
+    with open_unit_of_work(ctx) as uow:
+        uow.connection.execute(
+            update(idempotency_result)
+            .where(
+                idempotency_result.c.operation_name == OPERATION,
+                idempotency_result.c.idempotency_key == "mismatch",
+            )
+            .values(operation_id=uuid7())
+        )
+        uow.commit()
+    audited = _audit_rows(ctx, staged.operation_id)
+
+    refused = _refused_restage(
+        ctx, _payload("mismatch"), operations, destinations, caller_commits=True
+    )
+
+    assert refused.state == IDEMPOTENCY_SCHEMA_INCOMPATIBLE
+    assert "different operation" in refused.detail
+    assert _counts(ctx, "mismatch") == (1, 1, 1, 1, 0)
+    assert _audit_rows(ctx, staged.operation_id) == audited
+    assert calls == []
+
+
+def test_missing_audit_sink_leaves_no_row_for_a_committing_caller(
+    workspace: UUID, owner_account_id: UUID
+) -> None:
+    calls: list[str] = []
+    operations, destinations = _registries(calls)
+    ctx = _context(workspace, owner_account_id)
+
+    reset_sinks()
+    try:
+        refused = _refused_restage(
+            ctx, _payload("no-sink"), operations, destinations, caller_commits=True
+        )
+    finally:
+        install_sink("core", CORE_AUDIT_SINK)
+
+    assert refused.state == AUDIT_SINK_MISSING
+    assert _counts(ctx, "no-sink") == (0, 0, 0, 0, 0)
     assert calls == []
 
 
@@ -691,3 +785,48 @@ def test_public_dispatch_stages_replays_and_returns_retained_success(
     assert settled.operation_id == held.operation_id
     assert calls == []
     assert _counts(ctx, "public") == (1, 1, 1, 1, 0)
+
+
+def test_public_dispatch_replays_a_retained_terminal_error(
+    workspace: UUID,
+    owner_account_id: UUID,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rheo_core.modules.execution as execution
+
+    calls: list[str] = []
+    operations, destinations = _registries(calls)
+    monkeypatch.setattr(execution, "DESTINATIONS", destinations)
+    install_sink("core", CORE_AUDIT_SINK)
+    ctx = _context(workspace, owner_account_id)
+
+    held = dispatch(ctx, OPERATION, _payload("public-cancel"), registry=operations)
+    assert held.state == APPROVAL_REQUIRED
+    assert held.approval_id is not None and held.operation_id is not None
+    with open_unit_of_work(ctx) as uow:
+        action_id = uow.connection.execute(
+            select(external_action.c.id).where(
+                external_action.c.approval_id == held.approval_id
+            )
+        ).scalar_one()
+    staged = StagedExternalAction(
+        action_id, held.approval_id, held.operation_id, "pending", True
+    )
+    _settle(ctx, staged, "public-cancel", state="cancelled")
+    settled = dispatch(ctx, OPERATION, _payload("public-cancel"), registry=operations)
+
+    assert settled.state == "cancelled"
+    assert settled.result is None
+    assert settled.error is not None
+    assert (settled.error.error_code, settled.error.error_text) == (
+        "synthetic_cancelled",
+        "synthetic cancellation",
+    )
+    assert settled.operation_id == held.operation_id
+    assert settled.approval_id is None
+    assert calls == []
+    assert _counts(ctx, "public-cancel") == (1, 1, 1, 1, 0)
+    assert _audit_rows(ctx, held.operation_id) == [
+        (OPERATION, SafetyClass.EXTERNAL.value, AUDIT_REFUSED),
+        (OPERATION, SafetyClass.EXTERNAL.value, AUDIT_REFUSED),
+    ]

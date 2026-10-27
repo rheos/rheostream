@@ -726,10 +726,11 @@ an expired envelope only when no pending, executing, or unresolved external acti
 Revision `0015_terminal_action_history` removes the original composite foreign key: a terminal
 action keeps its copied operation name and key as immutable history without pinning the expired
 envelope, while the sweep's explicit state predicate preserves every live or unknown outcome. After
-removal, core makes no generic stored-envelope replay promise: a domain's own durable source
-identity may still describe the earlier outcome, but another effect requires a new intentional
-key/source identity. External staging enforces this: a key whose envelope was swept but whose
-external action survives as history refuses `idempotency_key_reused` and writes nothing.
+removal, core makes no generic stored-envelope replay promise: generic keyed dispatch reserves the
+swept key afresh and runs the handler again, and only a domain's own durable source identity may
+still describe the earlier outcome. External staging is stricter: a key whose envelope was swept
+but whose external action survives as history refuses `idempotency_key_reused` and writes nothing,
+so another external effect requires a new intentional key/source identity.
 
 ### External actions
 
