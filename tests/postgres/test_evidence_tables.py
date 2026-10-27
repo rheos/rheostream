@@ -19,6 +19,7 @@ import psycopg.errors
 import pytest
 from alembic import command
 from conftest import ClusterSession
+from harness.modules import core_chain_head
 from rheo_contracts import ContextPurpose
 from rheo_core.migrations.orchestrator import (
     CORE_CHAIN,
@@ -38,7 +39,7 @@ from sqlalchemy.exc import IntegrityError
 
 pytestmark = pytest.mark.postgres
 
-HEAD = "0013_outbox_retention"
+HEAD = core_chain_head()
 PREVIOUS = "0009_runtime_session_policy"
 
 CHECK_CONSTRAINTS = {

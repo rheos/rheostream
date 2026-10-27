@@ -277,8 +277,16 @@ def test_declared_service_call_and_audit_share_transaction(
 def test_transaction_calls_cannot_bypass_approval_or_deferred_work(
     workspace: UUID, safety: str, long_running: bool
 ) -> None:
+    from typing import Literal
+
     from pydantic import BaseModel
-    from rheo_contracts import AuditSpec, Idempotency, OperationDeclaration, SafetyClass
+    from rheo_contracts import (
+        AuditSpec,
+        ExternalSpec,
+        Idempotency,
+        OperationDeclaration,
+        SafetyClass,
+    )
     from rheo_core.operations.refusals import OperationRefused
     from rheo_core.operations.registry import OperationRegistry
     from rheo_core.operations.transaction import call_in_transaction
@@ -287,21 +295,40 @@ def test_transaction_calls_cannot_bypass_approval_or_deferred_work(
     class Empty(BaseModel):
         pass
 
+    class Destined(BaseModel):
+        destination_ref: Literal["synthetic"] = "synthetic"
+
+    class Referenced(BaseModel):
+        item_ref: str
+
     def forbidden(*args: object) -> Empty:
         raise AssertionError("handler must not run")
 
+    safety_class = SafetyClass(safety)
+    # An EXTERNAL or FINANCIAL declaration must name its exact destination; the
+    # refusal under test is the transaction path's, not the declaration's.
+    upper_external = safety_class in {SafetyClass.EXTERNAL, SafetyClass.FINANCIAL}
     registry = OperationRegistry()
     name = "core.fixture.forbidden"
     registry.register(
         OperationDeclaration(
             name=name,
-            safety_class=SafetyClass(safety),
+            safety_class=safety_class,
             roles=frozenset({Role.SERVICE}),
-            input_model=Empty,
-            output=Empty,
+            input_model=Destined if upper_external else Empty,
+            output=Referenced if upper_external else Empty,
             idempotency=Idempotency.NONE,
             audit=AuditSpec(subject_field=None),
             long_running=long_running,
+            external=(
+                ExternalSpec(
+                    destination_field="destination_ref",
+                    destination_ref="synthetic",
+                    result_ref_field="item_ref",
+                )
+                if upper_external
+                else None
+            ),
         ),
         forbidden,
         origin=CORE_ORIGIN,
