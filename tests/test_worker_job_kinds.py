@@ -37,7 +37,7 @@ from rheo_core.modules.operations import (
 from rheo_core.runtime import RUNTIME_RUN, AdapterRegistry, RuntimeJobPayload
 from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.work.cancellation import CancellationToken
-from rheo_core.work.kinds import JobKindUnknown
+from rheo_core.work.kinds import JobKindRegistry, JobKindUnknown
 from rheo_core.work.schedules import (
     RETENTION_SWEEP,
     RetentionSweepPayload,
@@ -164,6 +164,30 @@ def test_retention_sweep_payload_requires_workspace_id() -> None:
 def test_production_job_kinds_still_refuse_an_unknown_kind() -> None:
     with pytest.raises(JobKindUnknown, match="core.missing"):
         JOB_KINDS.lookup("core.missing")
+
+
+def test_a_kind_is_either_ordinary_or_a_continuation_never_both() -> None:
+    """The loop looks a continuation up first, so a kind held by both maps would
+    silently shadow its ordinary handler. Each registration refuses the other's."""
+
+    from rheo_core.operations.continuation import run_external_continuation
+
+    registry = JobKindRegistry()
+    registry.register_continuation("core.synthetic.continue", run_external_continuation)
+    with pytest.raises(ValueError, match="already a continuation"):
+        registry.register(
+            "core.synthetic.continue", _WorkerProbePayload, _worker_job_handler
+        )
+    assert registry.names() == frozenset()
+
+    registry.register(
+        "core.synthetic.ordinary", _WorkerProbePayload, _worker_job_handler
+    )
+    with pytest.raises(ValueError, match="already an ordinary job kind"):
+        registry.register_continuation(
+            "core.synthetic.ordinary", run_external_continuation
+        )
+    assert registry.continuation_names() == frozenset({"core.synthetic.continue"})
 
 
 @pytest.fixture

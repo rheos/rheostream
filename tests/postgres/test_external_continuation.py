@@ -24,9 +24,11 @@ from rheo_contracts import (
     SafetyClass,
     WorkspaceContext,
 )
-from rheo_core.approvals.tables import approval
+from rheo_core.approvals.binding import INVALID_APPROVAL
+from rheo_core.approvals.tables import approval, approval_payload
 from rheo_core.audit import CORE_AUDIT_SINK, install_sink
 from rheo_core.boundary import context_for_harness
+from rheo_core.boundary.context import MEMBERSHIP_MISSING
 from rheo_core.events.consumers import ConsumerRegistry
 from rheo_core.modules import DESTINATIONS, DestinationMode, DestinationRegistration
 from rheo_core.operations import OperationOutcome, dispatch, register_core_operations
@@ -42,15 +44,24 @@ from rheo_core.operations.continuation import (
 )
 from rheo_core.operations.external_actions import external_action
 from rheo_core.operations.idempotency_tables import idempotency_result
+from rheo_core.operations.refusals import ROLE_NOT_PERMITTED
 from rheo_core.operations.registry import REGISTRY
 from rheo_core.settings import CORE_ORIGIN
+from rheo_core.storage import control_tables
+from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_index import DueWorkspace
-from rheo_core.storage.work_tables import job, operation
+from rheo_core.storage.work_tables import audit_record, job, operation
 from rheo_core.work.jobs import enqueue_job, request_cancellation
-from rheo_core.work.kinds import ContinuationMode, JobKindRegistry
+from rheo_core.work.kinds import (
+    ContinuationHandler,
+    ContinuationLease,
+    ContinuationMode,
+    ContinuationResult,
+    JobKindRegistry,
+)
 from rheo_core.work.loop import visit_workspace
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 
 pytestmark = pytest.mark.postgres
 
@@ -92,12 +103,18 @@ def _declaration() -> OperationDeclaration:
 
 @dataclass
 class _Destination:
-    """The synthetic destination: a script of outcomes, and what it was asked."""
+    """The synthetic destination: a script of outcomes, and what it was asked.
+
+    A provider destination remembers each effect it performs, as a real provider
+    does: a later reconcile reports it even when the worker's own transaction rolled
+    back. ``reconciled`` may also be an exception, which reconcile then raises.
+    """
 
     calls: list[str] = field(default_factory=list)
     script: list[object] = field(default_factory=list)
     ready: bool = True
-    reconciled: _Output | None = None
+    provider: bool = False
+    reconciled: _Output | BaseException | None = None
     reconcile_calls: list[str | None] = field(default_factory=list)
 
     def execute(self, ctx: WorkspaceContext, uow: Any, model: BaseModel) -> BaseModel:
@@ -106,12 +123,17 @@ class _Destination:
         step = self.script.pop(0) if self.script else "ok"
         if isinstance(step, BaseException):
             raise step
-        return _Output(item_ref=f"synthetic:{model.request_key}")
+        output = _Output(item_ref=f"synthetic:{model.request_key}")
+        if self.provider:
+            self.reconciled = output
+        return output
 
     def reconcile(
         self, ctx: WorkspaceContext, uow: Any, request_id: str | None
     ) -> BaseModel | None:
         self.reconcile_calls.append(request_id)
+        if isinstance(self.reconciled, BaseException):
+            raise self.reconciled
         return self.reconciled
 
 
@@ -127,7 +149,7 @@ def ctx(workspace: UUID, owner_account_id: UUID) -> WorkspaceContext:
 def _register(
     monkeypatch: pytest.MonkeyPatch, *, provider: bool = False
 ) -> _Destination:
-    destination = _Destination()
+    destination = _Destination(provider=provider)
 
     def forbidden_handler(ctx: WorkspaceContext, uow: Any, model: BaseModel) -> Any:
         raise AssertionError("the operation handler must never run for EXTERNAL")
@@ -170,9 +192,15 @@ def _approve(ctx: WorkspaceContext, approval_id: UUID) -> OperationOutcome:
     return outcome
 
 
-def _visit(cluster: Any, workspace: UUID, *, after: float = 1.0) -> None:
+def _visit(
+    cluster: Any,
+    workspace: UUID,
+    *,
+    after: float = 1.0,
+    continuation: ContinuationHandler = run_external_continuation,
+) -> None:
     kinds = JobKindRegistry()
-    kinds.register_continuation(EXTERNAL_ACTION_EXECUTE, run_external_continuation)
+    kinds.register_continuation(EXTERNAL_ACTION_EXECUTE, continuation)
     at = datetime.now(UTC) + timedelta(seconds=after)
     visit_workspace(
         DueWorkspace(workspace_id=workspace, observed_due_at=None),
@@ -246,6 +274,19 @@ def _action_read(ctx: WorkspaceContext, action_id: UUID) -> dict[str, Any]:
     assert outcome.ok, outcome
     assert outcome.result is not None
     return outcome.result.model_dump()
+
+
+def _audit_rows(
+    ctx: WorkspaceContext, operation_id: UUID | None
+) -> list[tuple[str, UUID | None]]:
+    """``(outcome, actor_id)`` of every audit row for the held operation, in order."""
+    with open_unit_of_work(ctx) as uow:
+        rows = uow.connection.execute(
+            select(audit_record.c.outcome, audit_record.c.actor_id)
+            .where(audit_record.c.operation_id == operation_id)
+            .order_by(audit_record.c.occurred_at, audit_record.c.id)
+        ).all()
+    return [(str(row.outcome), row.actor_id) for row in rows]
 
 
 def _approved_and_queued(
@@ -468,6 +509,11 @@ def test_effect_time_destination_refusal_settles_refused(
     assert done.envelope == ("refused", "guard_refused")
     assert [row[1] for row in done.jobs] == ["succeeded"]
     assert _action_read(ctx, queued.action["id"])["restage_eligible"] is True
+    # The hold's row, then the refusal's, both naming the held caller.
+    assert _audit_rows(ctx, held.operation_id) == [
+        ("refused", ctx.actor.id),
+        ("refused", ctx.actor.id),
+    ]
 
 
 def test_typed_permanent_refusal_settles_refused(
@@ -522,6 +568,11 @@ def test_guard_refusal_at_approval_queues_no_job(
     assert done.operation == ("failed", None, "guard_refused")
     assert done.envelope == ("refused", "guard_refused")
     assert destination.calls == []
+    # The same held-operation audit rows an effect-time refusal writes.
+    assert _audit_rows(ctx, held.operation_id) == [
+        ("refused", ctx.actor.id),
+        ("refused", ctx.actor.id),
+    ]
 
 
 def test_human_refusal_before_any_job_refuses_action_and_reservation(
@@ -804,3 +855,413 @@ def test_external_action_get_refuses_an_unknown_id(ctx: WorkspaceContext) -> Non
         ctx, "core.external_action.get", {"external_action_id": str(UUID(int=7))}
     )
     assert missing.state == "not_found"
+
+
+_BINDING_BREAKS: dict[str, tuple[str, str]] = {
+    "approval_not_approved": ("approval", "approval is 'pending'"),
+    "operation_not_running": ("operation", "operation is 'pending'"),
+    "job_carries_an_operation": ("job", "job carries an operation id"),
+    "approval_digest_differs": ("digest", "approval digest differs"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_BINDING_BREAKS))
+def test_a_mismatched_binding_gets_no_grant_and_no_effect(
+    ctx: WorkspaceContext, cluster: Any, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    destination = _register(monkeypatch)
+    key = f"mismatch-{case}"
+    held, _ = _approved_and_queued(ctx, key)
+    target, problem = _BINDING_BREAKS[case]
+    statement: Any
+    if target == "approval":
+        statement = (
+            update(approval)
+            .where(approval.c.id == held.approval_id)
+            .values(state="pending")
+        )
+    elif target == "operation":
+        statement = (
+            update(operation)
+            .where(operation.c.id == held.operation_id)
+            .values(state="pending")
+        )
+    elif target == "job":
+        statement = (
+            update(job)
+            .where(job.c.kind == EXTERNAL_ACTION_EXECUTE)
+            .values(operation_id=held.operation_id)
+        )
+    else:
+        statement = (
+            update(approval)
+            .where(approval.c.id == held.approval_id)
+            .values(payload_digest=b"\x01" * 32)
+        )
+    with open_unit_of_work(ctx) as uow:
+        assert uow.connection.execute(statement).rowcount == 1
+        uow.commit()
+
+    _visit(cluster, ctx.workspace_id)
+    done = _state(ctx, held, key)
+    assert destination.calls == []
+    assert done.action["state"] == "pending"
+    assert done.envelope == ("pending", None)
+    assert [row[1] for row in done.jobs] == ["failed"]
+    with open_unit_of_work(ctx) as uow:
+        error = uow.connection.execute(
+            select(job.c.last_error).where(job.c.kind == EXTERNAL_ACTION_EXECUTE)
+        ).scalar_one()
+    assert error is not None and problem in error
+
+
+# --- the held caller and the payload are rechecked at effect time ------------------
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [("demoted", ROLE_NOT_PERMITTED), ("revoked", MEMBERSHIP_MISSING)],
+)
+def test_effect_time_recheck_refuses_a_held_caller_who_lost_permission(
+    ctx: WorkspaceContext,
+    cluster: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    workspace: UUID,
+    owner_account_id: UUID,
+    change: str,
+    code: str,
+) -> None:
+    destination = _register(monkeypatch)
+    key = f"held-{change}"
+    held, _ = _approved_and_queued(ctx, key)
+    membership = control_tables.membership
+    where = (membership.c.account_id == owner_account_id) & (
+        membership.c.workspace_id == workspace
+    )
+    with cluster.backend.control_engine.begin() as connection:
+        # The operation is owner-only: a member may no longer run it.
+        statement = (
+            update(membership).where(where).values(role=Role.MEMBER.value)
+            if change == "demoted"
+            else delete(membership).where(where)
+        )
+        assert connection.execute(statement).rowcount == 1
+
+    _visit(cluster, ctx.workspace_id)
+    done = _state(ctx, held, key)
+    assert destination.calls == []
+    assert done.action["state"] == "refused"
+    assert done.action["failure_class"] == "permanent_refusal_no_effect"
+    assert done.approval == "refused"
+    # The continuation's own recheck refused, before any guard was asked.
+    assert done.operation == ("failed", None, code)
+    assert done.envelope == ("refused", code)
+    assert [row[1] for row in done.jobs] == ["succeeded"]
+
+
+def test_effect_time_recheck_refuses_a_changed_payload_snapshot(
+    ctx: WorkspaceContext, cluster: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = _register(monkeypatch)
+    held, _ = _approved_and_queued(ctx, "snapshot")
+    with open_unit_of_work(ctx) as uow:
+        changed = uow.connection.execute(
+            update(approval_payload)
+            .where(approval_payload.c.approval_id == held.approval_id)
+            .values(body={**_payload("snapshot"), "title": "Changed after approval"})
+        ).rowcount
+        uow.commit()
+    assert changed == 1
+
+    _visit(cluster, ctx.workspace_id)
+    done = _state(ctx, held, "snapshot")
+    assert destination.calls == []
+    assert done.action["state"] == "refused"
+    assert done.action["failure_class"] == "permanent_refusal_no_effect"
+    assert done.approval == "refused"
+    assert done.operation == ("failed", None, INVALID_APPROVAL)
+    assert done.envelope == ("refused", INVALID_APPROVAL)
+
+
+# --- a provider effect survives a rolled-back run: recovery reconciles first --------
+
+
+def _lose_the_invoking_worker(ctx: WorkspaceContext, *, cancel: bool) -> None:
+    """A worker leased the job, invoked the provider and died before committing.
+
+    Its transaction rolled back, so the action still reads ``pending`` with no
+    ``provider_request_id`` and no attempt, while the provider kept the effect. The
+    lease has expired. Without a cancellation the dead worker spent the last attempt.
+    """
+    with open_unit_of_work(ctx) as uow:
+        uow.connection.execute(
+            update(job)
+            .where(job.c.kind == EXTERNAL_ACTION_EXECUTE)
+            .values(
+                state="leased",
+                lease_owner="dead-worker",
+                lease_until=datetime.now(UTC) - timedelta(minutes=5),
+                attempts=1 if cancel else job.c.max_attempts,
+                cancel_requested=cancel,
+            )
+        )
+        uow.commit()
+
+
+_RECOVERED: dict[tuple[str, str], tuple[str, str | None, str, str, Any, str, bool]] = {
+    # (mode, reconcile) -> action, failure class, approval, operation, envelope, job,
+    # restage eligible
+    ("exhausted", "landed"): (
+        "succeeded",
+        None,
+        "executed",
+        "succeeded",
+        ("succeeded", None),
+        "succeeded",
+        False,
+    ),
+    ("cancelled", "landed"): (
+        "succeeded",
+        None,
+        "executed",
+        "succeeded",
+        ("succeeded", None),
+        "succeeded",
+        False,
+    ),
+    ("exhausted", "absent"): (
+        "failed",
+        "retryable_no_effect",
+        "executed",
+        "failed",
+        ("failed", "retry_budget_exhausted"),
+        "failed",
+        True,
+    ),
+    ("cancelled", "absent"): (
+        "cancelled",
+        "cancelled_no_effect",
+        "refused",
+        "cancelled",
+        ("cancelled", "continuation_cancelled"),
+        "cancelled",
+        False,
+    ),
+    ("exhausted", "unknown"): (
+        "unresolved",
+        "outcome_unknown",
+        "executed",
+        "unresolved",
+        ("unresolved", "outcome_unknown"),
+        "succeeded",
+        False,
+    ),
+    ("cancelled", "unknown"): (
+        "unresolved",
+        "outcome_unknown",
+        "executed",
+        "unresolved",
+        ("unresolved", "outcome_unknown"),
+        "succeeded",
+        False,
+    ),
+}
+
+
+@pytest.mark.parametrize(("mode", "found"), sorted(_RECOVERED))
+def test_provider_recovery_after_a_lost_invocation_reconciles_first(
+    ctx: WorkspaceContext,
+    cluster: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    found: str,
+) -> None:
+    destination = _register(monkeypatch, provider=True)
+    key = f"lost-{mode}-{found}"
+    held, queued = _approved_and_queued(ctx, key)
+    action_id = queued.action["id"]
+    request_id = f"rheo-external-{action_id}"
+    _lose_the_invoking_worker(ctx, cancel=mode == "cancelled")
+    destination.reconciled = {
+        "landed": _Output(item_ref=f"synthetic:{key}"),
+        "absent": None,
+        "unknown": RuntimeError("the provider status read timed out"),
+    }[found]
+
+    _visit(cluster, ctx.workspace_id)
+    done = _state(ctx, held, key)
+    action, failure_class, approval_state, op_state, envelope, job_state, restage = (
+        _RECOVERED[(mode, found)]
+    )
+    # Recovery never invokes, and it asks with the deterministic request id even
+    # though the rolled-back run left none on the row.
+    assert destination.calls == []
+    assert destination.reconcile_calls == [request_id]
+    assert done.action["state"] == action
+    assert done.action["failure_class"] == failure_class
+    assert done.action["provider_request_id"] == request_id
+    assert done.approval == approval_state
+    assert done.operation[0] == op_state
+    assert done.envelope == envelope
+    assert [row[1] for row in done.jobs] == [job_state]
+    assert _action_read(ctx, action_id)["restage_eligible"] is restage
+    if found == "landed":
+        assert done.action["result_ref"] == f"synthetic:{key}"
+        assert done.operation[1] == f"synthetic:{key}"
+    if found == "unknown":
+        # Resolution asks the provider about the same request.
+        assert held.operation_id is not None
+        destination.reconciled = None
+        resolved = _resolve(
+            ctx, held.operation_id, outcome="failed", note="provider: none"
+        )
+        assert resolved.ok, resolved
+        assert destination.reconcile_calls == [request_id, request_id]
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_recovery_with_an_unregistered_destination_stays_unresolved(
+    ctx: WorkspaceContext,
+    cluster: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    cancel: bool,
+) -> None:
+    destination = _register(monkeypatch, provider=True)
+    key = f"unregistered-{cancel}"
+    held, queued = _approved_and_queued(ctx, key)
+    _lose_the_invoking_worker(ctx, cancel=cancel)
+    # Nothing can now show the destination ran in process, or ask it what happened.
+    DESTINATIONS._destinations.pop("synthetic")
+
+    _visit(cluster, ctx.workspace_id)
+    done = _state(ctx, held, key)
+    assert destination.calls == []
+    assert destination.reconcile_calls == []
+    assert done.action["state"] == "unresolved"
+    assert done.action["failure_class"] == "outcome_unknown"
+    assert done.approval == "executed"
+    assert done.operation[0] == "unresolved"
+    assert [row[1] for row in done.jobs] == ["succeeded"]
+    assert _action_read(ctx, queued.action["id"])["restage_eligible"] is False
+
+
+# --- the loop's rerun-in-cancel and raise-then-requeue paths -----------------------
+
+
+def _cancel_after_the_lease(
+    ctx: WorkspaceContext, modes: list[ContinuationMode]
+) -> ContinuationHandler:
+    """The real continuation, with a cancellation committed between lease and run."""
+
+    def continuation(uow: UnitOfWork, lease: ContinuationLease) -> ContinuationResult:
+        if not modes:
+            with open_unit_of_work(ctx) as other:
+                other.connection.execute(
+                    update(job)
+                    .where(job.c.id == lease.job_id)
+                    .values(cancel_requested=True)
+                )
+                other.commit()
+        modes.append(lease.mode)
+        return run_external_continuation(uow, lease)
+
+    return continuation
+
+
+@pytest.mark.parametrize("provider", [False, True])
+def test_a_cancellation_that_beats_the_finish_reruns_in_cancel_mode(
+    ctx: WorkspaceContext,
+    cluster: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: bool,
+) -> None:
+    destination = _register(monkeypatch, provider=provider)
+    key = f"beaten-{provider}"
+    held, queued = _approved_and_queued(ctx, key)
+    request_id = f"rheo-external-{queued.action['id']}"
+    modes: list[ContinuationMode] = []
+
+    _visit(cluster, ctx.workspace_id, continuation=_cancel_after_the_lease(ctx, modes))
+    done = _state(ctx, held, key)
+    # The run invoked once; its finish lost to the cancellation and rolled back; the
+    # same visit then reran at once in cancellation mode, which never invokes.
+    assert modes == [ContinuationMode.RUN, ContinuationMode.CANCEL_REQUESTED]
+    assert destination.calls == [key]
+    if provider:
+        # The provider kept the effect, so the cancellation cannot erase it.
+        assert destination.reconcile_calls == [request_id, request_id]
+        assert done.action["state"] == "succeeded"
+        assert done.approval == "executed"
+        assert done.operation == ("succeeded", f"synthetic:{key}", None)
+        assert done.envelope == ("succeeded", None)
+        assert [row[1] for row in done.jobs] == ["succeeded"]
+    else:
+        # In process, the rollback took the effect with it.
+        assert destination.reconcile_calls == []
+        assert done.action["state"] == "cancelled"
+        assert done.action["failure_class"] == "cancelled_no_effect"
+        assert done.action["attempts"] == 0
+        assert done.approval == "refused"
+        assert done.operation[0] == "cancelled"
+        assert done.envelope == ("cancelled", "continuation_cancelled")
+        assert [row[1] for row in done.jobs] == ["cancelled"]
+
+
+def _raise_after_the_first_run(raised: list[str]) -> ContinuationHandler:
+    """The real continuation, then a storage-style fault on its first return."""
+
+    def continuation(uow: UnitOfWork, lease: ContinuationLease) -> ContinuationResult:
+        result = run_external_continuation(uow, lease)
+        if not raised:
+            raised.append(result.disposition.value)
+            raise RuntimeError("synthetic settlement fault")
+        return result
+
+    return continuation
+
+
+@pytest.mark.parametrize("provider", [False, True])
+def test_a_continuation_that_raises_rolls_back_and_is_requeued(
+    ctx: WorkspaceContext,
+    cluster: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: bool,
+) -> None:
+    destination = _register(monkeypatch, provider=provider)
+    key = f"raised-{provider}"
+    held, queued = _approved_and_queued(ctx, key)
+    request_id = f"rheo-external-{queued.action['id']}"
+    raised: list[str] = []
+    continuation = _raise_after_the_first_run(raised)
+
+    _visit(cluster, ctx.workspace_id, continuation=continuation)
+    requeued = _state(ctx, held, key)
+    assert raised == ["succeeded"]
+    assert destination.calls == [key]
+    # Nothing the continuation wrote survived; the job is queued for another try.
+    assert requeued.action["state"] == "pending"
+    assert requeued.action["attempts"] == 0
+    assert requeued.action["provider_request_id"] is None
+    assert requeued.approval == "approved"
+    assert requeued.operation[0] == "running"
+    assert requeued.envelope == ("pending", None)
+    assert [(row[1], row[5]) for row in requeued.jobs] == [("queued", 1)]
+    with open_unit_of_work(ctx) as uow:
+        error = uow.connection.execute(
+            select(job.c.last_error).where(job.c.kind == EXTERNAL_ACTION_EXECUTE)
+        ).scalar_one()
+    assert error == "RuntimeError"
+
+    _visit(cluster, ctx.workspace_id, after=600, continuation=continuation)
+    done = _state(ctx, held, key)
+    if provider:
+        # Run mode reconciles first: the kept effect is found, not repeated.
+        assert destination.calls == [key]
+        assert destination.reconcile_calls == [request_id, request_id]
+    else:
+        # The in-process effect was rolled back, so it runs again, once.
+        assert destination.calls == [key, key]
+    assert done.action["state"] == "succeeded"
+    assert done.approval == "executed"
+    assert done.operation == ("succeeded", f"synthetic:{key}", None)
+    assert [row[1] for row in done.jobs] == ["succeeded"]

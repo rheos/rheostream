@@ -692,7 +692,19 @@ def _recover(
     destination: DestinationRegistration | None,
     provider_request_id: str | None,
 ) -> ContinuationResult:
-    """Cancellation or exhausted-budget recovery: reconcile, never invoke."""
+    """Cancellation or exhausted-budget recovery: reconcile, never invoke.
+
+    **Only an in-process destination can prove absence from the action row.** Its
+    effect runs in a savepoint and commits only together with its success settlement,
+    so an open action means none landed. A provider's effect does not roll back with
+    the transaction that invoked it, and that transaction also carried the
+    ``executing`` marker and ``provider_request_id``: a crash, a raise or a lost
+    finish after the call erases both and keeps the effect. So a provider destination
+    is always reconciled, with the deterministic request id when the row holds none,
+    and a destination that is no longer registered cannot be shown to be in-process
+    or asked, so it settles ``unresolved``. Nothing that cannot prove absence settles
+    ``failed`` or ``cancelled``.
+    """
     cancelling = grant.mode is ContinuationMode.CANCEL_REQUESTED
     code = CONTINUATION_CANCELLED if cancelling else RETRY_BUDGET_EXHAUSTED
     absent_detail = (
@@ -700,17 +712,25 @@ def _recover(
         if cancelling
         else "retry budget exhausted with no effect"
     )
-    if provider_request_id is not None:
-        # A provider invocation may have started: only reconcile can prove anything.
-        found = (
-            _reconcile(s, destination, provider_request_id)
-            if destination is not None
-            else ExternalDestinationError(
-                ExternalFailureClass.OUTCOME_UNKNOWN,
-                OUTCOME_UNKNOWN,
-                "the destination is no longer registered",
-            )
+    if destination is None:
+        return _settle_unresolved(
+            s,
+            OUTCOME_UNKNOWN,
+            "the destination is no longer registered, so absence cannot be proven",
         )
+    if destination.mode is DestinationMode.PROVIDER:
+        request_id = provider_request_id or _provider_request_id(grant.action_id)
+        _must(
+            actions.update_action(
+                s.conn,
+                action_id=s.action_id,
+                from_states=OPEN_STATES,
+                provider_request_id=request_id,
+                updated_at=s.now,
+            ),
+            "record the reconciled provider request id",
+        )
+        found = _reconcile(s, destination, request_id)
         if isinstance(found, BaseModel):
             return _settle_success(
                 s, found, check_kind=operation_records.PROVIDER_STATUS
@@ -719,8 +739,7 @@ def _recover(
             found.failure_class is ExternalFailureClass.OUTCOME_UNKNOWN
         ):
             return _settle_unresolved(s, found.code, found.detail)
-    # No provider invocation began, or reconcile proved absence. An in-process effect
-    # commits only together with its success settlement, so an open action proves none.
+    # Reconcile proved absence, or an in-process effect is absent with the open action.
     if cancelling:
         return _settle_cancelled(s, code, absent_detail)
     return _settle_failed(s, code, absent_detail)
@@ -959,7 +978,8 @@ def queue_approved_external(
 
     The approval is ``approved`` in this transaction. A binding mismatch or a failed
     held-caller rebuild raises, rolling the approval back. A guard refusal is
-    durable: action/approval refused, operation failed, keyed refused, no job.
+    durable: action/approval refused, operation failed, keyed refused, the held
+    operation's ``refused`` audit row, no job.
     """
     from rheo_core.settings import resolve
     from rheo_core.settings.storage_source import TransactionBoundOverrideSource
@@ -1013,6 +1033,10 @@ def queue_approved_external(
             key=action.idempotency_key,
             digest=digest,
             now=now,
+            uow=uow,
+            held=None if isinstance(held, Refusal) else held,
+            operation=operation,
+            model_input=model_input,
         )
         text = f"{refusal.guard}: {refusal.detail}"
         _action_terminal(
@@ -1041,6 +1065,8 @@ def queue_approved_external(
             "end the held operation failed",
         )
         _envelope_error(s, state="refused", code=GUARD_REFUSED, detail=text)
+        # The same held-operation row an effect-time refusal writes.
+        _audit(s, AUDIT_REFUSED, required=False)
         return
     if isinstance(held, Refusal):
         raise OperationRefused(held.state, str(held))

@@ -758,7 +758,11 @@ payload digest, readiness and every guard before invoking the registered destina
 once. It settles the action, approval, operation, keyed envelope and audit row in the same
 transaction as the job write, returning one of `succeeded`, `handled_terminal`, `retry`,
 `failed_terminal` or `cancelled_terminal`; a lost lease finish rolls all of it back.
-Cancellation and exhausted-budget leases reconcile and never invoke. `failure_class` is one of
+Cancellation and exhausted-budget leases reconcile and never invoke. A provider destination is
+always reconciled there with its deterministic request id, because a run that invoked it and
+then rolled back left no marker on the action but kept the effect; a destination that is no
+longer registered settles `unresolved`. Only an in-process destination, whose effect commits
+with its settlement, proves absence from an open action. `failure_class` is one of
 `destination_unavailable_no_effect`, `permanent_refusal_no_effect`, `retryable_no_effect`,
 `outcome_unknown` and `cancelled_no_effect`. A `failed` action is always proven no-effect; a
 possibly effective one is `unresolved` until `core.operation.resolve` moves it, which needs the

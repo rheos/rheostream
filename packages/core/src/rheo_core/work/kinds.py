@@ -127,7 +127,8 @@ class JobKindRegistry:
     Registration is deliberately last-writer-wins rather than a refusal: the one
     production instance is populated once at import of the composition root, and a
     test that re-registers a kind inside a single case is expressing intent rather
-    than colliding with another caller.
+    than colliding with another caller. The one refusal is across the two maps: a
+    kind is either ordinary or a continuation, never both.
     """
 
     __slots__ = ("_continuations", "_kinds")
@@ -158,9 +159,15 @@ class JobKindRegistry:
     def register(
         self, kind: str, input_model: type[BaseModel], handler: JobHandler
     ) -> None:
-        """Declare that ``kind`` is run by ``handler`` with ``input_model``."""
+        """Declare that ``kind`` is run by ``handler`` with ``input_model``.
+
+        A kind already registered as a continuation is refused: the loop looks
+        continuations up first, so this handler would be silently shadowed.
+        """
         if not isinstance(kind, str) or not kind:
             raise ValueError("a job kind is a non-empty string")
+        if kind in self._continuations:
+            raise ValueError(f"{kind!r} is already a continuation kind")
         self._kinds[kind] = (input_model, handler)
 
     def names(self) -> frozenset[str]:

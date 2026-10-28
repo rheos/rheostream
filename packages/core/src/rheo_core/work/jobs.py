@@ -67,14 +67,14 @@ LEASED: Final = "leased"
 SUCCEEDED: Final = "succeeded"
 FAILED: Final = "failed"
 CANCELLED: Final = "cancelled"
+"""The five members of the ``job_state`` check constraint (``work_tables.JOB_STATES``),
+named here so no predicate in this module spells one of them by hand."""
 
 EXTERNAL_ACTION_EXECUTE: Final = "core.external_action.execute"
 """The core-only continuation kind that performs one approved external action.
 
 Named here, beside the job states, because :func:`request_cancellation` must treat
 its queued rows differently and this module may not import the operations layer."""
-"""The five members of the ``job_state`` check constraint (``work_tables.JOB_STATES``),
-named here so no predicate in this module spells one of them by hand."""
 
 
 @dataclass(frozen=True, slots=True)

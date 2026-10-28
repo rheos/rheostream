@@ -513,13 +513,15 @@ def test_agent_default_evaluates_to_registered_tools(
     assert operations == expected
 
 
-def test_cli_full_excludes_the_eight_names(session_ctx: WorkspaceContext) -> None:
+def test_cli_full_excludes_every_non_token_issuable_name(
+    session_ctx: WorkspaceContext,
+) -> None:
     """B7, row 18: ``cli_full`` for an owner contains every registered
-    operation except the eight ``NON_TOKEN_ISSUABLE`` names.
+    operation except the ``NON_TOKEN_ISSUABLE`` names.
 
     Asserted twice, deliberately: directly against ``sets.cli_full()``'s own
     return value (independent of ``issue.py``'s own separate strip, so a
-    ``cli_full`` mutant that stopped excluding the eight is caught here even
+    ``cli_full`` mutant that stopped excluding them is caught here even
     though ``issue.py``'s own defense-in-depth would otherwise mask it at the
     issued-token layer below), and against the actual issued token's
     persisted snapshot (the end-to-end shape B7 names).
