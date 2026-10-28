@@ -21,6 +21,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.approval.preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.approval.preview (read) */
+        post: operations["core.approval.preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.approval.refuse": {
         parameters: {
             query?: never;
@@ -570,6 +587,127 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * ApprovalDecision
+         * @description Which approval to approve or refuse, and optionally the digest the person saw.
+         *
+         *     ``expected_payload_digest`` is the lowercase hex ``core.approval.preview``
+         *     published. When present it is compared with the row's digest under the row lock
+         *     the decision holds, and a difference refuses :data:`APPROVAL_DIGEST_MISMATCH`.
+         *     It is an assertion about the binding, never a substitute for it: the decision
+         *     still verifies the stored snapshot against the stored digest on its own.
+         */
+        ApprovalDecision: {
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+            /**
+             * Expected Payload Digest
+             * @default null
+             */
+            expected_payload_digest: string | null;
+        };
+        /**
+         * ApprovalPreview
+         * @description What a person is shown before deciding, or the redacted answer.
+         *
+         *     **Disclosed** (``pending``, ``expired``, ``resolved``): every field below is the
+         *     verified persisted binding — the ids, the operation, who asked (the original held
+         *     caller, never the viewer), the subject read from the verified payload, the exact
+         *     canonical destination (null for a class with no destination), the complete
+         *     validated payload, its digest as lowercase hex, the purpose and window, and the
+         *     durable approval state. ``external_action_id`` is set for a staged KEYED
+         *     EXTERNAL action, whose own outcome ``core.external_action.get`` reports.
+         *
+         *     **Redacted** (``invalid``, ``unavailable``): every field but ``status`` and
+         *     ``actionable`` is null. ``unavailable`` is byte-identical whatever the cause.
+         *
+         *     ``actionable`` is true exactly when ``status`` is ``pending``. The validator makes
+         *     every other combination unconstructable, so a handler bug cannot publish one.
+         */
+        ApprovalPreview: {
+            /** Actionable */
+            actionable: boolean;
+            /**
+             * Approval Id
+             * @default null
+             */
+            approval_id: string | null;
+            /**
+             * Destination Ref
+             * @default null
+             */
+            destination_ref: string | null;
+            /**
+             * Durable State
+             * @default null
+             */
+            durable_state: string | null;
+            /**
+             * External Action Id
+             * @default null
+             */
+            external_action_id: string | null;
+            /**
+             * Operation Id
+             * @default null
+             */
+            operation_id: string | null;
+            /**
+             * Operation Name
+             * @default null
+             */
+            operation_name: string | null;
+            /**
+             * Payload
+             * @default null
+             */
+            payload: {
+                [key: string]: components["schemas"]["JsonValue"];
+            } | null;
+            /**
+             * Payload Digest
+             * @default null
+             */
+            payload_digest: string | null;
+            /**
+             * Purpose
+             * @default null
+             */
+            purpose: string | null;
+            /**
+             * Requester Id
+             * @default null
+             */
+            requester_id: string | null;
+            /**
+             * Requester Kind
+             * @default null
+             */
+            requester_kind: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "expired" | "resolved" | "invalid" | "unavailable";
+            /**
+             * Subject Ref
+             * @default null
+             */
+            subject_ref: string | null;
+            /**
+             * Window End
+             * @default null
+             */
+            window_end: string | null;
+            /**
+             * Window Start
+             * @default null
+             */
+            window_start: string | null;
+        };
+        /**
          * ApprovalRecord
          * @description One approval as these operations publish it.
          *
@@ -640,7 +778,7 @@ export interface components {
         };
         /**
          * ApprovalRef
-         * @description Which approval to act on. ``approval_id`` is not a reserved input field, so a
+         * @description Which approval to read. ``approval_id`` is not a reserved input field, so a
          *     declaration may name it.
          */
         ApprovalRef: {
@@ -1907,7 +2045,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ApprovalRef"];
+                "application/json": components["schemas"]["ApprovalDecision"];
             };
         };
         responses: {
@@ -1933,7 +2071,7 @@ export interface operations {
             };
         };
     };
-    "core.approval.refuse": {
+    "core.approval.preview": {
         parameters: {
             query?: never;
             header?: never;
@@ -1943,6 +2081,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ApprovalRef"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ApprovalPreview"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.approval.refuse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalDecision"];
             };
         };
         responses: {

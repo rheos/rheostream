@@ -41,6 +41,7 @@ from rheo_app_core.main import app, lifespan
 from rheo_app_core.startup import run_startup
 from rheo_core.approvals import (
     APPROVAL_APPROVE,
+    APPROVAL_PREVIEW,
     APPROVAL_REFUSE,
     STANDING_GRANT_CREATE,
     STANDING_GRANT_REVOKE,
@@ -392,6 +393,8 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         # ``tests/test_production_registration.py`` asserts from the other side.
         assert report.operations == (
             APPROVAL_APPROVE,
+            # Run 4b2's bound preview ("preview" between "approve" and "refuse").
+            APPROVAL_PREVIEW,
             APPROVAL_REFUSE,
             "core.audit.list",
             # Run 1a4b's ingest and its three enrollment operations ("evidence"

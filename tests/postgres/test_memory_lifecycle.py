@@ -49,7 +49,12 @@ from harness.modules import (
 )
 from harness.registry import add_member
 from rheo_contracts import RecordRef, Role, StaleRecord, WorkspaceContext
-from rheo_core.approvals import APPROVAL_APPROVE, ApprovalRecord
+from rheo_core.approvals import (
+    APPROVAL_APPROVE,
+    APPROVAL_PREVIEW,
+    REDACTED_PREVIEW,
+    ApprovalRecord,
+)
 from rheo_core.boundary import context_for_harness
 from rheo_core.boundary.context import Refusal
 from rheo_core.deletion import (
@@ -1097,23 +1102,19 @@ def test_a_physically_removed_row_gets_no_invalidated_event(
 def test_the_erasure_runs_as_the_held_caller_at_every_checkpoint(
     lifecycle: LifecycleWorkspace,
 ) -> None:
-    """One member holds, **another member** approves, and the first's memory is erased.
+    """One member holds a deletion of their own memory; a second member may not
+    release it; the holder's own release erases it as the holder.
 
     The target's audience is the holder's, so a *second member's* context cannot
     authorize it: the owned-delete authorizer refuses a member-audience row to any
-    account but that member's. A coordinator that ran the authorizer under the
-    approver's context at execution or at coordinator entry would therefore refuse,
-    and the deletion would not happen at all — which makes a successful erasure here
-    the proof that all three checkpoints saw the rebuilt original caller. The
-    ledger's actor is asserted as well, because it is the durable half of the same
-    claim.
-
-    **The approver is deliberately not the owner**, which it was before § A8's
-    content-free owner route existed. An owner now passes that audience check for any
-    member-audience row — see the case below — so an owner-approved erasure here
-    would succeed whichever context the coordinator used, and the claim would go
-    untested. ``core.approval.approve`` is ratified for ``owner, member`` alike, so a
-    second member is a legitimate approver and is the one that still discriminates.
+    account but that member's (and an owner's, below). Until run 4b2 this test had
+    that second member approve, which proved the coordinator's checkpoints ran as the
+    rebuilt original caller. Run 4b2 made approval require that the approver can see
+    the held subject — read it, or for this operation hold the same erasure authority
+    — so that release is now refused ``not_found`` before anything is written, which
+    is asserted. The checkpoints-as-held-caller property is still pinned for every
+    gated operation by ``test_approvals.py``'s held-caller tests; here the ledger's
+    actor is asserted as its durable half.
     """
     member_id = add_member(
         lifecycle.cluster.backend,
@@ -1138,11 +1139,66 @@ def test_the_erasure_runs_as_the_held_caller_at_every_checkpoint(
     )
     _refused(refused, "not_found")
     assert refused.approval_id is None
+    # Run 4b2: an approver must be able to see what they release. This one can
+    # neither read the memory nor erase it, so ``core.approval.approve`` answers
+    # ``not_found`` before anything is written and the memory survives. The approval
+    # stays pending for someone who may decide it.
+    approval_id = _held(lifecycle, member, target.id)
+    _refused(_approve(lifecycle, approver, approval_id), "not_found")
+    assert lifecycle.stored(target.id) is not None
 
-    row = _erase(lifecycle, target.id, holder=member, approver=approver)
+    row = _erase(lifecycle, target.id, holder=member, approver=member)
 
     assert row.actor_id == member_id
     assert lifecycle.stored(target.id) is None
+
+
+def test_the_preview_of_a_member_erasure_follows_erasure_authority_not_read_authority(
+    lifecycle: LifecycleWorkspace,
+) -> None:
+    """Run 4b2's bound preview over the one operation whose decision authority is not
+    read authority.
+
+    A member holds the erasure of their own memory. The owner cannot read that memory
+    but holds erasure authority over it, so the owner's preview discloses the bound
+    request — the reference, the requester, the digest — and is actionable; it carries
+    no field of the memory itself. A second member has neither authority and gets the
+    common redaction, identical to an unknown id's.
+    """
+    member_id = add_member(
+        lifecycle.cluster.backend,
+        lifecycle.workspace,
+        Role.MEMBER,
+        display_name="erasure-requester",
+    )
+    stranger_id = add_member(
+        lifecycle.cluster.backend,
+        lifecycle.workspace,
+        Role.MEMBER,
+        display_name="no-authority",
+    )
+    member = lifecycle.context(account_id=member_id, role=Role.MEMBER)
+    stranger = lifecycle.context(account_id=stranger_id, role=Role.MEMBER)
+    target = _seed(
+        lifecycle,
+        _row(audience_kind="member", audience_id=member_id, body="private body text"),
+    )
+    approval_id = _held(lifecycle, member, target.id)
+
+    shown = lifecycle.core_call(
+        lifecycle.context(), APPROVAL_PREVIEW, {"approval_id": str(approval_id)}
+    )
+    hidden = lifecycle.core_call(
+        stranger, APPROVAL_PREVIEW, {"approval_id": str(approval_id)}
+    )
+
+    assert shown.ok and shown.result is not None, shown
+    assert (shown.result.status, shown.result.actionable) == ("pending", True)
+    assert shown.result.requester_id == member_id
+    assert shown.result.subject_ref == memory_reference(target.id)
+    assert "private body text" not in json.dumps(shown.result.model_dump(), default=str)
+    assert hidden.ok and hidden.result is not None, hidden
+    assert hidden.result.model_dump() == REDACTED_PREVIEW.model_dump()
 
 
 def test_the_owner_authorizes_erasing_a_member_memory_and_reads_none_of_it(

@@ -532,6 +532,8 @@ def test_cli_full_excludes_every_non_token_issuable_name(
     assert "core.token.revoke" not in operations
     assert "core.approval.approve" not in operations
     assert "core.approval.refuse" not in operations
+    # The bound preview discloses the whole held payload; a person's read only.
+    assert "core.approval.preview" not in operations
     assert "core.standing_grant.create" not in operations
     assert "core.standing_grant.revoke" not in operations
     assert "core.evidence_enrollment.create" not in operations
@@ -540,7 +542,7 @@ def test_cli_full_excludes_every_non_token_issuable_name(
     assert "core.operation.resolve" not in operations
     # Revoking an enrollment only removes capability, so a token may carry it.
     assert "core.evidence_enrollment.revoke" in operations
-    assert len(NON_TOKEN_ISSUABLE) == 9
+    assert len(NON_TOKEN_ISSUABLE) == 10
     assert "core.workspace.status" in operations
     assert NOTE_GET in operations
 

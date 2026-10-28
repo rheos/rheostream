@@ -125,11 +125,13 @@ def test_audit_list_publishes_limit_only_of_the_operations_schema() -> None:
     )
 
 
-def test_the_non_token_issuable_names_are_the_nine() -> None:
+def test_the_non_token_issuable_names_are_the_ten() -> None:
     """The policy set, typed out: run 1a4b's enrollment ``create`` and ``rotate``
-    joined the six, and ``revoke`` did not. No tool may name any of them."""
+    joined the six, and ``revoke`` did not; run 4b2 added ``core.operation.resolve``
+    and ``core.approval.preview``. No tool may name any of them."""
     assert NON_TOKEN_ISSUABLE == {
         "core.approval.approve",
+        "core.approval.preview",
         "core.approval.refuse",
         "core.evidence_enrollment.create",
         "core.evidence_enrollment.rotate",

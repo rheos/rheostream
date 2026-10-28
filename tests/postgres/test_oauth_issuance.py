@@ -55,6 +55,7 @@ OWNER_SNAPSHOT = frozenset(
 
 NOT_ISSUABLE = (
     "core.approval.approve",
+    "core.approval.preview",
     "core.approval.refuse",
     "core.evidence_enrollment.create",
     "core.evidence_enrollment.rotate",

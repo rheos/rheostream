@@ -1,6 +1,238 @@
 {
   "components": {
     "schemas": {
+      "ApprovalDecision": {
+        "description": "Which approval to approve or refuse, and optionally the digest the person saw.\n\n``expected_payload_digest`` is the lowercase hex ``core.approval.preview``\npublished. When present it is compared with the row's digest under the row lock\nthe decision holds, and a difference refuses :data:`APPROVAL_DIGEST_MISMATCH`.\nIt is an assertion about the binding, never a substitute for it: the decision\nstill verifies the stored snapshot against the stored digest on its own.",
+        "properties": {
+          "approval_id": {
+            "format": "uuid",
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "expected_payload_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Payload Digest"
+          }
+        },
+        "required": [
+          "approval_id"
+        ],
+        "title": "ApprovalDecision",
+        "type": "object"
+      },
+      "ApprovalPreview": {
+        "additionalProperties": false,
+        "description": "What a person is shown before deciding, or the redacted answer.\n\n**Disclosed** (``pending``, ``expired``, ``resolved``): every field below is the\nverified persisted binding \u2014 the ids, the operation, who asked (the original held\ncaller, never the viewer), the subject read from the verified payload, the exact\ncanonical destination (null for a class with no destination), the complete\nvalidated payload, its digest as lowercase hex, the purpose and window, and the\ndurable approval state. ``external_action_id`` is set for a staged KEYED\nEXTERNAL action, whose own outcome ``core.external_action.get`` reports.\n\n**Redacted** (``invalid``, ``unavailable``): every field but ``status`` and\n``actionable`` is null. ``unavailable`` is byte-identical whatever the cause.\n\n``actionable`` is true exactly when ``status`` is ``pending``. The validator makes\nevery other combination unconstructable, so a handler bug cannot publish one.",
+        "properties": {
+          "actionable": {
+            "title": "Actionable",
+            "type": "boolean"
+          },
+          "approval_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Approval Id"
+          },
+          "destination_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Destination Ref"
+          },
+          "durable_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Durable State"
+          },
+          "external_action_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "External Action Id"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operation Id"
+          },
+          "operation_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operation Name"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Payload"
+          },
+          "payload_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Payload Digest"
+          },
+          "purpose": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Purpose"
+          },
+          "requester_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Requester Id"
+          },
+          "requester_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Requester Kind"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "expired",
+              "resolved",
+              "invalid",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "subject_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Subject Ref"
+          },
+          "window_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Window End"
+          },
+          "window_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Window Start"
+          }
+        },
+        "required": [
+          "status",
+          "actionable"
+        ],
+        "title": "ApprovalPreview",
+        "type": "object"
+      },
       "ApprovalRecord": {
         "description": "One approval as these operations publish it.\n\n:class:`~rheo_core.approvals.records.ApprovalRow` field for field, with that row's\n``id`` published as ``approval_id`` \u2014 the renaming ``OperationRecord`` and\n``AuditRecord`` already make for the same reason \u2014 and ``payload_digest``\npublished as its lowercase hex, exactly as ``AuditRecord.request_digest`` is: the\ncolumn is ``bytea``, a generated TypeScript client has no natural type for raw\nbytes, and hex is what a person comparing two digests can actually compare.\n\n**This is the supported read of the approval record** (AC 8). A caller reads the\ndurable row \u2014 its state, who approved it, and the digest that binds it \u2014 off the\noperation that changed it, and never by querying ``core.approval``. The record is\nread back from the row *after* the transition, so what it publishes is what the\ndatabase holds rather than what the handler intended to write.",
         "properties": {
@@ -191,7 +423,7 @@
         "type": "object"
       },
       "ApprovalRef": {
-        "description": "Which approval to act on. ``approval_id`` is not a reserved input field, so a\ndeclaration may name it.",
+        "description": "Which approval to read. ``approval_id`` is not a reserved input field, so a\ndeclaration may name it.",
         "properties": {
           "approval_id": {
             "format": "uuid",
@@ -2543,7 +2775,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ApprovalRef"
+                "$ref": "#/components/schemas/ApprovalDecision"
               }
             }
           },
@@ -2603,6 +2835,73 @@
         "summary": "core.approval.approve (mutate)"
       }
     },
+    "/api/v1/operations/core.approval.preview": {
+      "post": {
+        "operationId": "core.approval.preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalRef"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "approval_id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "error": {
+                      "properties": {
+                        "error_code": {
+                          "type": "string"
+                        },
+                        "error_text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error_code",
+                        "error_text"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "format": "uuid",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ApprovalPreview"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "operation_id"
+                  ],
+                  "title": "OperationEnvelope",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the operation envelope"
+          }
+        },
+        "summary": "core.approval.preview (read)"
+      }
+    },
     "/api/v1/operations/core.approval.refuse": {
       "post": {
         "operationId": "core.approval.refuse",
@@ -2610,7 +2909,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ApprovalRef"
+                "$ref": "#/components/schemas/ApprovalDecision"
               }
             }
           },
