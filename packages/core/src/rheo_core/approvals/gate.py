@@ -39,7 +39,7 @@ from datetime import datetime, timedelta
 from typing import Final
 from uuid import UUID
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from rheo_contracts import (
     OperationDeclaration,
     RecordRef,
@@ -56,6 +56,7 @@ from rheo_core.approvals.binding import (
     payload_digest,
 )
 from rheo_core.approvals.guards import GuardRefusal, effective_guards_for, run_guards
+from rheo_core.approvals.snapshot import SnapshotRefusal, verify_snapshot
 from rheo_core.audit import AUDIT_SUCCEEDED
 from rheo_core.boundary.context import Refusal
 from rheo_core.boundary.factories import context_for_approved_execution
@@ -68,7 +69,6 @@ from rheo_core.operations.records import (
     mint,
 )
 from rheo_core.operations.refusals import (
-    OPERATION_UNKNOWN,
     OUTPUT_INVALID,
     RECORD_STALE,
     OperationRefused,
@@ -404,7 +404,10 @@ def execute_approved(
     - ``operation_unknown`` — the approved operation is not registered in this
       process. A deployment that dropped a module between the hold and the approval.
     - ``invalid_approval`` — the snapshot is gone, no longer validates, or the
-      binding tuple does not match what is about to run (criterion 60).
+      binding tuple does not match what is about to run (criterion 60): the digest,
+      the exact destination, the window, or — for a KEYED EXTERNAL/FINANCIAL call —
+      the staged action it must run through. Every clause but the window is
+      ``approvals/snapshot.py:verify_snapshot``, the verifier the preview shares.
     - ``record_stale`` — the handler's own compare-and-set missed and it raised
       :class:`~rheo_contracts.StaleRecord`, translated here because this call does not
       go back through ``dispatch()``'s own ``except``.
@@ -425,30 +428,19 @@ def execute_approved(
     the row that says this operation did not happen. The operation record carries the
     guard's name for the reader who wants to know *why*.
     """
+    # The snapshot is verified by the one verifier ``core.approval.preview`` and both
+    # decisions use (``approvals/snapshot.py``), so what a person was shown as
+    # verified and what may execute cannot drift apart; the window is compared below.
+    verified = verify_snapshot(uow.connection, approval, registry=registry)
+    if isinstance(verified, SnapshotRefusal):
+        raise OperationRefused(verified.state, verified.detail)
     operation = registry.lookup(approval.operation_name)
-    if operation is None:
-        raise OperationRefused(
-            OPERATION_UNKNOWN,
-            f"{approval.operation_name} is approved but not registered in this process",
-        )
-    declaration = operation.declaration
-    body = records.payload_body(uow.connection, approval_id=approval.id)
-    if body is None:
-        raise OperationRefused(
-            INVALID_APPROVAL,
-            f"the payload snapshot of approval {approval.id} is no longer stored",
-        )
-    try:
-        model_input = declaration.input_model.model_validate(body)
-    except ValidationError:
-        raise OperationRefused(
-            INVALID_APPROVAL,
-            f"the stored payload of approval {approval.id} no longer validates "
-            f"against {declaration.input_model.__name__}",
-        ) from None
+    assert operation is not None  # the verifier answered ``operation_unknown`` else
+    declaration = verified.declaration
+    model_input = verified.model_input
     detail = binding_detail(
         approved_digest=approval.payload_digest,
-        digest=payload_digest(executable_payload(model_input)),
+        digest=payload_digest(verified.payload),
         window_start=approval.window_start,
         window_end=approval.window_end,
         now=now,

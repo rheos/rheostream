@@ -612,19 +612,21 @@ export interface components {
          * ApprovalPreview
          * @description What a person is shown before deciding, or the redacted answer.
          *
-         *     **Disclosed** (``pending``, ``expired``, ``resolved``): every field below is the
-         *     verified persisted binding — the ids, the operation, who asked (the original held
-         *     caller, never the viewer), the subject read from the verified payload, the exact
-         *     canonical destination (null for a class with no destination), the complete
-         *     validated payload, its digest as lowercase hex, the purpose and window, and the
-         *     durable approval state. ``external_action_id`` is set for a staged KEYED
-         *     EXTERNAL action, whose own outcome ``core.external_action.get`` reports.
+         *     **Disclosed** (``pending``, ``restored``, ``expired``, ``resolved``): every field
+         *     below is the verified persisted binding — the ids, the operation, who asked (the
+         *     original held caller, never the viewer), the subject read from the verified
+         *     payload, the exact canonical destination (null for a class with no destination),
+         *     the complete validated payload, its digest as lowercase hex, the purpose and
+         *     window, and the durable approval state (``requires_reapproval`` for
+         *     ``restored``). ``external_action_id`` is set for a staged KEYED EXTERNAL action,
+         *     whose own outcome ``core.external_action.get`` reports.
          *
          *     **Redacted** (``invalid``, ``unavailable``): every field but ``status`` and
          *     ``actionable`` is null. ``unavailable`` is byte-identical whatever the cause.
          *
-         *     ``actionable`` is true exactly when ``status`` is ``pending``. The validator makes
-         *     every other combination unconstructable, so a handler bug cannot publish one.
+         *     ``actionable`` is true exactly when ``status`` is ``pending`` or ``restored``.
+         *     The validator makes every other combination unconstructable, so a handler bug
+         *     cannot publish one.
          */
         ApprovalPreview: {
             /** Actionable */
@@ -690,7 +692,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "pending" | "expired" | "resolved" | "invalid" | "unavailable";
+            status: "pending" | "restored" | "expired" | "resolved" | "invalid" | "unavailable";
             /**
              * Subject Ref
              * @default null

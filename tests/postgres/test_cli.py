@@ -360,7 +360,8 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         assert report.profile == "test"
         assert report.control_database == cluster.control_database
         assert "RHEO_CLUSTER_DSN" in report.env_references
-        # Sorted, and now twenty-one: 0b1's three, 0b2's C8 adds core.token.issue and
+        # Sorted, and now thirty-four. How the list grew, through 1a4b (later runs
+        # are commented inline below): 0b1's three, 0b2's C8 adds core.token.issue and
         # core.token.revoke, 0c1's C3 adds core.work.failures, 0c2's C4 adds
         # core.operation.get/list/resolve, 0c2's C5 adds core.audit.list, 0c3's
         # C6 adds core.approval.approve and core.approval.refuse, 0c3's C7 adds

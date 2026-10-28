@@ -9,8 +9,11 @@ any of those three classes.
 - ``binding.py`` — the payload digest and the comparison execution makes against it.
 - ``guards.py`` — the guard protocol, the three guards the core attaches, and the
   attachment rule that decides which of them an operation gets.
+- ``snapshot.py`` — the one verifier of a stored snapshot against its binding, which
+  the preview, both decisions and the execution share.
 - ``gate.py`` — hold a gated call, and execute an approved one.
-- ``operations.py`` — the two operations a person approves or refuses through.
+- ``operations.py`` — the preview a person reads, and the two operations they approve
+  or refuse through.
 - ``grant_tables.py`` — ``core.standing_grant`` and ``core.standing_grant_operation``,
   on their own ``MetaData`` so ``0004_standing_grants`` creates exactly those two.
 - ``grants.py`` — the grant repository, and what "covered" means.

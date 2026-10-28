@@ -20,22 +20,33 @@ checked: that would refuse the one legitimate non-web caller — a test harness 
 **Who may see or decide is checked here, against the current state of the world.**
 ``docs/architecture/confirmation-and-safety.md`` § Who may approve says an
 authenticated person, and the run-4b2 spec adds that the person must still be allowed
-to see what they are approving. :func:`_eligible` and :func:`_subject_visible` are that
+to see what they are approving. :func:`_eligible` and :func:`_subject_access` are that
 rule, and the preview and both decisions share them: the context's actor is an account
 that is its own authenticated principal, its ``control.membership`` row *now* carries
 ``owner`` or ``member`` (read afresh, so a context built before a revocation does not
-outlive it), and the held call's subject — read from the **verified** snapshot, never
-from the stored ``subject_ref`` column — resolves for this viewer.
+outlive it), and the held call's subject — read from the snapshot verified by
+``approvals/snapshot.py:verify_snapshot``, the verifier the gate uses too, never from
+the stored ``subject_ref`` column — resolves for this viewer (or, for
+``core.record.delete`` only, the viewer holds erasure authority over it).
 
 **The preview is non-enumerating.** Every state in which a viewer may not be shown the
 approval — no such row, an ineligible or unauthenticated viewer, a subject the viewer
 cannot see, a snapshot that does not verify — answers with one identical redacted
-:data:`REDACTED_PREVIEW`. A decision refused for eligibility answers ``not_found`` with
-the same text a missing id gets.
+:data:`REDACTED_PREVIEW`. A decision refused for eligibility or for subject
+visibility answers ``not_found`` with the same text a missing id gets, whatever the
+approval's state, because both are checked before the state is.
+
+**Two states are decidable: ``pending`` and a restored ``requires_reapproval``**
+(Robin's run-4b2 checkpoint-10 decision, option A, which keeps FR 52 / criterion 21:
+a restored action "is refused until approved again"). A restored approval goes through
+exactly the path a pending one does — the row lock, the fresh eligibility read, the
+shared snapshot verifier, subject visibility and the displayed-digest assertion —
+and on approval its window is reopened (see :func:`approve_handler`), after which the
+gate or the EXTERNAL continuation and every guard run as for any approval. Expired,
+``invalidated`` and unverifiable approvals are never actionable.
 """
 
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Final, Literal, cast
 from uuid import UUID
 
@@ -44,7 +55,6 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
-    ValidationError,
     model_validator,
 )
 from rheo_contracts import (
@@ -52,32 +62,33 @@ from rheo_contracts import (
     AuditSpec,
     Idempotency,
     OperationDeclaration,
-    RecordRef,
     Role,
     SafetyClass,
     WorkspaceContext,
 )
 
 from rheo_core.approvals import tables as t
-from rheo_core.approvals.binding import (
-    INVALID_APPROVAL,
-    executable_payload,
-    payload_digest,
-)
-from rheo_core.approvals.gate import execute_approved
+from rheo_core.approvals.binding import INVALID_APPROVAL
+from rheo_core.approvals.gate import execute_approved, window_seconds
 from rheo_core.approvals.records import (
     ApprovalRow,
     get_for_update,
     mark_approved,
     mark_refused,
-    payload_body,
 )
 from rheo_core.approvals.records import (
     get as read_approval,
 )
+from rheo_core.approvals.snapshot import (
+    SnapshotRefusal,
+    VerifiedSnapshot,
+    verify_snapshot,
+)
+from rheo_core.boundary.context import Refusal
+from rheo_core.boundary.factories import context_for_approved_execution
 from rheo_core.operations.records import finish_held_cancelled
 from rheo_core.operations.refusals import OperationRefused
-from rheo_core.operations.registry import REGISTRY, Handler, OperationRegistry
+from rheo_core.operations.registry import Handler
 from rheo_core.refs.resolver import NOT_FOUND, Unavailable, resolve_in
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.control_plane import get_membership
@@ -143,39 +154,60 @@ class ApprovalDecision(BaseModel):
     expected_payload_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
-PreviewStatus = Literal["pending", "expired", "resolved", "invalid", "unavailable"]
+PreviewStatus = Literal[
+    "pending", "restored", "expired", "resolved", "invalid", "unavailable"
+]
 """The closed display status of :class:`ApprovalPreview`.
 
-- ``pending`` — durable ``pending`` inside its window, verified, viewer eligible. The
-  only status with ``actionable = true``.
+- ``pending`` — durable ``pending`` inside its window, verified, viewer eligible.
+  Actionable.
+- ``restored`` — durable ``requires_reapproval``: an approval restore brought back
+  from an export, verified, viewer eligible. Actionable: a person may approve or
+  refuse it again (Robin's checkpoint-10 decision, option A), and the shell labels it
+  as restored and needing a fresh approval. Its ``window_start``/``window_end`` are
+  the source workspace's window, kept by restore and normally long past; approving
+  it reopens the window at that instant (:func:`approve_handler`), so the stored
+  window is never a reason it is not actionable.
 - ``expired`` — durable ``expired``, or ``pending`` outside its window. Read-only
   history of the verified snapshot.
 - ``resolved`` — durable ``approved`` (queued or executing), ``executed`` or
   ``refused``. Read-only history; ``durable_state`` says which.
-- ``invalid`` — durable ``requires_reapproval`` or ``invalidated``: the binding is
-  stale and a person must review a new approval. Redacted.
-- ``unavailable`` — anything the viewer may not be shown. Redacted, and identical for
-  every cause."""
+- ``invalid`` — the binding can no longer execute and a person must review a new
+  approval: durable ``invalidated``, or a ``pending``/``restored`` member-memory
+  erasure seen through erasure authority whose held caller cannot resolve its subject
+  (the gate's ``RecordStateGuard`` would refuse it; see :func:`_subject_access`).
+  Redacted, shown only to an eligible viewer who may see the subject.
+- ``unavailable`` — anything the viewer may not be shown, **including a snapshot that
+  fails verification** (tampered body, rebound destination, a KEYED EXTERNAL approval
+  with no staged action): ``invalid`` never covers a broken snapshot. Redacted, and
+  identical for every cause.
 
-_DISCLOSED: Final[frozenset[str]] = frozenset({"pending", "expired", "resolved"})
+``actionable`` is true exactly for ``pending`` and ``restored``."""
+
+_DISCLOSED: Final[frozenset[str]] = frozenset(
+    {"pending", "restored", "expired", "resolved"}
+)
+_ACTIONABLE: Final[frozenset[str]] = frozenset({"pending", "restored"})
 
 
 class ApprovalPreview(BaseModel):
     """What a person is shown before deciding, or the redacted answer.
 
-    **Disclosed** (``pending``, ``expired``, ``resolved``): every field below is the
-    verified persisted binding — the ids, the operation, who asked (the original held
-    caller, never the viewer), the subject read from the verified payload, the exact
-    canonical destination (null for a class with no destination), the complete
-    validated payload, its digest as lowercase hex, the purpose and window, and the
-    durable approval state. ``external_action_id`` is set for a staged KEYED
-    EXTERNAL action, whose own outcome ``core.external_action.get`` reports.
+    **Disclosed** (``pending``, ``restored``, ``expired``, ``resolved``): every field
+    below is the verified persisted binding — the ids, the operation, who asked (the
+    original held caller, never the viewer), the subject read from the verified
+    payload, the exact canonical destination (null for a class with no destination),
+    the complete validated payload, its digest as lowercase hex, the purpose and
+    window, and the durable approval state (``requires_reapproval`` for
+    ``restored``). ``external_action_id`` is set for a staged KEYED EXTERNAL action,
+    whose own outcome ``core.external_action.get`` reports.
 
     **Redacted** (``invalid``, ``unavailable``): every field but ``status`` and
     ``actionable`` is null. ``unavailable`` is byte-identical whatever the cause.
 
-    ``actionable`` is true exactly when ``status`` is ``pending``. The validator makes
-    every other combination unconstructable, so a handler bug cannot publish one.
+    ``actionable`` is true exactly when ``status`` is ``pending`` or ``restored``.
+    The validator makes every other combination unconstructable, so a handler bug
+    cannot publish one.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -199,8 +231,10 @@ class ApprovalPreview(BaseModel):
 
     @model_validator(mode="after")
     def _closed(self) -> "ApprovalPreview":
-        if self.actionable != (self.status == "pending"):
-            raise ValueError("actionable is true exactly for a pending preview")
+        if self.actionable != (self.status in _ACTIONABLE):
+            raise ValueError(
+                "actionable is true exactly for a pending or restored preview"
+            )
         details = self.model_dump(exclude={"status", "actionable"})
         if self.status in _DISCLOSED:
             required = (
@@ -340,111 +374,65 @@ def _eligible(ctx: WorkspaceContext) -> bool:
     return membership is not None and membership.role in _APPROVAL_ROLES
 
 
-@dataclass(frozen=True, slots=True)
-class VerifiedSnapshot:
-    """An approval's stored snapshot, proved to be the bound one.
-
-    ``payload`` is the validated input as it will execute, which is also the stored
-    body byte for byte (both digests are checked). ``subject`` comes from that
-    payload's declared subject field, never from the stored ``subject_ref`` column.
-    """
-
-    declaration: OperationDeclaration
-    model_input: BaseModel
-    payload: dict[str, object]
-    subject: RecordRef | None
-    destination_ref: str | None
+SubjectAccess = Literal["read", "erasure", "none"]
+"""How a viewer may see an approval's subject: by reading it, only through erasure
+authority (the one ``core.record.delete`` exception), or not at all."""
 
 
-def verify_snapshot(
-    uow: UnitOfWork, row: ApprovalRow, *, registry: OperationRegistry = REGISTRY
-) -> VerifiedSnapshot | None:
-    """The approval's snapshot if it verifies against its binding, else ``None``.
-
-    Verified means all of: the operation is registered here; the snapshot is stored;
-    it validates against the declared input; the canonical digest of the stored body
-    **and** of the validated input both equal the row's digest (so no ignored or
-    defaulted field can differ from what is shown); and the destination binding is
-    exact — for a declaration with an ``ExternalSpec`` the row and the payload both
-    name exactly its declared destination, and for any other class the row names
-    none. Read-only.
-    """
-    operation = registry.lookup(row.operation_name)
-    if operation is None:
-        return None
-    declaration = operation.declaration
-    body = payload_body(uow.connection, approval_id=row.id)
-    if body is None:
-        return None
-    try:
-        model_input = declaration.input_model.model_validate(body)
-    except ValidationError:
-        return None
-    payload = executable_payload(model_input)
-    if payload_digest(body) != row.payload_digest:
-        return None
-    if payload_digest(payload) != row.payload_digest:
-        return None
-    external = declaration.external
-    if external is None:
-        if row.destination_ref is not None:
-            return None
-    elif (
-        row.destination_ref != external.destination_ref
-        or getattr(model_input, external.destination_field, None)
-        != external.destination_ref
-    ):
-        return None
-    subject: RecordRef | None = None
-    subject_field = (
-        None if declaration.audit is None else declaration.audit.subject_field
-    )
-    if subject_field is not None:
-        value = getattr(model_input, subject_field, None)
-        if value is not None and not isinstance(value, RecordRef):
-            return None
-        subject = value
-    return VerifiedSnapshot(
-        declaration=declaration,
-        model_input=model_input,
-        payload=payload,
-        subject=subject,
-        destination_ref=row.destination_ref,
-    )
-
-
-def _subject_visible(
+def _subject_access(
     ctx: WorkspaceContext, uow: UnitOfWork, verified: VerifiedSnapshot
-) -> bool:
-    """Whether the viewer can currently see the held call's subject.
+) -> SubjectAccess:
+    """How the viewer can currently see the held call's subject. Read-only.
 
-    True when the call names no subject. Otherwise the subject must resolve for this
+    ``read`` when the call names no subject, or the subject resolves for this
     viewer's own context — the module enabled and ready, the resolver answering for
     this actor and audience. A deleted-but-resolving subject is still visible: the
-    viewer may see that it is gone. Read-only.
+    viewer may see that it is gone.
 
-    **One ratified exception: erasure authority.** ``core.record.delete`` keeps
-    erasure authority distinct from read authority (``docs/architecture/memory.md``,
-    the member-audience removal path): an owner may erase a member-audience memory it
-    cannot read, so a departed member's memories stay removable. For that one
-    operation a viewer who
-    passes the same owned-delete authorizer that gates minting the hold — the
-    authority to have held this deletion themselves — may see and decide it. What
-    the preview then discloses is the reference and the requester, never the
-    record's content. Every other operation needs the subject to resolve.
+    **One exception: erasure authority** (``erasure``). ``core.record.delete`` keeps
+    erasure authority distinct from read authority (``docs/architecture/memory.md``):
+    a member may hold the erasure of their own member-audience memory, and an owner,
+    who cannot read that memory, may still see the bound request and decide it. For
+    that one operation a viewer who passes the same owned-delete authorizer that gates
+    minting the hold — the authority to have held this deletion themselves — may see
+    and decide it. This preserves what the decision allowed before run 4b2 for a
+    member's own erasure request. It does **not** make the owner-held route for a
+    member's memory work: ``memory.md`` says that route is unreachable in this
+    release, because the gate rechecks the subject under the held caller, and
+    :func:`_held_caller_resolves` makes the preview say so. What the preview
+    discloses here is the reference and the requester, never the record's content.
+    Every other operation needs the subject to resolve (``none`` otherwise).
     """
     if verified.subject is None:
-        return True
+        return "read"
     if not isinstance(resolve_in(verified.subject, ctx, uow), Unavailable):
-        return True
+        return "read"
     # Deferred for the import direction ``approvals/gate.py`` documents.
     from rheo_core.deletion.operations import RECORD_DELETE, pre_mint_refusal
 
     if verified.declaration.name != RECORD_DELETE:
+        return "none"
+    if pre_mint_refusal(ctx, uow, verified.declaration, verified.model_input) is None:
+        return "erasure"
+    return "none"
+
+
+def _held_caller_resolves(
+    ctx: WorkspaceContext, uow: UnitOfWork, row: ApprovalRow, verified: VerifiedSnapshot
+) -> bool:
+    """Whether the gate's subject recheck could pass: the subject resolves for the
+    original held caller, rebuilt exactly as ``execute_approved`` rebuilds it.
+
+    Asked only on the erasure-authority route, where the viewer's access is not read
+    access and so says nothing about the held caller's. Elsewhere the preview does not
+    predict the guards, which rerun at execution. Read-only.
+    """
+    if verified.subject is None:
+        return True
+    held = context_for_approved_execution(ctx, row)
+    if isinstance(held, Refusal):
         return False
-    return (
-        pre_mint_refusal(ctx, uow, verified.declaration, verified.model_input) is None
-    )
+    return not isinstance(resolve_in(verified.subject, held, uow), Unavailable)
 
 
 def _display_status(row: ApprovalRow, now: datetime) -> PreviewStatus:
@@ -452,46 +440,60 @@ def _display_status(row: ApprovalRow, now: datetime) -> PreviewStatus:
     if row.state == t.PENDING:
         inside = row.window_start <= now <= row.window_end
         return "pending" if inside else "expired"
+    if row.state == t.REQUIRES_REAPPROVAL:
+        return "restored"
     if row.state == t.EXPIRED:
         return "expired"
     if row.state in (t.APPROVED, t.EXECUTED, t.REFUSED):
         return "resolved"
-    if row.state in (t.REQUIRES_REAPPROVAL, t.INVALIDATED):
+    if row.state == t.INVALIDATED:
         return "invalid"
     return "unavailable"
 
 
+_DECIDABLE: Final = (t.PENDING, t.REQUIRES_REAPPROVAL)
+
+
 def _lock_for_decision(
     ctx: WorkspaceContext, uow: UnitOfWork, approval_id: UUID
-) -> ApprovalRow:
-    """Lock the approval row, then refuse unless this viewer may decide it.
+) -> tuple[ApprovalRow, VerifiedSnapshot | SnapshotRefusal]:
+    """Lock the approval row, then refuse unless this viewer may see it; answer the
+    row and its verified snapshot (or why it does not verify).
 
-    The lock comes first so every later check — state, eligibility, snapshot, the
-    displayed digest — is judged against a row nothing else can move until this
-    transaction ends. An ineligible viewer gets the same ``not_found`` a missing id
-    gets, before learning the approval's state.
+    The lock comes first so every later check — eligibility, snapshot, subject,
+    state, window, the displayed digest — is judged against a row nothing else can
+    move until this transaction ends. Then, **before the state is looked at**: an
+    ineligible viewer, and an eligible one who cannot see the verified snapshot's
+    subject, get the same ``not_found`` a missing id gets, so neither learns that the
+    approval exists or what state it is in. A snapshot that does not verify has no
+    subject to check; the caller decides what that means for its decision.
     """
     row = get_for_update(uow.connection, approval_id=approval_id)
     if row is None or not _eligible(ctx):
         raise _not_available(approval_id)
-    return row
+    verified = verify_snapshot(uow.connection, row)
+    if isinstance(verified, VerifiedSnapshot) and (
+        _subject_access(ctx, uow, verified) == "none"
+    ):
+        raise _not_available(approval_id)
+    return row, verified
 
 
-def _must_be_pending(row: ApprovalRow, approval_id: UUID) -> None:
-    """Refuse unless the approval is still waiting for a decision.
+def _must_be_decidable(row: ApprovalRow, approval_id: UUID) -> None:
+    """Refuse unless the approval is waiting for a decision.
 
-    ``pending`` is the only decidable state. Already executed, already refused and
-    approved-and-queued are different situations a person acts on differently, so the
-    refusal names the state. ``requires_reapproval`` (a restored, stale binding) and
-    ``expired``/``invalidated`` are refused too: a person reviews a new approval
-    rather than releasing or refusing this one, and nothing is rebuilt. The predicate
-    on the write keeps the refusal true if the row somehow moved anyway.
+    ``pending`` and a restored ``requires_reapproval`` are decidable. Already
+    executed, already refused and approved-and-queued are different situations a
+    person acts on differently, so the refusal names the state; ``expired`` and
+    ``invalidated`` are refused too, because a person reviews a new approval rather
+    than releasing this one, and nothing is rebuilt. The predicate on the write keeps
+    the refusal true if the row somehow moved anyway.
     """
-    if row.state != t.PENDING:
+    if row.state not in _DECIDABLE:
         raise OperationRefused(
             APPROVAL_STATE,
-            f"approval {approval_id} is {row.state!r}; only a pending approval can "
-            "be approved or refused",
+            f"approval {approval_id} is {row.state!r}; only a pending or restored "
+            "approval can be approved or refused",
         )
 
 
@@ -519,12 +521,20 @@ def preview_handler(
     row = read_approval(uow.connection, approval_id=model_input.approval_id)
     if row is None:
         return REDACTED_PREVIEW
-    verified = verify_snapshot(uow, row)
-    if verified is None or not _subject_visible(ctx, uow, verified):
+    verified = verify_snapshot(uow.connection, row)
+    if isinstance(verified, SnapshotRefusal):
+        return REDACTED_PREVIEW
+    access = _subject_access(ctx, uow, verified)
+    if access == "none":
         return REDACTED_PREVIEW
     status = _display_status(row, datetime.now(UTC))
     if status == "unavailable":
         return REDACTED_PREVIEW
+    if status in _ACTIONABLE and access == "erasure":
+        # Agree with the gate: it rechecks the subject under the held caller, so an
+        # erasure the held caller cannot resolve is never actionable (W2).
+        if not _held_caller_resolves(ctx, uow, row, verified):
+            status = "invalid"
     if status == "invalid":
         return _INVALID_PREVIEW
     from rheo_core.operations.external_actions import get_for_approval
@@ -532,7 +542,7 @@ def preview_handler(
     staged = get_for_approval(uow.connection, approval_id=row.id)
     return ApprovalPreview(
         status=status,
-        actionable=status == "pending",
+        actionable=status in _ACTIONABLE,
         approval_id=row.id,
         operation_id=row.operation_id,
         external_action_id=None if staged is None else staged.id,
@@ -554,18 +564,33 @@ def preview_handler(
 def approve_handler(
     ctx: WorkspaceContext, uow: UnitOfWork, model_input: ApprovalDecision
 ) -> ApprovalRecord:
-    """Approve a pending approval, which runs the operation it was minted for.
+    """Approve a pending or restored approval, which runs the operation it was
+    minted for.
 
     **Before anything is written**, under the approval's row lock and in this order:
     the row exists and the viewer is eligible (else ``not_found``, the same answer for
-    both); it is ``pending`` (else ``approval_state``); the instant is inside its
-    window and the stored snapshot verifies against its digest and exact destination
-    (else ``invalid_approval``); the verified subject resolves for this viewer (else
-    ``not_found``); and the optional displayed digest equals the row's (else
-    ``approval_digest_mismatch``). Every one of these refuses before a job is queued
-    or an inline effect runs, on the DESTRUCTIVE inline path and the EXTERNAL
-    queueing path alike, so a stale page, a revoked membership or an expired or
-    restored approval cannot release anything and nothing is rebuilt.
+    both); when the stored snapshot verifies, its subject is visible to this viewer
+    (else ``not_found`` too, whatever the state); it is ``pending`` or a restored
+    ``requires_reapproval`` (else ``approval_state``); the snapshot verifies against
+    its digest, exact destination and, for KEYED EXTERNAL, its staged action (else
+    ``invalid_approval``, or ``operation_unknown`` for an unregistered operation); a
+    ``pending`` approval is inside its window (else ``invalid_approval``); and the
+    optional displayed digest equals the row's (else ``approval_digest_mismatch``).
+    Every one of these refuses before a job is queued or an inline effect runs, on
+    the DESTRUCTIVE inline path and the EXTERNAL queueing path alike, so a stale
+    page, a revoked membership, an expired approval or a broken snapshot cannot
+    release anything and nothing is rebuilt.
+
+    **A restored approval's window is reopened, not judged.** Restore keeps the
+    source workspace's window, which has passed by the time anyone restores an
+    export, so judging it would make every restored approval unapprovable in
+    practice — the opposite of FR 52's "refused until approved again". The
+    re-approval is a fresh human decision over the verified, unchanged snapshot, so
+    the same predicated write that moves the row to ``approved`` sets its window to
+    ``[now, now + approvals window]`` (the workspace's own length, as a fresh hold
+    gets: :func:`~rheo_core.approvals.gate.window_seconds`). Everything downstream —
+    the gate's binding check, ``WindowGuard`` inline or at the continuation's effect
+    — judges that window, exactly as for a newly minted approval.
 
     Then everything happens in the caller's single transaction, in this order: the
     approval becomes ``approved``, recording who approved and through which entry;
@@ -593,22 +618,16 @@ def approve_handler(
     could put the window check and the execution on opposite sides of an expiry.
     """
     approval_id = model_input.approval_id
-    row = _lock_for_decision(ctx, uow, approval_id)
-    _must_be_pending(row, approval_id)
+    row, verified = _lock_for_decision(ctx, uow, approval_id)
+    _must_be_decidable(row, approval_id)
+    if isinstance(verified, SnapshotRefusal):
+        raise OperationRefused(verified.state, verified.detail)
     now = datetime.now(UTC)
-    if not row.window_start <= now <= row.window_end:
+    restored = row.state == t.REQUIRES_REAPPROVAL
+    if not restored and not row.window_start <= now <= row.window_end:
         raise OperationRefused(
             INVALID_APPROVAL, "the approval's execution window has passed"
         )
-    verified = verify_snapshot(uow, row)
-    if verified is None:
-        raise OperationRefused(
-            INVALID_APPROVAL,
-            f"the stored snapshot of approval {approval_id} does not verify against "
-            "its digest and destination",
-        )
-    if not _subject_visible(ctx, uow, verified):
-        raise _not_available(approval_id)
     _assert_displayed(row, model_input.expected_payload_digest)
     if not mark_approved(
         uow.connection,
@@ -617,6 +636,9 @@ def approve_handler(
         approved_by_id=ctx.actor.id,
         approved_entry=ctx.entry.value,
         now=now,
+        reopened_until=(
+            now + timedelta(seconds=window_seconds(ctx)) if restored else None
+        ),
     ):
         raise OperationRefused(
             APPROVAL_STATE,
@@ -650,26 +672,27 @@ def approve_handler(
 def refuse_handler(
     ctx: WorkspaceContext, uow: UnitOfWork, model_input: ApprovalDecision
 ) -> ApprovalRecord:
-    """Refuse a pending approval. The operation it was minted for never runs.
+    """Refuse a pending or restored approval. The operation it was minted for never
+    runs.
 
-    The same row lock, eligibility, ``pending``-only and displayed-digest checks as
-    :func:`approve_handler`, all before anything is written. Two deliberate
-    differences: a pending approval past its window may still be refused, and one
-    whose snapshot no longer verifies may still be refused — refusal never runs
-    anything, and refusing a tampered approval is the safe direction. When the
+    The same row lock, eligibility, subject-before-state, decidable-state and
+    displayed-digest checks as :func:`approve_handler`, all before anything is
+    written. Two deliberate differences: an approval past its window may still be
+    refused, and one whose snapshot no longer verifies may still be refused —
+    refusal never runs anything, refusing a tampered approval is the safe direction,
+    and it is what lets such an approval end rather than wait forever. When the
     snapshot does verify, its subject must be visible to the viewer.
 
     The held ``core.operation`` record is ended ``cancelled`` in the same
-    transaction. Leaving it ``approval_required`` would be the durable-status defect
-    criterion 13 forbids one state over: a caller polling the record would wait for a
-    decision that has already been made against it.
+    transaction, and a staged EXTERNAL action and its keyed reservation are refused
+    with it (the pre-job refusal contract), for a restored approval exactly as for a
+    pending one. Leaving the record ``approval_required`` would be the durable-status
+    defect criterion 13 forbids one state over: a caller polling the record would
+    wait for a decision that has already been made against it.
     """
     approval_id = model_input.approval_id
-    row = _lock_for_decision(ctx, uow, approval_id)
-    _must_be_pending(row, approval_id)
-    verified = verify_snapshot(uow, row)
-    if verified is not None and not _subject_visible(ctx, uow, verified):
-        raise _not_available(approval_id)
+    row, _ = _lock_for_decision(ctx, uow, approval_id)
+    _must_be_decidable(row, approval_id)
     _assert_displayed(row, model_input.expected_payload_digest)
     if not mark_refused(uow.connection, approval_id=approval_id):
         raise OperationRefused(

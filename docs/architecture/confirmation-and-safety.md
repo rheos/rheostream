@@ -53,7 +53,7 @@ financial payload check is not written.
 | `payload_ref` | The `core.approval_payload(approval_id pk, body jsonb, byte_length integer)` row holding the snapshot, so the interface can show what is being approved. `body` is never queried and is bounded by `approvals.max_payload_bytes` (default 65536). The row is deleted when its approval is invalidated by the [deletion cascade](deletion-export-migration.md#the-cascade), because a snapshot of a request about a deleted record is a copy of that record. |
 | `purpose text` | From the purpose vocabulary. |
 | `window_start`, `window_end` | Execution window. Default length `approvals.default_window_seconds` 900; maximum `approvals.max_window_seconds` 86400, floor `min`. |
-| `state` | `pending`, `approved`, `executed`, `expired`, `invalidated`, `refused`, `requires_reapproval`. The approval path writes `pending`, `approved`, `executed`, and `refused`; restore writes `requires_reapproval`; nothing writes `expired` or `invalidated` yet. |
+| `state` | `pending`, `approved`, `executed`, `expired`, `invalidated`, `refused`, `requires_reapproval`. The approval path writes `pending`, `approved`, `executed`, and `refused`; restore writes `requires_reapproval`, which a person may approve or refuse again like `pending`; nothing writes `expired` or `invalidated` yet. |
 | `approved_by_kind`, `approved_by_id`, `approved_at`, `approved_entry` | Who approved and through which entry: `web` in release one, `channel` from phase six; never `mcp`, `api`, or `cli`, because no token carries the approval operation. |
 | `executed_at`, `invalidated_reason text null` | |
 
@@ -63,14 +63,31 @@ it is about to run and compares; a differing byte, a differing destination, or a
 window refuses with `invalid_approval` and records nothing at the destination (criterion 60). The
 workspace is implicit in which database the row lives in.
 
-**Who may approve.** An authenticated account holding a role the operation allows, through the
-web interface. `core.approval.approve` and `.refuse` are non-token-issuable: no `cli`, `mcp`, or
-`runtime` token's operation set can contain them, enforced at issuance and again at presentation
+**Who may approve.** An authenticated account holding the `owner` or `member` role, through the
+web interface. `core.approval.preview`, `core.approval.approve` and `.refuse` are
+non-token-issuable: no `cli`, `mcp`, or `runtime` token's operation set can contain them,
+enforced at issuance and again at presentation
 ([tokens](identity-and-topology.md#what-a-token-can-never-carry-and-what-it-holds-for-a-gated-operation)),
 so a model cannot approve what it proposed and a person approves from a session, never from a
 credential that could sit in an agent's environment. Untrusted evidence never approves: no path
 reads a payload, a memory, or a message to set `state = approved` (FR 25, R3 item 8), and
 criterion 59's instructing text has no operation to reach.
+
+The person must still be allowed to see what they decide, checked afresh each time (run 4b2).
+The preview and both decisions read the account's `control.membership` role at the moment of
+the call rather than trusting the session's, and require the held call's subject, read from the
+verified snapshot, to resolve for that person. `core.record.delete` is the one exception: a
+person who holds erasure authority over the record may see and decide its erasure without read
+access, and the preview then shows the reference and requester, never the record. A viewer who
+fails either check gets the answer an unknown id gets, before the approval's state is looked at:
+the preview's one redacted shape, and `not_found` from a decision. Under the approval's row
+lock, a decision then verifies the stored snapshot with the same verifier execution uses (the
+validated input's digest, the exact destination, and for a keyed external call its staged action),
+and refuses `approval_digest_mismatch` if the optional `expected_payload_digest` the shell sends
+is not the row's digest. `pending` and a restored `requires_reapproval` are the decidable states.
+Approving a restored approval reopens its window at that instant for the workspace's window
+length, because restore keeps the source workspace's window; refusing either ends the held
+operation `cancelled`, and a staged external action and its keyed reservation `refused`.
 
 **Flow.**
 
@@ -84,7 +101,8 @@ criterion 59's instructing text has no operation to reach.
    the `external_action` job (not built yet, see above). Either path reruns the guards first.
 4. On success, `executed`; on a guard failure, `refused` with the guard named. Nothing moves an
    approval to `expired` yet: one past its window stays `pending`, and approving it refuses
-   `invalid_approval` from the binding check.
+   `invalid_approval`. A restored `requires_reapproval` approval is the exception, because its
+   window is reopened when it is approved again (see Who may approve).
 
 **Superseded in run 1a1: the executed operation now runs as the held caller.**
 `rheo_core.approvals.gate.execute_approved` rebuilds the original caller's context

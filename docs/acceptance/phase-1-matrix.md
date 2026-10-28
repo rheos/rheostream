@@ -1756,9 +1756,17 @@ diff --git a/packages/core/src/rheo_core/approvals/gate.py b/packages/core/src/r
 - `pytest:tests/postgres/test_approvals.py::test_revoking_the_gated_token_refuses_approved_execution` — first observed failure line: `E       AssertionError: assert 'executed' == 'refused'`.
 - `pytest:tests/postgres/test_approvals.py::test_a_refusing_guard_stops_the_effect_and_a_permitting_one_does_not` — first observed failure line: `E       AssertionError: assert 'executed' == 'refused'`.
 
-4 failed, 43 passed across `tests/postgres/test_approvals.py` and `tests/postgres/test_standing_grants.py` (41 passed at the 1a1 recapture; the two files have gained tests since).
+5 failed, 64 passed across `tests/postgres/test_approvals.py` and `tests/postgres/test_standing_grants.py` at the run-4b2 recapture (4 failed, 43 passed at #180; the two files have gained tests since). The fifth red node is `test_preview_of_expired_and_each_resolved_state_is_read_only_history`, which stages a guard-refused approval as one of its history cases and is not a demonstrator of this row.
 
-**Performed by:** C6 (2026-09-16), C7 (2026-09-17), 1a1 P1 (2026-09-20), #180 (2026-09-26)
+**Performed by:** C6 (2026-09-16), C7 (2026-09-17), 1a1 P1 (2026-09-20), #180 (2026-09-26), run 4b2 Prompt 4 (2026-10-28)
+
+**Recaptured for run 4b2.** That run made `core.approval.approve` reread the approver's
+membership before any write, so a revocation that lands before the decision now answers
+`not_found` and never reaches the guard. `test_revoking_the_approving_actors_role_refuses_execution_too`
+was rewritten to stage the race the guard still covers: the decision's real eligibility read
+passes, the approver's membership row is deleted and committed, and the approve runs on. Under
+the hunk it is red with the same `assert 'executed' == 'refused'` as before. The hunk itself is
+unchanged and still applies.
 
 **Recaptured again for #180.** That fix keeps the held handler's view in a local so the gate
 can pass its due-mark request up to the approve dispatch, which changed the hunk's last context

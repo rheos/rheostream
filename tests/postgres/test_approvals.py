@@ -613,7 +613,7 @@ def test_two_concurrent_approvals_execute_the_destructive_fixture_once(
     **Why this exists as a separate test, in one sentence: without it the suite cannot
     tell this code from code that double-executes a destructive operation.**
     ``test_a_second_approval_does_not_execute_the_fixture_again`` above is satisfied by
-    ``_must_be_pending``'s read-then-check, which is exactly the layer concurrency
+    ``_must_be_decidable``'s read-then-check, which is exactly the layer concurrency
     defeats — a second approver that read the row *before* the first one wrote it walks
     straight past it. Three compare-and-set predicates are what actually hold the line
     (``mark_approved`` on ``pending``, ``mark_executed`` on ``approved``,
@@ -1149,10 +1149,11 @@ def test_an_approver_whose_membership_is_gone_is_refused_before_anything_is_writ
     missing id gets, so the caller learns nothing — and the approval stays ``pending``
     for an eligible person, who can still release it once.
 
-    The guard's "approving actor" clause still matters where approval and effect are
-    two transactions (the EXTERNAL continuation); it is pinned directly by
-    ``test_revoking_the_approving_actors_role_refuses_execution_too`` below, which
-    keeps the name the phase-1 acceptance matrix cites for criterion 19.
+    The guard's "approving actor" clause still matters for a revocation that lands
+    after this check (and for the EXTERNAL continuation, where approval and effect
+    are two transactions); ``test_revoking_the_approving_actors_role_refuses_execution
+    _too`` below stages that race end to end and is the name the phase-1 acceptance
+    matrix cites for criterion 19.
     """
     approver_id, approver = _member_context(cluster, workspace, "stale-approver")
     approval_id, operation_id = _held(owner, FIXTURE_ACT, act_payload(note))
@@ -1175,38 +1176,61 @@ def test_an_approver_whose_membership_is_gone_is_refused_before_anything_is_writ
 
 def test_revoking_the_approving_actors_role_refuses_execution_too(
     owner: WorkspaceContext,
-    owner_account_id: UUID,
     cluster: ClusterSession,
     workspace: UUID,
     engine: Engine,
     database: str,
+    note: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``ActorPermissionGuard``'s approving-actor half, at the guard.
+    """AC 11, scenario two, end to end: the **approving** actor's role is revoked
+    after they were found eligible and before the effect.
 
     The mirror of the gated-actor scenario, and the clause that would still be green
-    if the guard read only ``approval.actor_*``. Approval and effect are one
-    transaction on the inline path, where the decision's own eligibility check now
-    refuses first, so the guard is exercised directly over an approved row whose
-    approver has lost the membership while the gated actor keeps theirs — the state an
-    EXTERNAL continuation meets when a revocation lands between approval and effect.
+    if the guard read only ``approval.actor_*``. Since run 4b2 the decision rechecks
+    the approver's current membership itself, so a revocation that lands *before*
+    the decision answers ``not_found`` (the test above). The membership lives on the
+    control plane, which the approval row's lock does not cover, so a revocation can
+    still commit between that eligibility read and the guards. This stages exactly
+    that race — the real eligibility read runs and passes, then the membership row is
+    deleted and committed — and dispatches the real approve. ``ActorPermissionGuard``
+    must catch it at execution: the approval ``refused``, the held operation
+    ``failed`` naming the approving actor, the fixture untouched.
+
+    It is the criterion-19 demonstrator ``docs/acceptance/phase-1-matrix.md`` names,
+    and the matrix's recorded hunk (removing ``run_guards`` from
+    ``execute_approved``) turns it red with ``assert 'executed' == 'refused'``.
     """
-    gated_id, _ = _member_context(cluster, workspace, "gated-actor-intact")
-    row = _approval_row(actor_id=gated_id, approved_by_id=owner_account_id)
-    guard = guards_module.ActorPermissionGuard()
-    now = datetime.now(UTC)
-    with UnitOfWork(engine, database) as uow:
-        before = guard.check(owner, uow, approval=row, model_input=_NoInput(), now=now)
-        _revoke_membership(cluster, owner_account_id, workspace)
-        after = guard.check(owner, uow, approval=row, model_input=_NoInput(), now=now)
+    from rheo_core.approvals import operations as approval_operations
 
-    assert before is None
-    assert after is not None
-    assert "the approving actor" in after
-    assert str(owner_account_id) in after
+    gated_id, gated = _member_context(cluster, workspace, "gated-actor-intact")
+    approver_id, approver = _member_context(cluster, workspace, "approver-revoked")
+    approval_id, operation_id = _held(gated, FIXTURE_ACT, act_payload(note))
+    real_eligible = approval_operations._eligible
+    revoked: list[UUID] = []
 
+    def eligible_then_revoked(ctx: WorkspaceContext) -> bool:
+        answer = real_eligible(ctx)
+        if ctx.actor.id == approver_id and not revoked:
+            _revoke_membership(cluster, approver_id, workspace)
+            revoked.append(approver_id)
+        return answer
 
-class _NoInput(BaseModel):
-    """The guard reads no input field; it needs a model to be handed one."""
+    monkeypatch.setattr(approval_operations, "_eligible", eligible_then_revoked)
+
+    record = _record(_approve(approver, approval_id))
+
+    assert revoked == [approver_id]
+    assert record.state == "refused"
+    assert record.executed_at is None
+    assert _acts(engine, database) == ()
+    failed = _operation_record(owner, operation_id)
+    assert failed.state == "failed"
+    assert failed.error_code == GUARD_REFUSED
+    assert "ActorPermissionGuard" in failed.error_text
+    assert "the approving actor" in failed.error_text
+    assert str(approver_id) in failed.error_text
+    assert str(gated_id) not in failed.error_text
 
 
 def test_a_role_that_no_longer_permits_the_operation_refuses_as_well(
@@ -1959,15 +1983,23 @@ def test_preview_redaction_is_identical_for_missing_denied_unauthorized_and_inva
     assert _preview(owner, staged.approval_id).status == "pending"
     _set_approval(engine, database, staged.approval_id, destination_ref="elsewhere")
     rebound = _preview(owner, staged.approval_id)
+    # The unkeyed EXTERNAL sink has no staged action, so only the row's own
+    # destination clause can refuse its rebinding.
+    sink_id, _ = _held(owner, SINK_SEND, {"destination": "party:one", "message": "m"})
+    assert _preview(owner, sink_id).status == "pending"
+    _set_approval(engine, database, sink_id, destination_ref="party:two")
+    sink_rebound = _preview(owner, sink_id)
 
-    for answer in (missing, denied, unauthorized, invalid, rebound):
+    for answer in (missing, denied, unauthorized, invalid, rebound, sink_rebound):
         assert answer.model_dump() == redacted
-    # Approving the rebound EXTERNAL row refuses before anything is queued.
+    # Approving the rebound EXTERNAL rows refuses before anything is queued or sent.
     assert _approve(owner, staged.approval_id).state == INVALID_APPROVAL
+    assert _approve(owner, sink_id).state == INVALID_APPROVAL
     assert _probe_jobs(engine, database) == 0 and probe == []
+    assert _sends(engine, database) == ()
 
 
-def test_preview_and_decisions_reject_restored_requires_reapproval_without_rebuild(
+def test_an_invalidated_approval_previews_invalid_and_cannot_be_decided(
     owner: WorkspaceContext,
     cluster: ClusterSession,
     workspace: UUID,
@@ -1975,27 +2007,25 @@ def test_preview_and_decisions_reject_restored_requires_reapproval_without_rebui
     database: str,
     note: str,
 ) -> None:
-    """``requires_reapproval`` (and ``invalidated``) is a stale binding: an eligible
-    viewer is told ``invalid`` with nothing disclosed, an ineligible one gets the
-    common redaction, and neither decision can release, refuse or rebuild it."""
+    """``invalidated`` is a stale binding: an eligible viewer is told ``invalid`` with
+    nothing disclosed, an ineligible one gets the common redaction, and neither
+    decision can release, refuse or rebuild it. (A restored ``requires_reapproval``
+    is the decidable ``restored`` case; see the tests below.)"""
     approval_id, operation_id = _held(owner, FIXTURE_ACT, act_payload(note))
-    other_id, _ = _held(owner, FIXTURE_ACT, act_payload(note))
-    _set_approval(engine, database, approval_id, state="requires_reapproval")
     _set_approval(
-        engine, database, other_id, state="invalidated", invalidated_reason="test"
+        engine, database, approval_id, state="invalidated", invalidated_reason="test"
     )
-    stale = _stale_member(cluster, workspace, "stale-reapproval-viewer")
+    stale = _stale_member(cluster, workspace, "stale-invalidated-viewer")
     before = _rows(engine, database)
 
-    for held_id in (approval_id, other_id):
-        invalid = _preview(owner, held_id)
-        assert invalid.status == "invalid" and invalid.actionable is False
-        assert invalid.model_dump(exclude={"status"}) == REDACTED_PREVIEW.model_dump(
-            exclude={"status"}
-        )
-        assert _preview(stale, held_id).model_dump() == REDACTED_PREVIEW.model_dump()
-        assert _approve(owner, held_id).state == APPROVAL_STATE
-        assert _refuse(owner, held_id).state == APPROVAL_STATE
+    invalid = _preview(owner, approval_id)
+    assert invalid.status == "invalid" and invalid.actionable is False
+    assert invalid.model_dump(exclude={"status"}) == REDACTED_PREVIEW.model_dump(
+        exclude={"status"}
+    )
+    assert _preview(stale, approval_id).model_dump() == REDACTED_PREVIEW.model_dump()
+    assert _approve(owner, approval_id).state == APPROVAL_STATE
+    assert _refuse(owner, approval_id).state == APPROVAL_STATE
 
     assert _acts(engine, database) == ()
     assert _operation_state(owner, operation_id) == "approval_required"
@@ -2005,6 +2035,288 @@ def test_preview_and_decisions_reject_restored_requires_reapproval_without_rebui
     assert {k: v for k, v in after.items() if k != "audit_record"} == {
         k: v for k, v in before.items() if k != "audit_record"
     }
+
+
+def _restored(engine: Engine, database: str, approval_id: UUID) -> None:
+    """Put an approval in the state restore writes: ``requires_reapproval``, carrying
+    its source workspace's window, which has long passed by the time anyone restores
+    an export (the default window is fifteen minutes)."""
+    _set_approval(
+        engine,
+        database,
+        approval_id,
+        state="requires_reapproval",
+        window_start=datetime.now(UTC) - timedelta(days=3),
+        window_end=datetime.now(UTC) - timedelta(days=3) + timedelta(minutes=15),
+    )
+
+
+def _keyed_state(engine: Engine, database: str, key: str) -> str:
+    with UnitOfWork(engine, database) as uow:
+        return str(
+            uow.connection.execute(
+                select(idempotency_result.c.state).where(
+                    idempotency_result.c.idempotency_key == key
+                )
+            ).scalar_one()
+        )
+
+
+def _action(engine: Engine, database: str, approval_id: UUID) -> Any:
+    with UnitOfWork(engine, database) as uow:
+        return uow.connection.execute(
+            select(external_action).where(external_action.c.approval_id == approval_id)
+        ).one()
+
+
+def test_a_restored_approval_previews_as_restored_and_actionable(
+    owner: WorkspaceContext,
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    database: str,
+    note: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Robin's checkpoint-10 decision (option A): a restored approval is approvable
+    again, so its verified snapshot is disclosed with the closed ``restored`` status
+    and ``actionable = true``, even though the window it carries from the source
+    workspace has passed. Ineligible and subject-blind viewers still get the common
+    redaction, and previewing changes nothing."""
+    member_id, member = _member_context(cluster, workspace, "restored-requester")
+    payload = act_payload(note)
+    approval_id, operation_id = _held(member, FIXTURE_ACT, payload)
+    _restored(engine, database, approval_id)
+    stale = _stale_member(cluster, workspace, "stale-restored-viewer")
+    hidden_id, hidden = _member_context(cluster, workspace, "hidden-restored-viewer")
+    _hide_notes_from(monkeypatch, hidden_id)
+    before = _rows(engine, database)
+
+    preview = _preview(owner, approval_id)
+
+    assert (preview.status, preview.actionable) == ("restored", True)
+    assert preview.durable_state == "requires_reapproval"
+    assert preview.approval_id == approval_id
+    assert preview.operation_id == operation_id
+    assert (preview.requester_kind, preview.requester_id) == ("account", member_id)
+    assert preview.subject_ref == note
+    assert preview.payload == payload
+    assert preview.payload_digest == _expected_digest(payload)
+    assert preview.window_end < datetime.now(UTC)
+    assert _preview(stale, approval_id).model_dump() == REDACTED_PREVIEW.model_dump()
+    assert _preview(hidden, approval_id).model_dump() == REDACTED_PREVIEW.model_dump()
+    assert _rows(engine, database) == before
+
+
+def test_approving_a_restored_approval_executes_it_once_in_a_fresh_window(
+    owner: WorkspaceContext,
+    owner_account_id: UUID,
+    engine: Engine,
+    database: str,
+    note: str,
+) -> None:
+    """DESTRUCTIVE inline: approving a restored approval with the digest the person
+    was shown runs the held call exactly once through the normal gate, and the
+    approval's window is reopened at the re-approval instant for the workspace's own
+    window length (its source window had long passed). A second approval refuses
+    ``approval_state`` and runs nothing more."""
+    approval_id, operation_id = _held(owner, FIXTURE_ACT, act_payload(note))
+    _restored(engine, database, approval_id)
+    shown = _preview(owner, approval_id).payload_digest
+    started = datetime.now(UTC)
+
+    record = _record(_decide(owner, APPROVAL_APPROVE, approval_id, shown))
+
+    assert record.state == "executed"
+    assert record.approved_by_id == owner_account_id
+    assert record.payload_digest == shown
+    assert started <= record.window_start <= record.approved_at
+    assert record.window_end - record.window_start == timedelta(
+        seconds=window_seconds(owner)
+    )
+    assert _acts(engine, database) == (note,)
+    assert _operation_state(owner, operation_id) == "succeeded"
+    assert _approve(owner, approval_id).state == APPROVAL_STATE
+    assert _acts(engine, database) == (note,)
+
+
+def test_approving_a_restored_staged_external_action_queues_one_continuation(
+    owner: WorkspaceContext, engine: Engine, database: str, probe: list[str]
+) -> None:
+    """EXTERNAL: a restored approval of a staged KEYED action is approved exactly as
+    a pending one is — one continuation job queued, the action still ``pending`` and
+    bound to that job, the destination not called inline. A stale displayed digest
+    refuses first, and a second approval queues nothing more."""
+    staged = dispatch(owner, PROBE, _probe_payload("restored-external"))
+    assert staged.approval_id is not None
+    _restored(engine, database, staged.approval_id)
+    shown = _preview(owner, staged.approval_id).payload_digest
+
+    assert (
+        _decide(owner, APPROVAL_APPROVE, staged.approval_id, "0" * 64).state
+        == APPROVAL_DIGEST_MISMATCH
+    )
+    assert _probe_jobs(engine, database) == 0
+    record = _record(_decide(owner, APPROVAL_APPROVE, staged.approval_id, shown))
+
+    assert record.state == "approved"
+    assert record.window_end > datetime.now(UTC)
+    assert _probe_jobs(engine, database) == 1
+    action = _action(engine, database, staged.approval_id)
+    assert action.state == "pending" and action.execution_job_id is not None
+    assert probe == []
+    assert _approve(owner, staged.approval_id).state == APPROVAL_STATE
+    assert _probe_jobs(engine, database) == 1
+
+
+def test_refusing_a_restored_approval_settles_the_held_operation_and_its_action(
+    owner: WorkspaceContext,
+    engine: Engine,
+    database: str,
+    note: str,
+    probe: list[str],
+) -> None:
+    """Refusal of a restored approval follows the pre-job refusal contract: the
+    approval ``refused``, the held operation ``cancelled``; for a staged EXTERNAL
+    action, the action ``refused`` with ``cancelled_no_effect`` and its keyed
+    reservation ``refused``, and no job or destination call ever exists."""
+    approval_id, operation_id = _held(owner, FIXTURE_ACT, act_payload(note))
+    _restored(engine, database, approval_id)
+    staged = dispatch(owner, PROBE, _probe_payload("restored-refusal"))
+    assert staged.approval_id is not None and staged.operation_id is not None
+    _restored(engine, database, staged.approval_id)
+
+    inline = _record(
+        _decide(
+            owner,
+            APPROVAL_REFUSE,
+            approval_id,
+            _preview(owner, approval_id).payload_digest,
+        )
+    )
+    external = _record(_refuse(owner, staged.approval_id))
+
+    assert inline.state == "refused"
+    assert _operation_state(owner, operation_id) == "cancelled"
+    assert _acts(engine, database) == ()
+    assert external.state == "refused"
+    assert _operation_state(owner, staged.operation_id) == "cancelled"
+    action = _action(engine, database, staged.approval_id)
+    assert (action.state, action.failure_class) == ("refused", "cancelled_no_effect")
+    assert _keyed_state(engine, database, "restored-refusal") == "refused"
+    assert _probe_jobs(engine, database) == 0 and probe == []
+    for held_id in (approval_id, staged.approval_id):
+        assert _preview(owner, held_id).status == "resolved"
+        assert _approve(owner, held_id).state == APPROVAL_STATE
+
+
+def test_a_restored_approval_whose_snapshot_fails_verification_is_not_actionable(
+    owner: WorkspaceContext,
+    engine: Engine,
+    database: str,
+    note: str,
+    probe: list[str],
+) -> None:
+    """A restored approval is approvable only through its verified snapshot. A
+    tampered body and a rebound EXTERNAL destination each preview as the common
+    redaction and approving refuses ``invalid_approval`` with nothing run or queued.
+    Refusing stays possible, exactly as for a pending approval, so it can end."""
+    other = str(_record(dispatch(owner, NOTE_WRITE, {"body": "restored tamper"})).ref)
+    approval_id, operation_id = _held(owner, FIXTURE_ACT, act_payload(note))
+    _restored(engine, database, approval_id)
+    with UnitOfWork(engine, database) as uow:
+        uow.connection.execute(
+            update(approval_payload)
+            .where(approval_payload.c.approval_id == approval_id)
+            .values(body=act_payload(other))
+        )
+        uow.commit()
+    staged = dispatch(owner, PROBE, _probe_payload("restored-rebound"))
+    assert staged.approval_id is not None
+    _restored(engine, database, staged.approval_id)
+    _set_approval(engine, database, staged.approval_id, destination_ref="elsewhere")
+
+    for held_id in (approval_id, staged.approval_id):
+        assert _preview(owner, held_id).model_dump() == REDACTED_PREVIEW.model_dump()
+        assert _approve(owner, held_id).state == INVALID_APPROVAL
+
+    assert _acts(engine, database) == ()
+    assert _probe_jobs(engine, database) == 0 and probe == []
+    assert _record(_refuse(owner, approval_id)).state == "refused"
+    assert _operation_state(owner, operation_id) == "cancelled"
+
+
+def test_a_restored_keyed_external_without_its_staged_action_never_runs_inline(
+    owner: WorkspaceContext, engine: Engine, database: str, probe: list[str]
+) -> None:
+    """Restore carries approvals and held operations but not the staged action or
+    its keyed reservation. A KEYED EXTERNAL approval with no staged action does not
+    verify: approving it would otherwise run the operation inline, outside the
+    at-most-once continuation (the probe's inline handler raises if it is ever
+    reached). It previews as the common redaction and approval refuses
+    ``invalid_approval``; refusal still ends it."""
+    staged = dispatch(owner, PROBE, _probe_payload("restored-unstaged"))
+    assert staged.approval_id is not None and staged.operation_id is not None
+    _restored(engine, database, staged.approval_id)
+    with UnitOfWork(engine, database) as uow:
+        uow.connection.execute(
+            delete(external_action).where(
+                external_action.c.approval_id == staged.approval_id
+            )
+        )
+        uow.connection.execute(
+            delete(idempotency_result).where(
+                idempotency_result.c.idempotency_key == "restored-unstaged"
+            )
+        )
+        uow.commit()
+
+    assert (
+        _preview(owner, staged.approval_id).model_dump()
+        == REDACTED_PREVIEW.model_dump()
+    )
+    assert _approve(owner, staged.approval_id).state == INVALID_APPROVAL
+    assert _probe_jobs(engine, database) == 0 and probe == []
+    assert _record(_refuse(owner, staged.approval_id)).state == "refused"
+    assert _operation_state(owner, staged.operation_id) == "cancelled"
+
+
+def test_the_gate_verifies_the_snapshot_with_the_previews_verifier(
+    owner: WorkspaceContext, engine: Engine, database: str, note: str
+) -> None:
+    """One verifier for the preview and the execution (W5). A DESTRUCTIVE row that
+    names a destination its declaration has none for is unverifiable: the preview
+    redacts it, and ``execute_approved`` — reached directly on an approved row, the
+    way only a caller that skipped the decision's own checks could — refuses
+    ``invalid_approval`` before the effect rather than running it."""
+    from rheo_core.approvals.gate import execute_approved
+    from rheo_core.approvals.records import get as read_approval
+    from rheo_core.approvals.records import mark_approved
+    from rheo_core.operations.refusals import OperationRefused
+
+    approval_id, _ = _held(owner, FIXTURE_ACT, act_payload(note))
+    _set_approval(engine, database, approval_id, destination_ref="sink:elsewhere")
+
+    now = datetime.now(UTC)
+    with UnitOfWork(engine, database) as uow:
+        assert mark_approved(
+            uow.connection,
+            approval_id=approval_id,
+            approved_by_kind=owner.actor.kind.value,
+            approved_by_id=owner.actor.id,
+            approved_entry=owner.entry.value,
+            now=now,
+        )
+        row = read_approval(uow.connection, approval_id=approval_id)
+        assert row is not None
+        with pytest.raises(OperationRefused) as refused:
+            execute_approved(owner, uow, approval=row, now=now)
+        uow.rollback()
+
+    assert refused.value.state == INVALID_APPROVAL
+    assert _acts(engine, database) == ()
+    # The same row, still pending after the rollback, through the preview.
+    assert _preview(owner, approval_id).model_dump() == REDACTED_PREVIEW.model_dump()
 
 
 def _expired_pending(
@@ -2302,17 +2614,32 @@ def test_a_viewer_who_cannot_see_the_subject_cannot_decide_or_preview(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Subject visibility is rechecked at the decision, with the preview's answer:
-    ``not_found`` for approve and refuse, nothing written, still pending."""
+    ``not_found`` for approve and refuse, nothing written, still pending.
+
+    **And it is checked before the state** (review W1), so a subject-blind eligible
+    viewer cannot tell an executed or a restored approval from a missing id: every
+    answer is ``not_found`` with the missing id's own text."""
     hidden_id, hidden = _member_context(cluster, workspace, "decider-without-sight")
     approval_id, operation_id = _held(owner, FIXTURE_ACT, act_payload(note))
+    executed, _ = _held(owner, FIXTURE_ACT, act_payload(note))
+    _record(_approve(owner, executed))
+    restored, restored_operation = _held(owner, FIXTURE_ACT, act_payload(note))
+    _restored(engine, database, restored)
     _hide_notes_from(monkeypatch, hidden_id)
 
     assert _preview(hidden, approval_id).model_dump() == REDACTED_PREVIEW.model_dump()
-    assert _approve(hidden, approval_id).state == NOT_FOUND
-    assert _refuse(hidden, approval_id).state == NOT_FOUND
-    assert _acts(engine, database) == ()
+    for held_id in (approval_id, executed, restored):
+        for attempt in (_approve(hidden, held_id), _refuse(hidden, held_id)):
+            assert attempt.state == NOT_FOUND, (held_id, attempt)
+            assert attempt.error is not None
+            assert (
+                attempt.error.error_text == f"no approval {held_id} in this workspace"
+            )
+    assert _acts(engine, database) == (note,)
     assert _operation_state(owner, operation_id) == "approval_required"
+    assert _operation_state(owner, restored_operation) == "approval_required"
     assert _preview(owner, approval_id).status == "pending"
+    assert _preview(owner, restored).status == "restored"
 
 
 def test_no_token_may_carry_or_call_preview_approve_refuse_or_resolve(

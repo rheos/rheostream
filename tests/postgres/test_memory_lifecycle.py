@@ -52,6 +52,7 @@ from rheo_contracts import RecordRef, Role, StaleRecord, WorkspaceContext
 from rheo_core.approvals import (
     APPROVAL_APPROVE,
     APPROVAL_PREVIEW,
+    APPROVAL_REFUSE,
     REDACTED_PREVIEW,
     ApprovalRecord,
 )
@@ -1199,6 +1200,69 @@ def test_the_preview_of_a_member_erasure_follows_erasure_authority_not_read_auth
     assert "private body text" not in json.dumps(shown.result.model_dump(), default=str)
     assert hidden.ok and hidden.result is not None, hidden
     assert hidden.result.model_dump() == REDACTED_PREVIEW.model_dump()
+
+
+def test_an_owner_held_member_erasure_is_not_previewed_as_actionable(
+    lifecycle: LifecycleWorkspace,
+) -> None:
+    """The preview agrees with the gate on the route ``docs/architecture/memory.md``
+    names unreachable in this release (review W2).
+
+    The owner may hold the erasure of a member-audience memory it cannot read, and
+    may see the bound request through erasure authority. But the gate rechecks the
+    subject under the *held caller* — here the owner — and the resolver answers
+    ``not_found``, so approving can never reach the coordinator. The preview
+    therefore reports ``invalid`` with nothing disclosed rather than an actionable
+    request; approving directly ends in the gate's durable ``RecordStateGuard``
+    refusal with the memory intact, and refusing ends the held call ``cancelled``.
+    """
+    member_id = add_member(
+        lifecycle.cluster.backend,
+        lifecycle.workspace,
+        Role.MEMBER,
+        display_name="departed-member",
+    )
+    owner = lifecycle.context()
+    approved_target = _seed(
+        lifecycle,
+        _row(audience_kind="member", audience_id=member_id, body="kept private"),
+    )
+    refused_target = _seed(
+        lifecycle,
+        _row(audience_kind="member", audience_id=member_id, body="also private"),
+    )
+    approved_id = _held(lifecycle, owner, approved_target.id)
+    refused_id = _held(lifecycle, owner, refused_target.id)
+
+    for approval_id in (approved_id, refused_id):
+        shown = lifecycle.core_call(
+            owner, APPROVAL_PREVIEW, {"approval_id": str(approval_id)}
+        )
+        assert shown.ok and shown.result is not None, shown
+        assert (shown.result.status, shown.result.actionable) == ("invalid", False)
+        assert shown.result.model_dump(exclude={"status"}) == (
+            REDACTED_PREVIEW.model_dump(exclude={"status"})
+        )
+
+    approved = _approve(lifecycle, owner, approved_id)
+    assert approved.ok and approved.result is not None, approved
+    assert approved.result.state == "refused"
+    assert approved.result.executed_at is None
+    refused = lifecycle.core_call(
+        owner, APPROVAL_REFUSE, {"approval_id": str(refused_id)}
+    )
+    assert refused.ok and refused.result is not None, refused
+    assert refused.result.state == "refused"
+    with lifecycle.reading() as uow:
+        for target in (approved_target, refused_target):
+            assert (
+                uow.connection.execute(
+                    select(memory_tables.memory.c.id).where(
+                        memory_tables.memory.c.id == target.id
+                    )
+                ).scalar_one_or_none()
+                == target.id
+            )
 
 
 def test_the_owner_authorizes_erasing_a_member_memory_and_reads_none_of_it(
