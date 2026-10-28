@@ -99,6 +99,7 @@ _FAR_FUTURE = datetime(2999, 1, 1, tzinfo=UTC)
 READ_ONLY_OPERATIONS = frozenset(
     {
         "core.audit.list",
+        "core.external_action.get",
         "core.oauth_event.list",
         "core.operation.get",
         "core.operation.list",
@@ -533,9 +534,11 @@ def test_cli_full_excludes_the_eight_names(session_ctx: WorkspaceContext) -> Non
     assert "core.standing_grant.revoke" not in operations
     assert "core.evidence_enrollment.create" not in operations
     assert "core.evidence_enrollment.rotate" not in operations
+    # Settling an unresolved external action is a person's act, never a token's.
+    assert "core.operation.resolve" not in operations
     # Revoking an enrollment only removes capability, so a token may carry it.
     assert "core.evidence_enrollment.revoke" in operations
-    assert len(NON_TOKEN_ISSUABLE) == 8
+    assert len(NON_TOKEN_ISSUABLE) == 9
     assert "core.workspace.status" in operations
     assert NOTE_GET in operations
 

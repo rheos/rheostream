@@ -747,9 +747,24 @@ Introduced here because they are durable work; their approval is in
 
 Migration `0014_external_actions` creates this table together with the keyed envelope; the
 append-only `0015_terminal_action_history` correction makes terminal operation/key fields
-historical rather than a live foreign key. Staging, job continuation, and reconciliation are not
-activated by that schema alone; they arrive behind the destination-registration and
-approval-continuation gates.
+historical rather than a live foreign key. No migration was added for continuation.
+
+Approving a staged keyed action queues exactly one `core.external_action.execute` job whose
+payload is only `{"external_action_id": ...}`, with `operation_id` and `depends_on_ref` null.
+The worker looks that core-only continuation kind up before its cancellation and budget gates,
+mints an `ExternalContinuationGrant` only after locking and matching the action, approval,
+operation, pending keyed envelope and leased job, and the continuation rechecks the held caller,
+payload digest, readiness and every guard before invoking the registered destination at most
+once. It settles the action, approval, operation, keyed envelope and audit row in the same
+transaction as the job write, returning one of `succeeded`, `handled_terminal`, `retry`,
+`failed_terminal` or `cancelled_terminal`; a lost lease finish rolls all of it back.
+Cancellation and exhausted-budget leases reconcile and never invoke. `failure_class` is one of
+`destination_unavailable_no_effect`, `permanent_refusal_no_effect`, `retryable_no_effect`,
+`outcome_unknown` and `cancelled_no_effect`. A `failed` action is always proven no-effect; a
+possibly effective one is `unresolved` until `core.operation.resolve` moves it, which needs the
+destination's confirmed result ref for success and its proof of absence for failure. Callers
+read the outcome through `core.external_action.get`, whose `restage_eligible` is true only for
+`failed` and for a destination-unavailable refusal.
 
 ## Contact permission records (FR 46)
 

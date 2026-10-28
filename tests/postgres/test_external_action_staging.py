@@ -19,6 +19,7 @@ from rheo_contracts import (
 )
 from rheo_core.approvals.tables import approval
 from rheo_core.audit import (
+    AUDIT_FAILED,
     AUDIT_REFUSED,
     AUDIT_SUCCEEDED,
     CORE_AUDIT_SINK,
@@ -420,7 +421,10 @@ def _settle(
                 now=now,
             )
             values = {
-                "failure_class": "cancelled_no_effect",
+                "failure_class": {
+                    "failed": "retryable_no_effect",
+                    "unresolved": "outcome_unknown",
+                }.get(state, "cancelled_no_effect"),
                 "error_code": "synthetic_cancelled",
                 "error_detail": "synthetic cancellation",
             }
@@ -532,6 +536,33 @@ def test_replay_returns_retained_terminal_error(
     assert _audit_rows(ctx, staged.operation_id) == [
         (OPERATION, SafetyClass.EXTERNAL.value, AUDIT_REFUSED),
         (OPERATION, SafetyClass.EXTERNAL.value, AUDIT_REFUSED),
+    ]
+
+
+@pytest.mark.parametrize("state", ["failed", "unresolved"])
+def test_replay_of_a_failed_or_unresolved_envelope_audits_failed(
+    workspace: UUID, owner_account_id: UUID, state: str
+) -> None:
+    """A retained failure or unknown outcome replays as a failed audit row, never
+    as a refusal or a success, and never as a new hold."""
+    calls: list[str] = []
+    operations, destinations = _registries(calls)
+    install_sink("core", CORE_AUDIT_SINK)
+    ctx = _context(workspace, owner_account_id)
+    key = f"retained-{state}"
+
+    staged = _stage(ctx, _payload(key), operations, destinations)
+    _settle(ctx, staged, key, state=state)
+    replayed = _stage(ctx, _payload(key), operations, destinations)
+
+    assert replayed.created is False
+    assert replayed.retained is not None
+    assert replayed.retained.state == state
+    assert calls == []
+    assert _counts(ctx, key) == (1, 1, 1, 1, 0)
+    assert _audit_rows(ctx, staged.operation_id) == [
+        (OPERATION, SafetyClass.EXTERNAL.value, AUDIT_REFUSED),
+        (OPERATION, SafetyClass.EXTERNAL.value, AUDIT_FAILED),
     ]
 
 

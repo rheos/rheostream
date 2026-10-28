@@ -389,6 +389,17 @@ def finish_held_succeeded(
     )
 
 
+def start_held(conn: Connection, *, operation_id: UUID, now: datetime) -> bool:
+    """Move a held record to ``running`` because its approved external action was
+    queued for continuation. Reports whether it applied.
+
+    From here the continuation, not the approval, terminalises it, through the
+    ordinary open-record writes below. No generic job terminalises it: the
+    continuation job carries no ``operation_id``.
+    """
+    return _apply(conn, _held(operation_id), state=RUNNING, started_at=now)
+
+
 def finish_held_cancelled(
     conn: Connection, *, operation_id: UUID, now: datetime
 ) -> bool:
@@ -506,6 +517,7 @@ def resolve(
     note: str,
     now: datetime,
     terminal_check_kind: str | None = None,
+    result_ref: str | None = None,
 ) -> bool:
     """Move an ``unresolved`` record to a named ``outcome`` with a ``note``. Reports
     whether it applied.
@@ -538,6 +550,8 @@ def resolve(
     if outcome == SUCCEEDED:
         values["terminal_check_kind"] = terminal_check_kind
         values["terminal_check_at"] = now
+    if result_ref is not None:
+        values["result_ref"] = result_ref
     return _apply(
         conn,
         (t.operation.c.id == operation_id) & (t.operation.c.state == UNRESOLVED),

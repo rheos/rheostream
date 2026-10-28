@@ -119,6 +119,16 @@ WORKER_ENTRY_POINT = EntryPoint(
 
 def test_production_job_kinds_include_core_runtime_run_and_retention_sweep() -> None:
     assert JOB_KINDS.names() == PRODUCTION_KINDS
+    # The one core continuation kind, kept apart from the ordinary handlers.
+    from rheo_core.operations.continuation import (
+        EXTERNAL_ACTION_EXECUTE,
+        run_external_continuation,
+    )
+
+    assert JOB_KINDS.continuation_names() == frozenset({EXTERNAL_ACTION_EXECUTE})
+    assert JOB_KINDS.continuation_for(EXTERNAL_ACTION_EXECUTE) is (
+        run_external_continuation
+    )
 
     export_model, export_handler = JOB_KINDS.lookup(EXPORT_JOB_KIND)
     assert export_model is ExportJobPayload

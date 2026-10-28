@@ -400,6 +400,7 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
             ENROLLMENT_CREATE,
             ENROLLMENT_REVOKE,
             ENROLLMENT_ROTATE,
+            "core.external_action.get",
             MODULE_ENABLE,
             MODULE_INSTALL,
             "core.module.upgrade",

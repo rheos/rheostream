@@ -29,10 +29,14 @@ setting; the class-to-behaviour table is code, not configuration). `approvals.co
 is not a declared setting yet, so no lower-class call requires confirmation today.
 
 Core migration `0014_external_actions` creates the durable `external_action` shape, but no
-production operation is external or financial class yet. Staging and job continuation are not
-activated by schema alone; until their guarded path lands, the test harness's recording sink
-continues to execute inside `core.approval.approve`'s transaction exactly as a destructive
-operation does. The financial payload check is not written.
+production operation is external or financial class yet. Approving a staged keyed external or
+financial action never runs it inline: approval rechecks the binding, the held caller and the
+guards, then queues one `core.external_action.execute` continuation job, and the worker's
+grant-bound continuation performs the effect ([intake and events](intake-and-events.md#external-actions)).
+Refusing a pending one refuses the action and its keyed reservation with it. Destructive
+operations, and the test harness's unkeyed recording sink, still execute inside
+`core.approval.approve`'s transaction. `core.operation.resolve` is not token-issuable. The
+financial payload check is not written.
 
 ## The approval record
 

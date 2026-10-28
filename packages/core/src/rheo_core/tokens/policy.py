@@ -22,14 +22,16 @@ NON_TOKEN_ISSUABLE: Final[frozenset[str]] = frozenset(
         "core.approval.refuse",
         "core.evidence_enrollment.create",
         "core.evidence_enrollment.rotate",
+        "core.operation.resolve",
         "core.standing_grant.create",
         "core.standing_grant.revoke",
         "core.token.issue",
         "core.token.revoke",
     }
 )
-"""The eight operation names no token may ever carry. Literal strings, not imported
-constants: ``core.token.issue``/``core.token.revoke`` are also declared in
+"""The nine operation names no token may ever carry; ``core.operation.resolve`` joined
+when it became the act that settles an unresolved external action. Literal strings,
+not imported constants: ``core.token.issue``/``core.token.revoke`` are also declared in
 ``operations/core_ops.py`` as ``TOKEN_ISSUE``/``TOKEN_REVOKE``, but importing them
 from there would route ``rheo_core.tokens.policy`` -> ``rheo_core.operations.
 core_ops`` -> ``rheo_core.tokens.issue`` -> ``rheo_core.tokens.policy``, a real

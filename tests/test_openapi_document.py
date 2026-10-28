@@ -155,6 +155,8 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             OPERATION_GET,
             OPERATION_LIST,
             OPERATION_RESOLVE,
+            # The public read of a durable external action, after the record reads.
+            "core.external_action.get",
             # 0c2's C5 adds core.audit.list. Listed in registration order, the
             # order CORE_OPERATIONS itself holds; the assertion sorts both sides.
             AUDIT_LIST,

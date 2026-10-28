@@ -53,11 +53,12 @@ OWNER_SNAPSHOT = frozenset(
 )
 """The full ``agent_default`` expansion, spelled out (test_tokens.py's literal)."""
 
-EIGHT = (
+NOT_ISSUABLE = (
     "core.approval.approve",
     "core.approval.refuse",
     "core.evidence_enrollment.create",
     "core.evidence_enrollment.rotate",
+    "core.operation.resolve",
     "core.standing_grant.create",
     "core.standing_grant.revoke",
     "core.token.issue",
@@ -86,8 +87,8 @@ def _issue(
 
 
 def _assert_no_non_issuable(operations: frozenset[str]) -> None:
-    assert frozenset(EIGHT) == NON_TOKEN_ISSUABLE
-    for name in EIGHT:
+    assert frozenset(NOT_ISSUABLE) == NON_TOKEN_ISSUABLE
+    for name in NOT_ISSUABLE:
         assert name not in operations, name
     assert DISCOVER_THEN_CALL_OPERATION not in operations
 

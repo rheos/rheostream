@@ -41,6 +41,10 @@ from rheo_core.modules.operations import (
     ModuleInstallPayload,
     run_module_install_job,
 )
+from rheo_core.operations.continuation import (
+    EXTERNAL_ACTION_EXECUTE,
+    run_external_continuation,
+)
 from rheo_core.runtime import (
     ACCOUNT_BOUND_CREDENTIAL_KINDS,
     RUNTIME_RUN,
@@ -77,6 +81,8 @@ JOB_KINDS.register(EXPORT_JOB_KIND, ExportJobPayload, run_export_job)
 JOB_KINDS.register(RESTORE_JOB_KIND, RestoreJobPayload, run_restore_job)
 JOB_KINDS.register(RETENTION_SWEEP, RetentionSweepPayload, run_retention_sweep)
 JOB_KINDS.register(MODULE_INSTALL, ModuleInstallPayload, run_module_install_job)
+# The one core continuation kind: an approved external action's grant-bound effect.
+JOB_KINDS.register_continuation(EXTERNAL_ACTION_EXECUTE, run_external_continuation)
 
 ADAPTERS = AdapterRegistry()
 """Process-wide adapter registry. Production registers ``claude_cli`` here."""

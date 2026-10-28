@@ -123,6 +123,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.external_action.get": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.external_action.get (read) */
+        post: operations["core.external_action.get"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.module.enable": {
         parameters: {
             query?: never;
@@ -908,6 +925,76 @@ export interface components {
             enrollment_id: string;
         };
         /**
+         * ExternalActionRecord
+         * @description One durable external action as core publishes it.
+         *
+         *     ``restage_eligible`` is core's answer to "may the same intent be staged again
+         *     under a new approval": true only for a ``failed`` action (always proven no
+         *     effect) and for a destination-unavailable refusal. The idempotency key is not
+         *     published; the caller already holds it.
+         */
+        ExternalActionRecord: {
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+            /** Attempts */
+            attempts: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Destination Ref */
+            destination_ref: string;
+            /** Error Code */
+            error_code: string | null;
+            /** Error Detail */
+            error_detail: string | null;
+            /** Execution Job Id */
+            execution_job_id: string | null;
+            /**
+             * External Action Id
+             * Format: uuid
+             */
+            external_action_id: string;
+            /** Failure Class */
+            failure_class: string | null;
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+            /** Operation Name */
+            operation_name: string;
+            /** Restage Eligible */
+            restage_eligible: boolean;
+            /** Result Ref */
+            result_ref: string | null;
+            /** Source Ref */
+            source_ref: string | null;
+            /** State */
+            state: string;
+            /** Subject Ref */
+            subject_ref: string | null;
+            /** Terminal At */
+            terminal_at: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** ExternalActionRef */
+        ExternalActionRef: {
+            /**
+             * External Action Id
+             * Format: uuid
+             */
+            external_action_id: string;
+        };
+        /**
          * FailedDelivery
          * @description One failed event delivery as the operation publishes it.
          *
@@ -1313,6 +1400,11 @@ export interface components {
              * @enum {string}
              */
             outcome: "succeeded" | "failed" | "cancelled";
+            /**
+             * Result Ref
+             * @default null
+             */
+            result_ref: string | null;
             /**
              * Terminal Check Kind
              * @default null
@@ -2045,6 +2137,41 @@ export interface operations {
                         /** Format: uuid */
                         operation_id: string | null;
                         result?: components["schemas"]["EnrollmentCreated"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.external_action.get": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExternalActionRef"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ExternalActionRecord"];
                         state: string;
                     };
                 };

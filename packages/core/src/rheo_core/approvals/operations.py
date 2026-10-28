@@ -230,7 +230,21 @@ def approve_handler(
     # and the held record ``failed`` in this transaction, so the record read back below
     # reports it. Reading the state off the row rather than off this value is what
     # makes the published answer the database's and not the handler's.
-    execute_approved(ctx, uow, approval=_must_read(uow, approval_id), now=now)
+    #
+    # A staged KEYED EXTERNAL/FINANCIAL action never runs here: approval rechecks the
+    # binding, the held caller and the guards, then queues its one continuation job,
+    # and the grant-bound continuation performs the effect. DESTRUCTIVE (and the
+    # legacy unkeyed hold) still execute inline.
+    from rheo_core.operations.external_actions import get_for_approval
+
+    approved = _must_read(uow, approval_id)
+    staged = get_for_approval(uow.connection, approval_id=approval_id)
+    if staged is not None:
+        from rheo_core.operations.continuation import queue_approved_external
+
+        queue_approved_external(ctx, uow, approval=approved, action=staged, now=now)
+    else:
+        execute_approved(ctx, uow, approval=approved, now=now)
     return _published(_must_read(uow, approval_id))
 
 
@@ -253,14 +267,24 @@ def refuse_handler(
             f"approval {approval_id} left its decidable state while refusal was "
             "being recorded; nothing was written",
         )
+    now = datetime.now(UTC)
     if not finish_held_cancelled(
-        uow.connection, operation_id=row.operation_id, now=datetime.now(UTC)
+        uow.connection, operation_id=row.operation_id, now=now
     ):
         raise OperationRefused(
             APPROVAL_STATE,
             f"the operation record {row.operation_id} left 'approval_required' "
             "while its approval was being refused",
         )
+    from rheo_core.operations.external_actions import get_for_approval
+
+    staged = get_for_approval(uow.connection, approval_id=approval_id)
+    if staged is not None:
+        # The pre-job refusal path: the staged action and its keyed reservation are
+        # refused with the approval, and no job or destination call ever exists.
+        from rheo_core.operations.continuation import refuse_staged_external
+
+        refuse_staged_external(uow.connection, action=staged, now=now)
     return _published(_must_read(uow, approval_id))
 
 
