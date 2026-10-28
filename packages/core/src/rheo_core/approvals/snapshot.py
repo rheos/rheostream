@@ -48,6 +48,7 @@ locked when the caller holds the lock.
 """
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Final
 
 from pydantic import BaseModel, ValidationError
@@ -99,14 +100,30 @@ class SnapshotRefusal:
     """Why a snapshot does not verify: the refusal state and a detail for the log.
 
     The state is ``operation_unknown`` or ``invalid_approval``; the detail names the
-    clause, for the operator, and is never shown to a preview viewer."""
+    clause, for the operator, and is never shown to a preview viewer. ``cause`` is
+    the closed machine-readable reason callers use when one refusal has a narrower
+    safe capability than the rest; callers never parse the detail text."""
 
     state: str
+    cause: "SnapshotRefusalCause"
     detail: str
 
 
-def _refused(detail: str) -> SnapshotRefusal:
-    return SnapshotRefusal(INVALID_APPROVAL, detail)
+class SnapshotRefusalCause(StrEnum):
+    """Closed causes for a snapshot-verification refusal."""
+
+    OPERATION_UNKNOWN = "operation_unknown"
+    PAYLOAD_ABSENT = "payload_absent"
+    PAYLOAD_INVALID = "payload_invalid"
+    PAYLOAD_DIGEST_MISMATCH = "payload_digest_mismatch"
+    DESTINATION_MISMATCH = "destination_mismatch"
+    SUBJECT_INVALID = "subject_invalid"
+    STAGED_ACTION_ABSENT = "staged_action_absent"
+    STAGED_ACTION_MISMATCH = "staged_action_mismatch"
+
+
+def _refused(cause: SnapshotRefusalCause, detail: str) -> SnapshotRefusal:
+    return SnapshotRefusal(INVALID_APPROVAL, cause, detail)
 
 
 def verify_snapshot(
@@ -117,29 +134,36 @@ def verify_snapshot(
     if operation is None:
         return SnapshotRefusal(
             OPERATION_UNKNOWN,
+            SnapshotRefusalCause.OPERATION_UNKNOWN,
             f"{row.operation_name} is approved but not registered in this process",
         )
     declaration = operation.declaration
     body = payload_body(conn, approval_id=row.id)
     if body is None:
         return _refused(
-            f"the payload snapshot of approval {row.id} is no longer stored"
+            SnapshotRefusalCause.PAYLOAD_ABSENT,
+            f"the payload snapshot of approval {row.id} is no longer stored",
         )
     try:
         model_input = declaration.input_model.model_validate(body)
     except ValidationError:
         return _refused(
+            SnapshotRefusalCause.PAYLOAD_INVALID,
             f"the stored payload of approval {row.id} no longer validates against "
-            f"{declaration.input_model.__name__}"
+            f"{declaration.input_model.__name__}",
         )
     payload = executable_payload(model_input)
     if payload_digest(payload) != row.payload_digest:
-        return _refused("the payload differs from the one that was approved")
+        return _refused(
+            SnapshotRefusalCause.PAYLOAD_DIGEST_MISMATCH,
+            "the payload differs from the one that was approved",
+        )
     external = declaration.external
     if external is None:
         if row.destination_ref is not None:
             return _refused(
-                f"approval {row.id} names a destination its operation has none for"
+                SnapshotRefusalCause.DESTINATION_MISMATCH,
+                f"approval {row.id} names a destination its operation has none for",
             )
     elif (
         row.destination_ref != external.destination_ref
@@ -147,8 +171,9 @@ def verify_snapshot(
         != external.destination_ref
     ):
         return _refused(
+            SnapshotRefusalCause.DESTINATION_MISMATCH,
             f"approval {row.id} is not bound to the declared destination "
-            f"{external.destination_ref!r}"
+            f"{external.destination_ref!r}",
         )
     subject: RecordRef | None = None
     subject_field = (
@@ -157,22 +182,30 @@ def verify_snapshot(
     if subject_field is not None:
         value = getattr(model_input, subject_field, None)
         if value is not None and not isinstance(value, RecordRef):
-            return _refused(f"the subject field {subject_field!r} carries no reference")
+            return _refused(
+                SnapshotRefusalCause.SUBJECT_INVALID,
+                f"the subject field {subject_field!r} carries no reference",
+            )
         subject = value
     if (
         declaration.safety_class in _STAGED_CLASSES
         and declaration.idempotency is Idempotency.KEYED
     ):
         staged = get_for_approval(conn, approval_id=row.id)
+        if staged is None:
+            return _refused(
+                SnapshotRefusalCause.STAGED_ACTION_ABSENT,
+                f"approval {row.id} has no staged external action bound to it",
+            )
         if (
-            staged is None
-            or staged.operation_id != row.operation_id
+            staged.operation_id != row.operation_id
             or staged.operation_name != row.operation_name
             or staged.destination_ref != row.destination_ref
             or staged.approval_payload_digest != row.payload_digest
         ):
             return _refused(
-                f"approval {row.id} has no staged external action bound to it"
+                SnapshotRefusalCause.STAGED_ACTION_MISMATCH,
+                f"approval {row.id} has a mismatched staged external action binding",
             )
     return VerifiedSnapshot(
         operation=operation,

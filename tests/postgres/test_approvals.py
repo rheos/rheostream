@@ -1956,10 +1956,11 @@ def test_preview_redaction_is_identical_for_missing_denied_unauthorized_and_inva
     assert redacted == {
         "status": "unavailable",
         "actionable": False,
+        "refusable": False,
         **{
             name: None
             for name in REDACTED_PREVIEW.model_dump()
-            if name not in {"status", "actionable"}
+            if name not in {"status", "actionable", "refusable"}
         },
     }
 
@@ -2246,18 +2247,31 @@ def test_a_restored_approval_whose_snapshot_fails_verification_is_not_actionable
     assert _operation_state(owner, operation_id) == "cancelled"
 
 
-def test_a_restored_keyed_external_without_its_staged_action_never_runs_inline(
-    owner: WorkspaceContext, engine: Engine, database: str, probe: list[str]
+def test_a_visible_restored_keyed_external_without_its_staged_action_is_refusable(
+    owner: WorkspaceContext,
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    database: str,
+    note: str,
+    monkeypatch: pytest.MonkeyPatch,
+    probe: list[str],
 ) -> None:
     """Restore carries approvals and held operations but not the staged action or
     its keyed reservation. A KEYED EXTERNAL approval with no staged action does not
     verify: approving it would otherwise run the operation inline, outside the
     at-most-once continuation (the probe's inline handler raises if it is ever
-    reached). It previews as the common redaction and approval refuses
-    ``invalid_approval``; refusal still ends it."""
+    reached). Its eligible subject-visible viewer gets only the server-derived
+    refusal capability on the otherwise common redaction; a subject-blind or stale
+    viewer gets the byte-identical no-capability redaction. Approval remains blocked,
+    while refusal ends the approval and held operation without any effect."""
     staged = dispatch(owner, PROBE, _probe_payload("restored-unstaged"))
     assert staged.approval_id is not None and staged.operation_id is not None
     _restored(engine, database, staged.approval_id)
+    # A restored unverifiable snapshot has no verified subject. The refusal-only
+    # capability therefore uses the same stored-subject visibility check as the
+    # existing safe refusal mutation.
+    _set_approval(engine, database, staged.approval_id, subject_ref=note)
     with UnitOfWork(engine, database) as uow:
         uow.connection.execute(
             delete(external_action).where(
@@ -2271,14 +2285,131 @@ def test_a_restored_keyed_external_without_its_staged_action_never_runs_inline(
         )
         uow.commit()
 
-    assert (
-        _preview(owner, staged.approval_id).model_dump()
-        == REDACTED_PREVIEW.model_dump()
+    preview = _preview(owner, staged.approval_id)
+    assert (preview.status, preview.actionable, preview.refusable) == (
+        "unavailable",
+        False,
+        True,
     )
-    assert _approve(owner, staged.approval_id).state == INVALID_APPROVAL
+    assert all(
+        value is None
+        for value in preview.model_dump(
+            exclude={"status", "actionable", "refusable"}
+        ).values()
+    )
+
+    hidden_id, hidden = _member_context(cluster, workspace, "blind-restored-refuser")
+    _hide_notes_from(monkeypatch, hidden_id)
+    stale = _stale_member(cluster, workspace, "stale-restored-refuser")
+    for denied in (hidden, stale):
+        assert (
+            _preview(denied, staged.approval_id).model_dump()
+            == REDACTED_PREVIEW.model_dump()
+        )
+
+    forged = dispatch(
+        owner,
+        APPROVAL_APPROVE,
+        {
+            "approval_id": str(staged.approval_id),
+            "refusable": True,
+            "operation_name": PROBE,
+            "destination_ref": "synthetic",
+            "payload": _probe_payload("restored-unstaged"),
+        },
+    )
+    assert forged.state == INVALID_APPROVAL
     assert _probe_jobs(engine, database) == 0 and probe == []
     assert _record(_refuse(owner, staged.approval_id)).state == "refused"
     assert _operation_state(owner, staged.operation_id) == "cancelled"
+    with UnitOfWork(engine, database) as uow:
+        assert (
+            uow.connection.execute(
+                select(idempotency_result.c.state).where(
+                    idempotency_result.c.idempotency_key == "restored-unstaged"
+                )
+            ).scalar_one_or_none()
+            is None
+        )
+
+
+def test_refusal_capability_cannot_be_supplied_and_excludes_every_other_failure(
+    owner: WorkspaceContext,
+    engine: Engine,
+    database: str,
+    monkeypatch: pytest.MonkeyPatch,
+    probe: list[str],
+) -> None:
+    """The preview input cannot mint or widen capability, and verifier failures
+    adjacent to the one allowed cause remain the common no-capability redaction:
+    missing approval, non-restored missing staged action, cascade-invalidated row,
+    mismatched staged binding, missing snapshot, and deregistered operation."""
+    missing = UUID("018f0000-0000-7000-8000-0000000000ec")
+    supplied = dispatch(
+        owner,
+        APPROVAL_PREVIEW,
+        {
+            "approval_id": str(missing),
+            "refusable": True,
+            "capabilities": {"refuse": True},
+            "operation_name": PROBE,
+            "destination_ref": "synthetic",
+            "payload_digest": "0" * 64,
+        },
+    )
+    assert supplied.ok
+    assert supplied.result.model_dump() == REDACTED_PREVIEW.model_dump()
+
+    pending = dispatch(owner, PROBE, _probe_payload("pending-unstaged"))
+    invalidated = dispatch(owner, PROBE, _probe_payload("invalidated-unstaged"))
+    mismatched = dispatch(owner, PROBE, _probe_payload("mismatched-staged"))
+    deleted = dispatch(owner, PROBE, _probe_payload("deleted-snapshot"))
+    unknown = dispatch(owner, PROBE, _probe_payload("unknown-operation"))
+    outcomes = (pending, invalidated, mismatched, deleted, unknown)
+    assert all(item.approval_id is not None for item in outcomes)
+
+    for item in (pending, invalidated):
+        with UnitOfWork(engine, database) as uow:
+            uow.connection.execute(
+                delete(external_action).where(
+                    external_action.c.approval_id == item.approval_id
+                )
+            )
+            uow.commit()
+    _restored(engine, database, invalidated.approval_id)
+    _set_approval(
+        engine,
+        database,
+        invalidated.approval_id,
+        state="invalidated",
+        invalidated_reason="source_deleted",
+    )
+    _restored(engine, database, mismatched.approval_id)
+    with UnitOfWork(engine, database) as uow:
+        uow.connection.execute(
+            update(external_action)
+            .where(external_action.c.approval_id == mismatched.approval_id)
+            .values(approval_payload_digest=b"\x00" * 32)
+        )
+        uow.commit()
+    _restored(engine, database, deleted.approval_id)
+    _drop_payload(engine, database, deleted.approval_id)
+    _restored(engine, database, unknown.approval_id)
+
+    for item in (pending, invalidated, mismatched, deleted):
+        assert (
+            _preview(owner, item.approval_id).model_dump()
+            == REDACTED_PREVIEW.model_dump()
+        )
+    with monkeypatch.context() as patch:
+        patch.delitem(REGISTRY._operations, PROBE)  # noqa: SLF001 - verifier seam
+        assert (
+            _preview(owner, unknown.approval_id).model_dump()
+            == REDACTED_PREVIEW.model_dump()
+        )
+        assert _approve(owner, unknown.approval_id).state == "operation_unknown"
+
+    assert _probe_jobs(engine, database) == 0 and probe == []
 
 
 def test_the_gate_verifies_the_snapshot_with_the_previews_verifier(

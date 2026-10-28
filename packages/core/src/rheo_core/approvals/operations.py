@@ -34,11 +34,14 @@ instead; that check can only refuse, and nothing is disclosed or run from it.
 
 **The preview is non-enumerating.** Every state in which a viewer may not be shown the
 approval — no such row, an ineligible or unauthenticated viewer, a subject the viewer
-cannot see, a snapshot that does not verify — answers with one identical redacted
-:data:`REDACTED_PREVIEW`. A decision refused for eligibility or for subject
-visibility answers ``not_found`` with the same text a missing id gets, whatever the
-approval's state and whether or not its snapshot verifies, because both are checked
-before the state is.
+cannot see, or any unsafe snapshot failure — answers with one identical redacted
+:data:`REDACTED_PREVIEW`. The sole content-free capability exception is a currently
+eligible, subject-visible restored KEYED EXTERNAL/FINANCIAL approval whose staged
+action is specifically absent: it remains ``unavailable`` and non-actionable, but
+publishes ``refusable=true`` so the shell can offer only the safe refusal mutation. A
+decision refused for eligibility or for subject visibility answers ``not_found`` with
+the same text a missing id gets, whatever the approval's state and whether or not its
+snapshot verifies, because both are checked before the state is.
 
 **Two states are decidable: ``pending`` and a restored ``requires_reapproval``**
 (the maintainer's decision for #481 / PR #482, which keeps FR 52 / criterion 21: a
@@ -86,6 +89,7 @@ from rheo_core.approvals.records import (
 )
 from rheo_core.approvals.snapshot import (
     SnapshotRefusal,
+    SnapshotRefusalCause,
     VerifiedSnapshot,
     verify_snapshot,
 )
@@ -186,7 +190,8 @@ PreviewStatus = Literal[
 - ``unavailable`` — anything the viewer may not be shown, **including a snapshot that
   fails verification** (tampered body, rebound destination, a KEYED EXTERNAL approval
   with no staged action): ``invalid`` never covers a broken snapshot. Redacted, and
-  identical for every cause.
+  identical for every cause except the one server-derived ``refusable=true``
+  capability described on :class:`ApprovalPreview`.
 
 ``actionable`` is true exactly for ``pending`` and ``restored``."""
 
@@ -208,8 +213,12 @@ class ApprovalPreview(BaseModel):
     ``restored``). ``external_action_id`` is set for a staged KEYED EXTERNAL action,
     whose own outcome ``core.external_action.get`` reports.
 
-    **Redacted** (``invalid``, ``unavailable``): every field but ``status`` and
-    ``actionable`` is null. ``unavailable`` is byte-identical whatever the cause.
+    **Redacted** (``invalid``, ``unavailable``): every content field is null. The
+    default-false ``refusable`` capability is true only for an eligible,
+    subject-visible, durable restored approval whose KEYED EXTERNAL/FINANCIAL staged
+    action is specifically absent. It discloses no content and does not make the
+    preview actionable or approvable. Every other ``unavailable`` cause is
+    byte-identical with ``refusable=false``.
 
     ``actionable`` is true exactly when ``status`` is ``pending`` or ``restored``.
     The validator makes every other combination unconstructable, so a handler bug
@@ -220,6 +229,7 @@ class ApprovalPreview(BaseModel):
 
     status: PreviewStatus
     actionable: bool
+    refusable: bool = False
     approval_id: UUID | None = None
     operation_id: UUID | None = None
     external_action_id: UUID | None = None
@@ -241,7 +251,11 @@ class ApprovalPreview(BaseModel):
             raise ValueError(
                 "actionable is true exactly for a pending or restored preview"
             )
-        details = self.model_dump(exclude={"status", "actionable"})
+        if self.refusable and (self.status != "unavailable" or self.actionable):
+            raise ValueError(
+                "refusable is true only for a non-actionable unavailable preview"
+            )
+        details = self.model_dump(exclude={"status", "actionable", "refusable"})
         if self.status in _DISCLOSED:
             required = (
                 "approval_id",
@@ -263,7 +277,12 @@ class ApprovalPreview(BaseModel):
 
 
 REDACTED_PREVIEW: Final = ApprovalPreview(status="unavailable", actionable=False)
-"""The one answer for every approval the viewer may not be shown."""
+"""The one answer for every approval with no safe server-derived capability."""
+
+_REFUSABLE_REDACTED_PREVIEW: Final = ApprovalPreview(
+    status="unavailable", actionable=False, refusable=True
+)
+"""The content-free refusal capability for the one safe restored failure cause."""
 
 _INVALID_PREVIEW: Final = ApprovalPreview(status="invalid", actionable=False)
 
@@ -565,6 +584,12 @@ def preview_handler(
         return REDACTED_PREVIEW
     verified = verify_snapshot(uow.connection, row)
     if isinstance(verified, SnapshotRefusal):
+        if (
+            verified.cause is SnapshotRefusalCause.STAGED_ACTION_ABSENT
+            and row.state == t.REQUIRES_REAPPROVAL
+            and _stored_subject_visible(ctx, uow, row)
+        ):
+            return _REFUSABLE_REDACTED_PREVIEW
         return REDACTED_PREVIEW
     access = _subject_access(ctx, uow, verified)
     if access == "none":

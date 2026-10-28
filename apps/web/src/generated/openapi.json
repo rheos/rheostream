@@ -31,7 +31,7 @@
       },
       "ApprovalPreview": {
         "additionalProperties": false,
-        "description": "What a person is shown before deciding, or the redacted answer.\n\n**Disclosed** (``pending``, ``restored``, ``expired``, ``resolved``): every field\nbelow is the verified persisted binding \u2014 the ids, the operation, who asked (the\noriginal held caller, never the viewer), the subject read from the verified\npayload, the exact canonical destination (null for a class with no destination),\nthe complete validated payload, its digest as lowercase hex, the purpose and\nwindow, and the durable approval state (``requires_reapproval`` for\n``restored``). ``external_action_id`` is set for a staged KEYED EXTERNAL action,\nwhose own outcome ``core.external_action.get`` reports.\n\n**Redacted** (``invalid``, ``unavailable``): every field but ``status`` and\n``actionable`` is null. ``unavailable`` is byte-identical whatever the cause.\n\n``actionable`` is true exactly when ``status`` is ``pending`` or ``restored``.\nThe validator makes every other combination unconstructable, so a handler bug\ncannot publish one.",
+        "description": "What a person is shown before deciding, or the redacted answer.\n\n**Disclosed** (``pending``, ``restored``, ``expired``, ``resolved``): every field\nbelow is the verified persisted binding \u2014 the ids, the operation, who asked (the\noriginal held caller, never the viewer), the subject read from the verified\npayload, the exact canonical destination (null for a class with no destination),\nthe complete validated payload, its digest as lowercase hex, the purpose and\nwindow, and the durable approval state (``requires_reapproval`` for\n``restored``). ``external_action_id`` is set for a staged KEYED EXTERNAL action,\nwhose own outcome ``core.external_action.get`` reports.\n\n**Redacted** (``invalid``, ``unavailable``): every content field is null. The\ndefault-false ``refusable`` capability is true only for an eligible,\nsubject-visible, durable restored approval whose KEYED EXTERNAL/FINANCIAL staged\naction is specifically absent. It discloses no content and does not make the\npreview actionable or approvable. Every other ``unavailable`` cause is\nbyte-identical with ``refusable=false``.\n\n``actionable`` is true exactly when ``status`` is ``pending`` or ``restored``.\nThe validator makes every other combination unconstructable, so a handler bug\ncannot publish one.",
         "properties": {
           "actionable": {
             "title": "Actionable",
@@ -150,6 +150,11 @@
             ],
             "default": null,
             "title": "Purpose"
+          },
+          "refusable": {
+            "default": false,
+            "title": "Refusable",
+            "type": "boolean"
           },
           "requester_id": {
             "anyOf": [

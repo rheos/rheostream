@@ -621,8 +621,12 @@ export interface components {
          *     ``restored``). ``external_action_id`` is set for a staged KEYED EXTERNAL action,
          *     whose own outcome ``core.external_action.get`` reports.
          *
-         *     **Redacted** (``invalid``, ``unavailable``): every field but ``status`` and
-         *     ``actionable`` is null. ``unavailable`` is byte-identical whatever the cause.
+         *     **Redacted** (``invalid``, ``unavailable``): every content field is null. The
+         *     default-false ``refusable`` capability is true only for an eligible,
+         *     subject-visible, durable restored approval whose KEYED EXTERNAL/FINANCIAL staged
+         *     action is specifically absent. It discloses no content and does not make the
+         *     preview actionable or approvable. Every other ``unavailable`` cause is
+         *     byte-identical with ``refusable=false``.
          *
          *     ``actionable`` is true exactly when ``status`` is ``pending`` or ``restored``.
          *     The validator makes every other combination unconstructable, so a handler bug
@@ -678,6 +682,11 @@ export interface components {
              * @default null
              */
             purpose: string | null;
+            /**
+             * Refusable
+             * @default false
+             */
+            refusable: boolean;
             /**
              * Requester Id
              * @default null
