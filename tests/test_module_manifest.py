@@ -42,6 +42,7 @@ from rheo_core.modules.manifest import (
     KeyedCompatibilityRegistration,
     ModuleManifest,
     NavigationEntry,
+    RecordRoute,
     RecordType,
     RecordView,
     Schedule,
@@ -538,6 +539,7 @@ def test_the_web_contribution_carries_the_ratified_fields_plus_surface() -> None
         "package_name",
         "navigation",
         "routes",
+        "record_routes",
         "record_views",
         "forms",
         "search_providers",
@@ -546,6 +548,8 @@ def test_the_web_contribution_carries_the_ratified_fields_plus_surface() -> None
     assert fields["surface"].annotation is WebSurface
     assert fields["navigation"].annotation == tuple[NavigationEntry, ...]
     assert fields["routes"].annotation == tuple[WebRoute, ...]
+    assert fields["record_routes"].annotation == tuple[RecordRoute, ...]
+    assert fields["record_routes"].default == ()
     assert fields["record_views"].annotation == tuple[RecordView, ...]
     assert fields["forms"].annotation == tuple[FormDeclaration, ...]
     assert fields["search_providers"].annotation == tuple[SearchProvider, ...]
@@ -554,6 +558,7 @@ def test_the_web_contribution_carries_the_ratified_fields_plus_surface() -> None
 def test_the_entry_types_carry_their_declared_fields() -> None:
     assert set(NavigationEntry.model_fields) == {"id", "label", "path", "roles"}
     assert set(WebRoute.model_fields) == {"id", "path", "screen"}
+    assert set(RecordRoute.model_fields) == {"record_type", "route_id", "ref_query"}
     assert set(RecordView.model_fields) == {"record_type", "component"}
     assert set(FormDeclaration.model_fields) == {"operation", "component"}
     assert set(SearchProvider.model_fields) == {"id", "operation"}
@@ -567,6 +572,7 @@ def test_the_entry_types_carry_their_declared_fields() -> None:
     [
         NavigationEntry,
         WebRoute,
+        RecordRoute,
         RecordView,
         FormDeclaration,
         SearchProvider,

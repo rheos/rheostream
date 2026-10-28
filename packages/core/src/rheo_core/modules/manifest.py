@@ -270,6 +270,13 @@ def _ts_identifier(value: str) -> str:
     return value
 
 
+def _query_identifier(value: str) -> str:
+    """An identifier safe to use as one exact URL query-string key."""
+    if not _TS_IDENTIFIER.fullmatch(value):
+        raise ValueError(f"{value!r} is not a safe query-key identifier")
+    return value
+
+
 def _web_package_name(value: str) -> str:
     if not value.startswith(WEB_PACKAGE_SCOPE) or value == WEB_PACKAGE_SCOPE:
         raise ValueError(
@@ -315,6 +322,21 @@ class RecordView(BaseModel):
 
     record_type: str
     component: TsIdentifier
+
+
+class RecordRoute(BaseModel):
+    """One provider-owned record type's route and canonical-reference query key.
+
+    The route is an id from this same contribution, never a path or host.  The
+    provider therefore publishes only the bounded metadata the shell needs to
+    construct a link through its configured routing surface.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    record_type: str
+    route_id: Slug
+    ref_query: Annotated[str, AfterValidator(_query_identifier)]
 
 
 class FormDeclaration(BaseModel):
@@ -365,6 +387,7 @@ class WebContribution(BaseModel):
     record_views: tuple[RecordView, ...]
     forms: tuple[FormDeclaration, ...]
     search_providers: tuple[SearchProvider, ...]
+    record_routes: tuple[RecordRoute, ...] = ()
 
 
 def _refuse_duplicates(field: str, what: str, keys: Sequence[str]) -> None:
@@ -393,6 +416,11 @@ def _check_web_contribution(
     _refuse_duplicates("routes", "path", [route.path for route in web.routes])
     _refuse_duplicates(
         "record_views", "record type", [view.record_type for view in web.record_views]
+    )
+    _refuse_duplicates(
+        "record_routes",
+        "record type",
+        [route.record_type for route in web.record_routes],
     )
     _refuse_duplicates("forms", "operation", [form.operation for form in web.forms])
     _refuse_duplicates(
@@ -432,6 +460,19 @@ def _check_web_contribution(
                 f"web.record_views: record type {view.record_type!r} is not "
                 f"'{module_id}.<name>' for one of module {module_id!r}'s own "
                 "record types"
+            )
+    route_ids = {route.id for route in web.routes}
+    for record_route in web.record_routes:
+        if record_route.record_type not in record_types:
+            raise ValueError(
+                f"web.record_routes: record type {record_route.record_type!r} is not "
+                f"one of module {module_id!r}'s own record types"
+            )
+        if record_route.route_id not in route_ids:
+            raise ValueError(
+                f"web.record_routes: record type {record_route.record_type!r} names "
+                f"route {record_route.route_id!r}, which none of this "
+                "contribution's routes declares"
             )
 
 

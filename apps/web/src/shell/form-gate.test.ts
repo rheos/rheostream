@@ -6,6 +6,7 @@ const contribution: ComposedModule = {
   surface: "probe",
   routes: [],
   navigation: [],
+  recordRoutes: [],
   recordViews: [],
   searchProviders: [],
   readOperations: ["probe.read"],

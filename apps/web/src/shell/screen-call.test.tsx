@@ -100,6 +100,7 @@ vi.mock("@/modules.generated", () => {
     surface: "hostile_probe",
     navigation: [],
     routes: [{ id: "home", path: "/", screen }],
+    recordRoutes: [],
     recordViews: [],
     forms: [],
     searchProviders: [],

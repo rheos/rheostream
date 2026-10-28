@@ -2,7 +2,7 @@
 itself, and the allowlist that decides whether it loads at all.
 
 - ``manifest.py`` — ``ModuleManifest`` as a frozen pydantic model, its ten
-  declaration types, and its ``WebContribution`` with the ``WebSurface`` and five
+  declaration types, and its ``WebContribution`` with the ``WebSurface`` and six
   entry types inside it. Not in ``rheo_contracts``, which may not import
   ``UnitOfWork`` (F3).
 - ``loader.py`` — ``discovered()`` over the ``rheo.modules`` entry-point group,
@@ -58,6 +58,7 @@ from rheo_core.modules.manifest import (
     ManifestInvalid,
     ModuleManifest,
     NavigationEntry,
+    RecordRoute,
     RecordType,
     RecordView,
     Schedule,
@@ -110,6 +111,7 @@ __all__ = [
     "ManifestInvalid",
     "ModuleManifest",
     "NavigationEntry",
+    "RecordRoute",
     "RecordType",
     "RegisteredDestination",
     "RecordView",
