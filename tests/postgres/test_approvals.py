@@ -1139,7 +1139,7 @@ def test_an_approver_whose_membership_is_gone_is_refused_before_anything_is_writ
     database: str,
     note: str,
 ) -> None:
-    """AC 11, scenario two, as run 4b2 decides it: the **approving** actor's role is
+    """AC 11, scenario two, as #481 decides it: the **approving** actor's role is
     revoked before they approve.
 
     ``dispatch`` still authorizes the call, because the approver's context was built
@@ -1187,7 +1187,7 @@ def test_revoking_the_approving_actors_role_refuses_execution_too(
     after they were found eligible and before the effect.
 
     The mirror of the gated-actor scenario, and the clause that would still be green
-    if the guard read only ``approval.actor_*``. Since run 4b2 the decision rechecks
+    if the guard read only ``approval.actor_*``. Since #481 the decision rechecks
     the approver's current membership itself, so a revocation that lands *before*
     the decision answers ``not_found`` (the test above). The membership lives on the
     control plane, which the approval row's lock does not cover, so a revocation can
@@ -1696,7 +1696,7 @@ def test_an_approved_handler_that_raises_stale_record_answers_record_stale(
     assert _acts(engine, database) == (note,)
 
 
-# --- run 4b2: the bound preview and digest-bound decisions ---------------------------
+# --- #481: the bound preview and digest-bound decisions ------------------------------
 #
 # ``core.approval.preview`` is the read a person's confirmation page is built from.
 # Every test below drives it through ``dispatch`` and reads the decision's outcome
@@ -2078,11 +2078,11 @@ def test_a_restored_approval_previews_as_restored_and_actionable(
     note: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Robin's checkpoint-10 decision (option A): a restored approval is approvable
-    again, so its verified snapshot is disclosed with the closed ``restored`` status
-    and ``actionable = true``, even though the window it carries from the source
-    workspace has passed. Ineligible and subject-blind viewers still get the common
-    redaction, and previewing changes nothing."""
+    """FR 52 / criterion 21, "refused until approved again": a restored approval is
+    approvable again, so its verified snapshot is disclosed with the closed
+    ``restored`` status and ``actionable = true``, even though the window it carries
+    from the source workspace has passed. Ineligible and subject-blind viewers still
+    get the common redaction, and previewing changes nothing."""
     member_id, member = _member_context(cluster, workspace, "restored-requester")
     payload = act_payload(note)
     approval_id, operation_id = _held(member, FIXTURE_ACT, payload)
@@ -2284,7 +2284,7 @@ def test_a_restored_keyed_external_without_its_staged_action_never_runs_inline(
 def test_the_gate_verifies_the_snapshot_with_the_previews_verifier(
     owner: WorkspaceContext, engine: Engine, database: str, note: str
 ) -> None:
-    """One verifier for the preview and the execution (W5). A DESTRUCTIVE row that
+    """One verifier for the preview and inline execution. A DESTRUCTIVE row that
     names a destination its declaration has none for is unverifiable: the preview
     redacts it, and ``execute_approved`` — reached directly on an approved row, the
     way only a caller that skipped the decision's own checks could — refuses
@@ -2616,7 +2616,7 @@ def test_a_viewer_who_cannot_see_the_subject_cannot_decide_or_preview(
     """Subject visibility is rechecked at the decision, with the preview's answer:
     ``not_found`` for approve and refuse, nothing written, still pending.
 
-    **And it is checked before the state** (review W1), so a subject-blind eligible
+    **And it is checked before the state**, so a subject-blind eligible
     viewer cannot tell an executed or a restored approval from a missing id: every
     answer is ``not_found`` with the missing id's own text."""
     hidden_id, hidden = _member_context(cluster, workspace, "decider-without-sight")
@@ -2640,6 +2640,79 @@ def test_a_viewer_who_cannot_see_the_subject_cannot_decide_or_preview(
     assert _operation_state(owner, restored_operation) == "approval_required"
     assert _preview(owner, approval_id).status == "pending"
     assert _preview(owner, restored).status == "restored"
+
+
+def _drop_payload(engine: Engine, database: str, approval_id: UUID) -> None:
+    """Delete an approval's stored snapshot, as the deletion cascade does."""
+    with UnitOfWork(engine, database) as uow:
+        uow.connection.execute(
+            delete(approval_payload).where(
+                approval_payload.c.approval_id == approval_id
+            )
+        )
+        uow.commit()
+
+
+def test_a_subject_blind_viewer_learns_nothing_from_an_unverifiable_approval(
+    owner: WorkspaceContext,
+    cluster: ClusterSession,
+    workspace: UUID,
+    engine: Engine,
+    database: str,
+    note: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A snapshot that does not verify has no verified subject, so the decision checks
+    the stored ``subject_ref`` instead, before the state. A subject-blind eligible
+    viewer gets ``not_found`` with the missing id's own text from approve and refuse
+    alike, whether the row is pending, invalidated by the deletion cascade (state
+    ``invalidated``, payload deleted) or already executed, and cannot end the pending
+    one. A viewer who can see the subject still gets the state-specific answers."""
+    hidden_id, hidden = _member_context(cluster, workspace, "blind-to-a-broken-row")
+    pending, pending_operation = _held(owner, FIXTURE_ACT, act_payload(note))
+    _drop_payload(engine, database, pending)
+    cascaded, cascaded_operation = _held(owner, FIXTURE_ACT, act_payload(note))
+    _drop_payload(engine, database, cascaded)
+    _set_approval(
+        engine,
+        database,
+        cascaded,
+        state="invalidated",
+        invalidated_reason="source_deleted",
+        payload_ref=None,
+    )
+    executed, _ = _held(owner, FIXTURE_ACT, act_payload(note))
+    _record(_approve(owner, executed))
+    _drop_payload(engine, database, executed)
+    _hide_notes_from(monkeypatch, hidden_id)
+
+    for held_id in (pending, cascaded, executed):
+        assert _preview(hidden, held_id).model_dump() == REDACTED_PREVIEW.model_dump()
+        for attempt in (_approve(hidden, held_id), _refuse(hidden, held_id)):
+            assert attempt.state == NOT_FOUND, (held_id, attempt)
+            assert attempt.error is not None
+            assert (
+                attempt.error.error_text == f"no approval {held_id} in this workspace"
+            )
+    assert _operation_state(owner, pending_operation) == "approval_required"
+    assert _acts(engine, database) == (note,)
+
+    # The owner can see the note: the state is theirs to learn, and the broken pending
+    # approval can still be refused (never approved) so it ends.
+    assert _approve(owner, cascaded).state == APPROVAL_STATE
+    assert _refuse(owner, executed).state == APPROVAL_STATE
+    assert _approve(owner, pending).state == INVALID_APPROVAL
+    assert _record(_refuse(owner, pending)).state == "refused"
+    assert _operation_state(owner, pending_operation) == "cancelled"
+    assert _operation_state(owner, cascaded_operation) == "approval_required"
+    assert _acts(engine, database) == (note,)
+
+    # A stored reference that does not parse fails closed, for the owner too.
+    unreadable, _ = _held(owner, FIXTURE_ACT, act_payload(note))
+    _drop_payload(engine, database, unreadable)
+    _set_approval(engine, database, unreadable, subject_ref="harness.note:not-a-uuid")
+    for attempt in (_approve(owner, unreadable), _refuse(owner, unreadable)):
+        assert attempt.state == NOT_FOUND, attempt
 
 
 def test_no_token_may_carry_or_call_preview_approve_refuse_or_resolve(

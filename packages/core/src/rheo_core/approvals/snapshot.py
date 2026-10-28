@@ -1,12 +1,23 @@
-"""The one verifier of an approval's stored snapshot against its binding.
+"""The shared verifier of an approval's stored snapshot against its binding.
 
-``core.approval.preview``, both decisions and
-:func:`~rheo_core.approvals.gate.execute_approved` all ask the same question of an
-approval row — is the stored snapshot the call that was approved? — and they ask it
-here, so the preview can never call "verified" a row the gate refuses, or the
-reverse (run 4b2's Prompt 4 review, W5). The window is deliberately not part of it:
-the preview reports the window as a display status and the gate compares it with
-``binding.binding_detail`` at the instant of execution.
+It answers one question of an approval row — is the stored snapshot the call that was
+approved? — for exactly these call sites:
+
+- ``core.approval.preview`` (``approvals/operations.py:preview_handler``);
+- both decisions, ``core.approval.approve`` and ``.refuse``, under the row lock
+  (``approvals/operations.py:_lock_for_decision``);
+- inline execution, :func:`~rheo_core.approvals.gate.execute_approved`, which runs a
+  DESTRUCTIVE call and the legacy unkeyed hold.
+
+So the preview can never call "verified" a row the inline gate refuses, or the
+reverse. **The staged EXTERNAL path does not call it yet.**
+``operations/continuation.py:queue_approved_external``, which queues the continuation
+when a staged action is approved, and the grant-bound continuation at its effect keep
+their own copy of the body, validation and digest checks. The approval of such a call
+has already passed this verifier under the decision's lock, so that copy can only
+refuse more, never less; routing it through here is separate work. The window is
+deliberately not part of it: the preview reports the window as a display status and
+the gate compares it with ``binding.binding_detail`` at the instant of execution.
 
 **What verified means**, every clause answering ``invalid_approval`` except the first:
 
@@ -56,7 +67,11 @@ from rheo_core.approvals.binding import (
 from rheo_core.approvals.records import ApprovalRow, payload_body
 from rheo_core.operations.external_actions import get_for_approval
 from rheo_core.operations.refusals import OPERATION_UNKNOWN
-from rheo_core.operations.registry import REGISTRY, OperationRegistry
+from rheo_core.operations.registry import (
+    REGISTRY,
+    OperationRegistry,
+    RegisteredOperation,
+)
 
 _STAGED_CLASSES: Final = frozenset({SafetyClass.EXTERNAL, SafetyClass.FINANCIAL})
 
@@ -65,11 +80,13 @@ _STAGED_CLASSES: Final = frozenset({SafetyClass.EXTERNAL, SafetyClass.FINANCIAL}
 class VerifiedSnapshot:
     """An approval's stored snapshot, proved to be the bound one.
 
-    ``payload`` is the validated input as it will execute, the form whose digest the
-    row carries. ``subject`` comes from that input's declared subject field, never
-    from the stored ``subject_ref`` column.
+    ``operation`` is the registry entry the verifier looked up, carried so a caller
+    that runs it needs no second lookup. ``payload`` is the validated input as it will
+    execute, the form whose digest the row carries. ``subject`` comes from that
+    input's declared subject field, never from the stored ``subject_ref`` column.
     """
 
+    operation: RegisteredOperation
     declaration: OperationDeclaration
     model_input: BaseModel
     payload: dict[str, object]
@@ -158,6 +175,7 @@ def verify_snapshot(
                 f"approval {row.id} has no staged external action bound to it"
             )
     return VerifiedSnapshot(
+        operation=operation,
         declaration=declaration,
         model_input=model_input,
         payload=payload,

@@ -428,14 +428,15 @@ def execute_approved(
     the row that says this operation did not happen. The operation record carries the
     guard's name for the reader who wants to know *why*.
     """
-    # The snapshot is verified by the one verifier ``core.approval.preview`` and both
+    # The snapshot is verified by the verifier ``core.approval.preview`` and both
     # decisions use (``approvals/snapshot.py``), so what a person was shown as
-    # verified and what may execute cannot drift apart; the window is compared below.
+    # verified and what may execute inline cannot drift apart; the window is compared
+    # below. The verifier's one registry lookup comes back on the snapshot, so a
+    # refusal for an unregistered operation is the verifier's typed answer above.
     verified = verify_snapshot(uow.connection, approval, registry=registry)
     if isinstance(verified, SnapshotRefusal):
         raise OperationRefused(verified.state, verified.detail)
-    operation = registry.lookup(approval.operation_name)
-    assert operation is not None  # the verifier answered ``operation_unknown`` else
+    operation = verified.operation
     declaration = verified.declaration
     model_input = verified.model_input
     detail = binding_detail(

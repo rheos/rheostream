@@ -19,26 +19,30 @@ checked: that would refuse the one legitimate non-web caller — a test harness 
 
 **Who may see or decide is checked here, against the current state of the world.**
 ``docs/architecture/confirmation-and-safety.md`` § Who may approve says an
-authenticated person, and the run-4b2 spec adds that the person must still be allowed
-to see what they are approving. :func:`_eligible` and :func:`_subject_access` are that
-rule, and the preview and both decisions share them: the context's actor is an account
-that is its own authenticated principal, its ``control.membership`` row *now* carries
-``owner`` or ``member`` (read afresh, so a context built before a revocation does not
-outlive it), and the held call's subject — read from the snapshot verified by
-``approvals/snapshot.py:verify_snapshot``, the verifier the gate uses too, never from
-the stored ``subject_ref`` column — resolves for this viewer (or, for
-``core.record.delete`` only, the viewer holds erasure authority over it).
+authenticated person, and the Leads-to-Current handoff work (#481) adds that the
+person must still be allowed to see what they are approving. :func:`_eligible` and
+:func:`_subject_access` are that rule, and the preview and both decisions share them:
+the context's actor is an account that is its own authenticated principal, its
+``control.membership`` row *now* carries ``owner`` or ``member`` (read afresh, so a
+context built before a revocation does not outlive it), and the held call's subject —
+read from the snapshot verified by ``approvals/snapshot.py:verify_snapshot``, the
+verifier the inline gate uses too, never from the stored ``subject_ref`` column —
+resolves for this viewer (or, for ``core.record.delete`` only, the viewer holds
+erasure authority over it). A decision over a snapshot that does **not** verify has
+no verified subject, so :func:`_stored_subject_visible` checks the stored column
+instead; that check can only refuse, and nothing is disclosed or run from it.
 
 **The preview is non-enumerating.** Every state in which a viewer may not be shown the
 approval — no such row, an ineligible or unauthenticated viewer, a subject the viewer
 cannot see, a snapshot that does not verify — answers with one identical redacted
 :data:`REDACTED_PREVIEW`. A decision refused for eligibility or for subject
 visibility answers ``not_found`` with the same text a missing id gets, whatever the
-approval's state, because both are checked before the state is.
+approval's state and whether or not its snapshot verifies, because both are checked
+before the state is.
 
 **Two states are decidable: ``pending`` and a restored ``requires_reapproval``**
-(Robin's run-4b2 checkpoint-10 decision, option A, which keeps FR 52 / criterion 21:
-a restored action "is refused until approved again"). A restored approval goes through
+(the maintainer's decision for #481 / PR #482, which keeps FR 52 / criterion 21: a
+restored action "is refused until approved again"). A restored approval goes through
 exactly the path a pending one does — the row lock, the fresh eligibility read, the
 shared snapshot verifier, subject visibility and the displayed-digest assertion —
 and on approval its window is reopened (see :func:`approve_handler`), after which the
@@ -62,6 +66,7 @@ from rheo_contracts import (
     AuditSpec,
     Idempotency,
     OperationDeclaration,
+    RecordRef,
     Role,
     SafetyClass,
     WorkspaceContext,
@@ -100,7 +105,7 @@ APPROVAL_PREVIEW: Final = "core.approval.preview"
 """The three names, spelled whole.
 
 The same literals ``rheo_core.tokens.policy.NON_TOKEN_ISSUABLE`` carries (approve and
-refuse since run 0b2, preview since run 4b2). Duplicated rather than imported from
+refuse since run 0b2, preview since #481). Duplicated rather than imported from
 each other, for the reason that module's own docstring gives: an import either way
 closes a cycle, and short literals are cheaper than one."""
 
@@ -163,8 +168,9 @@ PreviewStatus = Literal[
   Actionable.
 - ``restored`` — durable ``requires_reapproval``: an approval restore brought back
   from an export, verified, viewer eligible. Actionable: a person may approve or
-  refuse it again (Robin's checkpoint-10 decision, option A), and the shell labels it
-  as restored and needing a fresh approval. Its ``window_start``/``window_end`` are
+  refuse it again (FR 52 / criterion 21: "refused until approved again"), and the
+  shell labels it as restored and needing a fresh approval. Its
+  ``window_start``/``window_end`` are
   the source workspace's window, kept by restore and normally long past; approving
   it reopens the window at that instant (:func:`approve_handler`), so the stored
   window is never a reason it is not actionable.
@@ -395,7 +401,7 @@ def _subject_access(
     who cannot read that memory, may still see the bound request and decide it. For
     that one operation a viewer who passes the same owned-delete authorizer that gates
     minting the hold — the authority to have held this deletion themselves — may see
-    and decide it. This preserves what the decision allowed before run 4b2 for a
+    and decide it. This preserves what the decision allowed before #481 for a
     member's own erasure request. It does **not** make the owner-held route for a
     member's memory work: ``memory.md`` says that route is unreachable in this
     release, because the gate rechecks the subject under the held caller, and
@@ -435,6 +441,36 @@ def _held_caller_resolves(
     return not isinstance(resolve_in(verified.subject, held, uow), Unavailable)
 
 
+def _stored_subject_visible(
+    ctx: WorkspaceContext, uow: UnitOfWork, row: ApprovalRow
+) -> bool:
+    """Whether a decision may go on over a snapshot that does not verify: the row's
+    stored ``subject_ref`` resolves for this viewer. Read-only.
+
+    An unverifiable snapshot has no verified subject to check — the body may be gone
+    (the deletion cascade removes it), tampered, or bound to the wrong destination —
+    yet a decision must still not tell a viewer who cannot see the subject what state
+    the approval is in, or let them refuse it. So the stored column stands in, **for
+    refusing only**: without it an unverifiable row would have no subject check at
+    all, so it only narrows who gets past; it discloses nothing, and nothing
+    executes from it (approving an unverifiable snapshot refuses regardless, with
+    ``invalid_approval`` or ``operation_unknown``). A row that names no subject
+    passes, as a verified call naming none does; a stored reference that does not
+    parse fails closed. There is no erasure-authority exception here, because that
+    authority is judged against the validated ``core.record.delete`` input, which an
+    unverifiable snapshot does not have; the member whose own erasure it is can still
+    see the subject and end it.
+    """
+    if row.subject_ref is None:
+        return True
+    try:
+        stored = RecordRef.parse(row.subject_ref)
+    except ValueError:
+        # ``RecordRefMalformed`` and pydantic's ``ValidationError`` are both one.
+        return False
+    return not isinstance(resolve_in(stored, ctx, uow), Unavailable)
+
+
 def _display_status(row: ApprovalRow, now: datetime) -> PreviewStatus:
     """The closed display status of an eligible viewer's verified approval."""
     if row.state == t.PENDING:
@@ -463,18 +499,24 @@ def _lock_for_decision(
     The lock comes first so every later check — eligibility, snapshot, subject,
     state, window, the displayed digest — is judged against a row nothing else can
     move until this transaction ends. Then, **before the state is looked at**: an
-    ineligible viewer, and an eligible one who cannot see the verified snapshot's
-    subject, get the same ``not_found`` a missing id gets, so neither learns that the
-    approval exists or what state it is in. A snapshot that does not verify has no
-    subject to check; the caller decides what that means for its decision.
+    ineligible viewer, and an eligible one who cannot see the approval's subject, get
+    the same ``not_found`` a missing id gets, so neither learns that the approval
+    exists or what state it is in. The subject is the verified snapshot's; when the
+    snapshot does not verify, it is the stored ``subject_ref``
+    (:func:`_stored_subject_visible`), so an unverifiable row — every one the
+    deletion cascade invalidates, for instance — enumerates nothing either. What an
+    unverifiable snapshot means for the decision itself is the caller's to decide.
     """
     row = get_for_update(uow.connection, approval_id=approval_id)
     if row is None or not _eligible(ctx):
         raise _not_available(approval_id)
     verified = verify_snapshot(uow.connection, row)
-    if isinstance(verified, VerifiedSnapshot) and (
-        _subject_access(ctx, uow, verified) == "none"
-    ):
+    visible = (
+        _subject_access(ctx, uow, verified) != "none"
+        if isinstance(verified, VerifiedSnapshot)
+        else _stored_subject_visible(ctx, uow, row)
+    )
+    if not visible:
         raise _not_available(approval_id)
     return row, verified
 
@@ -532,7 +574,7 @@ def preview_handler(
         return REDACTED_PREVIEW
     if status in _ACTIONABLE and access == "erasure":
         # Agree with the gate: it rechecks the subject under the held caller, so an
-        # erasure the held caller cannot resolve is never actionable (W2).
+        # erasure the held caller cannot resolve is never actionable.
         if not _held_caller_resolves(ctx, uow, row, verified):
             status = "invalid"
     if status == "invalid":
@@ -569,8 +611,9 @@ def approve_handler(
 
     **Before anything is written**, under the approval's row lock and in this order:
     the row exists and the viewer is eligible (else ``not_found``, the same answer for
-    both); when the stored snapshot verifies, its subject is visible to this viewer
-    (else ``not_found`` too, whatever the state); it is ``pending`` or a restored
+    both); the subject is visible to this viewer — the verified snapshot's, or the
+    stored ``subject_ref`` when the snapshot does not verify (else ``not_found`` too,
+    whatever the state); it is ``pending`` or a restored
     ``requires_reapproval`` (else ``approval_state``); the snapshot verifies against
     its digest, exact destination and, for KEYED EXTERNAL, its staged action (else
     ``invalid_approval``, or ``operation_unknown`` for an unregistered operation); a
@@ -680,8 +723,9 @@ def refuse_handler(
     written. Two deliberate differences: an approval past its window may still be
     refused, and one whose snapshot no longer verifies may still be refused —
     refusal never runs anything, refusing a tampered approval is the safe direction,
-    and it is what lets such an approval end rather than wait forever. When the
-    snapshot does verify, its subject must be visible to the viewer.
+    and it is what lets such an approval end rather than wait forever. Either way the
+    subject must be visible to the viewer: the verified one, or the stored
+    ``subject_ref`` for a snapshot that does not verify.
 
     The held ``core.operation`` record is ended ``cancelled`` in the same
     transaction, and a staged EXTERNAL action and its keyed reservation are refused

@@ -1108,9 +1108,9 @@ def test_the_erasure_runs_as_the_held_caller_at_every_checkpoint(
 
     The target's audience is the holder's, so a *second member's* context cannot
     authorize it: the owned-delete authorizer refuses a member-audience row to any
-    account but that member's (and an owner's, below). Until run 4b2 this test had
+    account but that member's (and an owner's, below). Until #481 this test had
     that second member approve, which proved the coordinator's checkpoints ran as the
-    rebuilt original caller. Run 4b2 made approval require that the approver can see
+    rebuilt original caller. #481 made approval require that the approver can see
     the held subject — read it, or for this operation hold the same erasure authority
     — so that release is now refused ``not_found`` before anything is written, which
     is asserted. The checkpoints-as-held-caller property is still pinned for every
@@ -1140,7 +1140,7 @@ def test_the_erasure_runs_as_the_held_caller_at_every_checkpoint(
     )
     _refused(refused, "not_found")
     assert refused.approval_id is None
-    # Run 4b2: an approver must be able to see what they release. This one can
+    # Since #481 an approver must be able to see what they release. This one can
     # neither read the memory nor erase it, so ``core.approval.approve`` answers
     # ``not_found`` before anything is written and the memory survives. The approval
     # stays pending for someone who may decide it.
@@ -1157,7 +1157,7 @@ def test_the_erasure_runs_as_the_held_caller_at_every_checkpoint(
 def test_the_preview_of_a_member_erasure_follows_erasure_authority_not_read_authority(
     lifecycle: LifecycleWorkspace,
 ) -> None:
-    """Run 4b2's bound preview over the one operation whose decision authority is not
+    """The bound preview (#481) over the one operation whose decision authority is not
     read authority.
 
     A member holds the erasure of their own memory. The owner cannot read that memory
@@ -1206,7 +1206,7 @@ def test_an_owner_held_member_erasure_is_not_previewed_as_actionable(
     lifecycle: LifecycleWorkspace,
 ) -> None:
     """The preview agrees with the gate on the route ``docs/architecture/memory.md``
-    names unreachable in this release (review W2).
+    names unreachable in this release.
 
     The owner may hold the erasure of a member-audience memory it cannot read, and
     may see the bound request through erasure authority. But the gate rechecks the

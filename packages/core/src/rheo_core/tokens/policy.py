@@ -32,7 +32,7 @@ NON_TOKEN_ISSUABLE: Final[frozenset[str]] = frozenset(
 )
 """The ten operation names no token may ever carry; ``core.operation.resolve`` joined
 when it became the act that settles an unresolved external action, and
-``core.approval.preview`` joined with it in run 4b2 because it discloses the whole
+``core.approval.preview`` joined with it in #481 because it discloses the whole
 held payload a person is about to approve, which no model may read. Literal strings,
 not imported constants: ``core.token.issue``/``core.token.revoke`` are also declared in
 ``operations/core_ops.py`` as ``TOKEN_ISSUE``/``TOKEN_REVOKE``, but importing them

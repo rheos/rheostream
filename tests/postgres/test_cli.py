@@ -394,7 +394,7 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         # ``tests/test_production_registration.py`` asserts from the other side.
         assert report.operations == (
             APPROVAL_APPROVE,
-            # Run 4b2's bound preview ("preview" between "approve" and "refuse").
+            # #481's bound preview ("preview" between "approve" and "refuse").
             APPROVAL_PREVIEW,
             APPROVAL_REFUSE,
             "core.audit.list",
