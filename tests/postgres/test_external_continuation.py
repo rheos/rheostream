@@ -1265,3 +1265,242 @@ def test_a_continuation_that_raises_rolls_back_and_is_requeued(
     assert done.approval == "executed"
     assert done.operation == ("succeeded", f"synthetic:{key}", None)
     assert [row[1] for row in done.jobs] == ["succeeded"]
+
+
+# --- a retried run reconciles the earlier lease's effect before any refusal ---------
+
+
+def _demote_the_owner(cluster: Any, *, workspace: UUID, owner_account_id: UUID) -> None:
+    membership = control_tables.membership
+    with cluster.backend.control_engine.begin() as connection:
+        changed = connection.execute(
+            update(membership)
+            .where(
+                (membership.c.account_id == owner_account_id)
+                & (membership.c.workspace_id == workspace)
+            )
+            .values(role=Role.MEMBER.value)
+        ).rowcount
+    assert changed == 1
+
+
+# (refusal, reconcile) -> action, failure class, approval, operation, envelope,
+# restage eligible. The job ends ``succeeded`` in every row (handled_terminal).
+_RETRIED: dict[
+    tuple[str, str], tuple[str, str | None, str, tuple[str, str | None], Any, bool]
+] = {
+    ("unready", "landed"): (
+        "succeeded",
+        None,
+        "executed",
+        ("succeeded", None),
+        ("succeeded", None),
+        False,
+    ),
+    ("unready", "absent"): (
+        "refused",
+        "destination_unavailable_no_effect",
+        "refused",
+        ("failed", "guard_refused"),
+        ("refused", "guard_refused"),
+        True,
+    ),
+    ("unready", "unknown"): (
+        "unresolved",
+        "outcome_unknown",
+        "executed",
+        ("unresolved", None),
+        ("unresolved", "outcome_unknown"),
+        False,
+    ),
+    ("demoted", "landed"): (
+        "succeeded",
+        None,
+        "executed",
+        ("succeeded", None),
+        ("succeeded", None),
+        False,
+    ),
+    ("demoted", "absent"): (
+        "refused",
+        "permanent_refusal_no_effect",
+        "refused",
+        ("failed", ROLE_NOT_PERMITTED),
+        ("refused", ROLE_NOT_PERMITTED),
+        False,
+    ),
+    ("demoted", "unknown"): (
+        "unresolved",
+        "outcome_unknown",
+        "executed",
+        ("unresolved", None),
+        ("unresolved", "outcome_unknown"),
+        False,
+    ),
+    # Unregistered: nothing can be asked, whatever the provider would have said.
+    ("unregistered", "landed"): (
+        "unresolved",
+        "outcome_unknown",
+        "executed",
+        ("unresolved", None),
+        ("unresolved", "outcome_unknown"),
+        False,
+    ),
+    ("unregistered", "absent"): (
+        "unresolved",
+        "outcome_unknown",
+        "executed",
+        ("unresolved", None),
+        ("unresolved", "outcome_unknown"),
+        False,
+    ),
+    ("unregistered", "unknown"): (
+        "unresolved",
+        "outcome_unknown",
+        "executed",
+        ("unresolved", None),
+        ("unresolved", "outcome_unknown"),
+        False,
+    ),
+}
+
+
+@pytest.mark.parametrize(("refusal", "found"), sorted(_RETRIED))
+def test_a_retried_run_reconciles_the_earlier_lease_before_refusing(
+    ctx: WorkspaceContext,
+    cluster: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    workspace: UUID,
+    owner_account_id: UUID,
+    refusal: str,
+    found: str,
+) -> None:
+    """Attempt 1 invokes the provider and crashes; attempt 2 runs with budget left.
+
+    The crash rolled back the ``executing`` marker and the request id, but the
+    provider kept the effect. Attempt 2 is ordinary run mode, and an effect-time
+    refusal there must not erase that effect: the earlier lease is reconciled
+    first, and only proven absence lets the refusal stand.
+    """
+    destination = _register(monkeypatch, provider=True)
+    key = f"retried-{refusal}-{found}"
+    held, queued = _approved_and_queued(ctx, key)
+    action_id = queued.action["id"]
+    request_id = f"rheo-external-{action_id}"
+    raised: list[str] = []
+    _visit(cluster, ctx.workspace_id, continuation=_raise_after_the_first_run(raised))
+    crashed = _state(ctx, held, key)
+    assert raised == ["succeeded"] and destination.calls == [key]
+    assert crashed.action["state"] == "pending"
+    assert crashed.action["provider_request_id"] is None
+    assert [(row[1], row[5]) for row in crashed.jobs] == [("queued", 1)]
+
+    # What the provider will answer attempt 2; "landed" is what it remembers.
+    if found == "absent":
+        destination.reconciled = None
+    elif found == "unknown":
+        destination.reconciled = RuntimeError("the provider status read timed out")
+    if refusal == "unready":
+        destination.ready = False
+    elif refusal == "demoted":
+        _demote_the_owner(
+            cluster, workspace=workspace, owner_account_id=owner_account_id
+        )
+    else:
+        DESTINATIONS._destinations.pop("synthetic")
+
+    _visit(cluster, ctx.workspace_id, after=600)
+    done = _state(ctx, held, key)
+    action, failure_class, approval_state, op, envelope, restage = _RETRIED[
+        (refusal, found)
+    ]
+    assert destination.calls == [key]
+    if refusal == "unregistered":
+        assert destination.reconcile_calls == [request_id]
+    else:
+        assert destination.reconcile_calls == [request_id, request_id]
+        assert done.action["provider_request_id"] == request_id
+    assert done.action["state"] == action
+    assert done.action["failure_class"] == failure_class
+    assert done.approval == approval_state
+    assert done.operation[0] == op[0] and done.operation[2] == op[1]
+    assert done.envelope == envelope
+    assert [(row[1], row[5]) for row in done.jobs] == [("succeeded", 2)]
+    assert _action_read(ctx, action_id)["restage_eligible"] is restage
+    if found == "landed" and refusal != "unregistered":
+        assert done.action["result_ref"] == f"synthetic:{key}"
+        assert done.operation[1] == f"synthetic:{key}"
+
+
+def test_a_retried_run_with_proven_absence_invokes_once_more(
+    ctx: WorkspaceContext, cluster: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attempt 1's effect did not land after all: attempt 2 asks once, then runs."""
+    destination = _register(monkeypatch, provider=True)
+    held, queued = _approved_and_queued(ctx, "retried-absent-runs")
+    request_id = f"rheo-external-{queued.action['id']}"
+    raised: list[str] = []
+    _visit(cluster, ctx.workspace_id, continuation=_raise_after_the_first_run(raised))
+    assert raised == ["succeeded"] and destination.calls == ["retried-absent-runs"]
+    destination.reconciled = None
+
+    _visit(cluster, ctx.workspace_id, after=600)
+    done = _state(ctx, held, "retried-absent-runs")
+    # One reconcile for the retried lease, reused at the invocation gate.
+    assert destination.reconcile_calls == [request_id, request_id]
+    assert destination.calls == ["retried-absent-runs", "retried-absent-runs"]
+    assert done.action["state"] == "succeeded"
+    assert done.action["attempts"] == 1
+    assert done.operation == ("succeeded", "synthetic:retried-absent-runs", None)
+    assert [(row[1], row[5]) for row in done.jobs] == [("succeeded", 2)]
+
+
+def test_a_first_run_refuses_an_unregistered_destination_as_before(
+    ctx: WorkspaceContext, cluster: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No earlier lease, so nothing to reconcile: the refusal stands, restageable."""
+    destination = _register(monkeypatch, provider=True)
+    held, queued = _approved_and_queued(ctx, "first-unregistered")
+    DESTINATIONS._destinations.pop("synthetic")
+    _visit(cluster, ctx.workspace_id)
+    done = _state(ctx, held, "first-unregistered")
+    assert destination.calls == [] and destination.reconcile_calls == []
+    assert done.action["state"] == "refused"
+    assert done.action["failure_class"] == "destination_unavailable_no_effect"
+    assert [(row[1], row[5]) for row in done.jobs] == [("succeeded", 1)]
+    assert _action_read(ctx, queued.action["id"])["restage_eligible"] is True
+
+
+# --- a cancellation that never leased proves no effect from the job row alone ------
+
+
+@pytest.mark.parametrize("case", ["unregistered", "reconcile_raises"])
+def test_cancelling_a_never_leased_job_settles_cancelled_without_a_lookup(
+    ctx: WorkspaceContext, cluster: Any, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """``attempts == 0`` at the cancel lease: no earlier lease could have invoked."""
+    destination = _register(monkeypatch, provider=True)
+    key = f"never-leased-{case}"
+    held, queued = _approved_and_queued(ctx, key)
+    with open_unit_of_work(ctx) as uow:
+        job_id = uow.connection.execute(select(job.c.id)).scalar_one()
+        assert request_cancellation(uow.connection, job_id, now=datetime.now(UTC)) == (
+            "queued"
+        )
+        uow.commit()
+    if case == "unregistered":
+        DESTINATIONS._destinations.pop("synthetic")
+    else:
+        destination.reconciled = RuntimeError("the provider is unreachable")
+
+    _visit(cluster, ctx.workspace_id)
+    done = _state(ctx, held, key)
+    assert destination.calls == [] and destination.reconcile_calls == []
+    assert done.action["state"] == "cancelled"
+    assert done.action["failure_class"] == "cancelled_no_effect"
+    assert done.action["provider_request_id"] is None
+    assert done.approval == "refused"
+    assert done.operation[0] == "cancelled"
+    assert done.envelope == ("cancelled", "continuation_cancelled")
+    assert [(row[1], row[5]) for row in done.jobs] == [("cancelled", 0)]
+    assert _action_read(ctx, queued.action["id"])["restage_eligible"] is False

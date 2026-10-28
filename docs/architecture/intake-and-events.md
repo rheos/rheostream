@@ -761,10 +761,15 @@ transaction as the job write, returning one of `succeeded`, `handled_terminal`, 
 Cancellation and exhausted-budget leases reconcile and never invoke. A provider destination is
 always reconciled there with its deterministic request id, because a run that invoked it and
 then rolled back left no marker on the action but kept the effect; a destination that is no
-longer registered settles `unresolved`. Only an in-process destination, whose effect commits
-with its settlement, proves absence from an open action. `failure_class` is one of
-`destination_unavailable_no_effect`, `permanent_refusal_no_effect`, `retryable_no_effect`,
-`outcome_unknown` and `cancelled_no_effect`. A `failed` action is always proven no-effect; a
+longer registered settles `unresolved`. A retried run lease (the job's lease count is above
+one, so an earlier lease may have invoked) does the same before any effect-time refusal:
+proven success settles success, an unprovable answer or an unregistered destination settles
+`unresolved`, and only proven absence lets the refusal stand. A cancellation whose job was
+never leased settles `cancelled` without a destination lookup. Only an in-process
+destination, whose effect commits with its settlement, proves absence from an open action.
+`failure_class` is one of `destination_unavailable_no_effect`, `permanent_refusal_no_effect`,
+`retryable_no_effect`, `outcome_unknown` and `cancelled_no_effect`. A `failed` action is
+always proven no-effect; a
 possibly effective one is `unresolved` until `core.operation.resolve` moves it, which needs the
 destination's confirmed result ref for success and its proof of absence for failure. Callers
 read the outcome through `core.external_action.get`, whose `restage_eligible` is true only for

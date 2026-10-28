@@ -22,7 +22,10 @@ A ``failed`` action is always proven no-effect. Anything possibly effective is
 ``unresolved`` and only :func:`resolve_external` moves it. An in-process destination
 runs inside a savepoint of the continuation's own transaction, so its rollback is the
 proof of absence; that is why an untyped error from one is ``retryable_no_effect``
-while the same error from a provider invocation is ``outcome_unknown``.
+while the same error from a provider invocation is ``outcome_unknown``. A provider's
+effect survives that rollback, so any lease that an earlier lease may precede (a
+retried run, a cancellation, an exhausted budget) reconciles it through
+:func:`_prior_effect` before it settles anything as no-effect.
 """
 
 import logging
@@ -686,13 +689,14 @@ def _reconcile(
     return found
 
 
-def _recover(
+def _prior_effect(
     s: _Settle,
     grant: ExternalContinuationGrant,
     destination: DestinationRegistration | None,
     provider_request_id: str | None,
-) -> ContinuationResult:
-    """Cancellation or exhausted-budget recovery: reconcile, never invoke.
+) -> ContinuationResult | ExternalDestinationError | None:
+    """Before any no-effect settlement on a lease an earlier lease may precede:
+    prove what that earlier lease did, and settle it when it cannot be absence.
 
     **Only an in-process destination can prove absence from the action row.** Its
     effect runs in a savepoint and commits only together with its success settlement,
@@ -703,7 +707,57 @@ def _recover(
     is always reconciled, with the deterministic request id when the row holds none,
     and a destination that is no longer registered cannot be shown to be in-process
     or asked, so it settles ``unresolved``. Nothing that cannot prove absence settles
-    ``failed`` or ``cancelled``.
+    ``failed``, ``cancelled`` or ``refused``.
+
+    Returns the settlement when the question is closed here: proven success, or
+    ``unresolved`` for an unregistered destination or a reconcile that raised, could
+    not run or returned no valid output. Otherwise absence is proven: ``None`` from an
+    in-process destination or a provider that reports nothing, or the typed no-effect
+    error the provider answered with, which run mode classifies as it would any
+    pre-invocation answer.
+    """
+    if destination is None:
+        return _settle_unresolved(
+            s,
+            OUTCOME_UNKNOWN,
+            "the destination is no longer registered, so absence cannot be proven",
+        )
+    if destination.mode is not DestinationMode.PROVIDER:
+        return None
+    request_id = provider_request_id or _provider_request_id(grant.action_id)
+    _must(
+        actions.update_action(
+            s.conn,
+            action_id=s.action_id,
+            from_states=OPEN_STATES,
+            provider_request_id=request_id,
+            updated_at=s.now,
+        ),
+        "record the reconciled provider request id",
+    )
+    found = _reconcile(s, destination, request_id)
+    if isinstance(found, BaseModel):
+        return _settle_success(s, found, check_kind=operation_records.PROVIDER_STATUS)
+    if isinstance(found, ExternalDestinationError) and (
+        found.failure_class is ExternalFailureClass.OUTCOME_UNKNOWN
+    ):
+        return _settle_unresolved(s, found.code, found.detail)
+    return found
+
+
+def _recover(
+    s: _Settle,
+    grant: ExternalContinuationGrant,
+    destination: DestinationRegistration | None,
+    provider_request_id: str | None,
+) -> ContinuationResult:
+    """Cancellation or exhausted-budget recovery: reconcile, never invoke.
+
+    A cancellation whose job was never leased needs no reconcile: ``acquire_lease``
+    is the only writer that counts an attempt, it leaves a cancel-flagged row's count
+    alone, and no deferral refunds a continuation lease, so ``attempts == 0`` proves
+    that no lease could have invoked anything. Every other recovery goes through
+    :func:`_prior_effect` first.
     """
     cancelling = grant.mode is ContinuationMode.CANCEL_REQUESTED
     code = CONTINUATION_CANCELLED if cancelling else RETRY_BUDGET_EXHAUSTED
@@ -712,33 +766,11 @@ def _recover(
         if cancelling
         else "retry budget exhausted with no effect"
     )
-    if destination is None:
-        return _settle_unresolved(
-            s,
-            OUTCOME_UNKNOWN,
-            "the destination is no longer registered, so absence cannot be proven",
-        )
-    if destination.mode is DestinationMode.PROVIDER:
-        request_id = provider_request_id or _provider_request_id(grant.action_id)
-        _must(
-            actions.update_action(
-                s.conn,
-                action_id=s.action_id,
-                from_states=OPEN_STATES,
-                provider_request_id=request_id,
-                updated_at=s.now,
-            ),
-            "record the reconciled provider request id",
-        )
-        found = _reconcile(s, destination, request_id)
-        if isinstance(found, BaseModel):
-            return _settle_success(
-                s, found, check_kind=operation_records.PROVIDER_STATUS
-            )
-        if isinstance(found, ExternalDestinationError) and (
-            found.failure_class is ExternalFailureClass.OUTCOME_UNKNOWN
-        ):
-            return _settle_unresolved(s, found.code, found.detail)
+    if cancelling and grant.attempts == 0:
+        return _settle_cancelled(s, code, absent_detail)
+    prior = _prior_effect(s, grant, destination, provider_request_id)
+    if isinstance(prior, ContinuationResult):
+        return prior
     # Reconcile proved absence, or an in-process effect is absent with the open action.
     if cancelling:
         return _settle_cancelled(s, code, absent_detail)
@@ -798,6 +830,18 @@ def continue_approved_external_in_transaction(
     destination = None if found is None else found.registration
     if grant.mode is not ContinuationMode.RUN:
         return _recover(s, grant, destination, bound.action.provider_request_id)
+
+    # A run lease counts itself, so ``attempts > 1`` means an earlier lease existed
+    # and may have invoked the provider before it crashed, raised or lost its finish.
+    # Every refusal below is a no-effect settlement, so that lease's effect is proven
+    # first; a first lease has nothing to reconcile and refuses as before.
+    retried = grant.attempts > 1
+    prior: ExternalDestinationError | None = None
+    if retried:
+        earlier = _prior_effect(s, grant, destination, bound.action.provider_request_id)
+        if isinstance(earlier, ContinuationResult):
+            return earlier
+        prior = earlier
 
     permanent = ExternalFailureClass.PERMANENT_REFUSAL_NO_EFFECT
     unavailable = ExternalFailureClass.DESTINATION_UNAVAILABLE_NO_EFFECT
@@ -872,13 +916,17 @@ def continue_approved_external_in_transaction(
         "mark the action executing",
     )
     if provider:
-        prior = _reconcile(s, destination, provider_request_id)
-        if isinstance(prior, BaseModel):
+        # A retried lease already asked, under these same row locks; its answer was
+        # absence or a typed no-effect class, which classifies as a fresh one would.
+        answer = prior if retried else _reconcile(s, destination, provider_request_id)
+        if isinstance(answer, BaseModel):
             return _settle_success(
-                s, prior, check_kind=operation_records.PROVIDER_STATUS
+                s, answer, check_kind=operation_records.PROVIDER_STATUS
             )
-        if isinstance(prior, ExternalDestinationError):
-            return _classified(s, grant, prior.failure_class, prior.code, prior.detail)
+        if isinstance(answer, ExternalDestinationError):
+            return _classified(
+                s, grant, answer.failure_class, answer.code, answer.detail
+            )
 
     view = HandlerUnitOfWork(uow, operation_id=grant.operation_id, consumers=consumers)
     savepoint = conn.begin_nested()
