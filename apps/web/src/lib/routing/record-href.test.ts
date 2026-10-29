@@ -120,6 +120,37 @@ describe("recordHref", () => {
     expect(recordHref(config, [PROVIDER], [PROVIDER.id], ITEM_REF)).toBeNull();
   });
 
+  it("rejects a root-mounted or path-shadowed provider surface", () => {
+    const rootMounted = withSurface(fixture("path"), {
+      host: "archive",
+      path: "/",
+    });
+    expect(recordHref(rootMounted, [PROVIDER], [PROVIDER.id], ITEM_REF)).toBeNull();
+
+    const base = fixture("path");
+    const shadowed: RoutingConfig = {
+      ...base,
+      surfaces: {
+        ...base.surfaces,
+        modules: {
+          shadow: { host: "shadow", path: "/archive" },
+          records_ui: { host: "archive", path: "/archive/items" },
+        },
+      },
+    };
+    expect(recordHref(shadowed, [PROVIDER], [PROVIDER.id], ITEM_REF)).toBeNull();
+  });
+
+  it("serves a root-path provider on its own subdomain host", () => {
+    const config = withSurface(fixture("subdomain"), {
+      host: "archive",
+      path: "/",
+    });
+    expect(recordHref(config, [PROVIDER], [PROVIDER.id], ITEM_REF)).toBe(
+      "https://archive.example.test/items/detail?record_ref=records.item%3A12345678-1234-5678-9abc-1234567890ab",
+    );
+  });
+
   it("does not accept a caller-controlled owner, type, route, path, or host", () => {
     const hostile =
       "https.item:12345678-1234-5678-9abc-1234567890ab?host=evil.example&route=admin";

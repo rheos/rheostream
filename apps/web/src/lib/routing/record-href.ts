@@ -1,6 +1,7 @@
 import type { ComposedModule } from "@rheo-stream/web-contract/screen";
 
 import type { RoutingConfig } from "@/lib/routing/config";
+import { normalizePath, resolveRequest } from "@/lib/routing/resolve";
 import { urlFor } from "@/lib/routing/url-for";
 
 const RECORD_REF =
@@ -51,9 +52,23 @@ export function recordHref(
   }
 
   try {
+    const base = urlFor(config, provider.surface, route.path);
+    const surface = config.surfaces.modules[provider.surface];
+    const requestHost =
+      config.mode === "path"
+        ? config.base_host
+        : `${surface.host}.${config.base_host}`;
+    const resolved = resolveRequest(config, requestHost, new URL(base).pathname);
+    if (
+      resolved.kind !== "module" ||
+      resolved.surface !== provider.surface ||
+      normalizePath(resolved.subPath) !== normalizePath(route.path)
+    ) {
+      return null;
+    }
     const params = new URLSearchParams();
     params.set(mapping.refQuery, ref);
-    return `${urlFor(config, provider.surface, route.path)}?${params.toString()}`;
+    return `${base}?${params.toString()}`;
   } catch {
     return null;
   }
