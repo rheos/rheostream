@@ -29,6 +29,7 @@ from rheo_core.approvals.tables import approval, approval_payload
 from rheo_core.audit import CORE_AUDIT_SINK, install_sink
 from rheo_core.boundary import context_for_harness
 from rheo_core.boundary.context import MEMBERSHIP_MISSING
+from rheo_core.boundary.factories import context_for_event_consumer
 from rheo_core.events.consumers import ConsumerRegistry
 from rheo_core.modules import DESTINATIONS, DestinationMode, DestinationRegistration
 from rheo_core.operations import OperationOutcome, dispatch, register_core_operations
@@ -46,6 +47,7 @@ from rheo_core.operations.external_actions import external_action
 from rheo_core.operations.idempotency_tables import idempotency_result
 from rheo_core.operations.refusals import ROLE_NOT_PERMITTED
 from rheo_core.operations.registry import REGISTRY
+from rheo_core.refs import uuid7
 from rheo_core.settings import CORE_ORIGIN
 from rheo_core.storage import control_tables
 from rheo_core.storage.backend import UnitOfWork
@@ -855,6 +857,36 @@ def test_external_action_get_refuses_an_unknown_id(ctx: WorkspaceContext) -> Non
         ctx, "core.external_action.get", {"external_action_id": str(UUID(int=7))}
     )
     assert missing.state == "not_found"
+
+
+def test_a_service_context_reads_an_action_only_when_it_names_the_read(
+    ctx: WorkspaceContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read carries the ``service`` role, and a restricted service context still
+    reaches it only when its own operation set names it."""
+    _register(monkeypatch)
+    held = _stage(ctx, "service-read")
+    with open_unit_of_work(ctx) as uow:
+        action_id = uow.connection.execute(
+            select(external_action.c.id).where(
+                external_action.c.approval_id == held.approval_id
+            )
+        ).scalar_one()
+        named = context_for_event_consumer(
+            ctx.workspace_id,
+            uow,
+            request_id=uuid7(),
+            operation_names=frozenset({"core.external_action.get"}),
+        )
+        bare = context_for_event_consumer(ctx.workspace_id, uow, request_id=uuid7())
+    assert isinstance(named, WorkspaceContext) and named.role is Role.SERVICE
+    assert isinstance(bare, WorkspaceContext) and bare.role is Role.SERVICE
+    body = {"external_action_id": str(action_id)}
+    read = dispatch(named, "core.external_action.get", body)
+    assert read.ok and read.result is not None, read
+    assert read.result.state == "pending"
+    refused = dispatch(bare, "core.external_action.get", body)
+    assert refused.state == "operation_not_permitted", refused
 
 
 _BINDING_BREAKS: dict[str, tuple[str, str]] = {
