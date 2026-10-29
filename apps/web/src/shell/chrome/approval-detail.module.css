@@ -1,0 +1,177 @@
+.plain,
+.chrome {
+  inline-size: min(100%, 76ch);
+  margin-inline: auto;
+  overflow-wrap: anywhere;
+}
+
+.plain {
+  padding: var(--rs-space-5);
+  background: var(--rs-color-surface-1);
+  border: var(--rs-size-hairline) solid var(--rs-color-hairline);
+  border-radius: var(--rs-radius-md);
+}
+
+.chrome {
+  color-scheme: dark;
+  padding: var(--rs-space-5);
+  background: var(--rs-chrome-surface);
+  color: var(--rs-chrome-ink);
+  border: var(--rs-size-hairline) solid var(--rs-chrome-border);
+  border-radius: var(--rs-radius-md);
+  font-family: var(--rs-chrome-font);
+  font-size: var(--rs-chrome-font-size);
+}
+
+.chrome h1,
+.chrome h2,
+.chrome p,
+.chrome dl,
+.chrome fieldset {
+  color: inherit;
+}
+
+.chrome h1 {
+  margin-block-start: initial;
+}
+
+.sectionHeading {
+  margin-block: var(--rs-space-5) var(--rs-space-2);
+  font-size: var(--rs-font-size-md);
+  font-weight: bold;
+}
+
+.facts,
+.payload {
+  margin: initial;
+}
+
+.fact,
+.payloadField {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: var(--rs-space-2) var(--rs-space-4);
+  padding-block: var(--rs-space-2);
+  border-block-end: var(--rs-size-hairline) solid var(--rs-chrome-border);
+}
+
+.fact dt,
+.payloadField dt {
+  font-weight: bold;
+}
+
+.fact dd,
+.payloadField dd {
+  min-inline-size: 0;
+  margin: initial;
+}
+
+.mono,
+.payloadValue,
+.digest {
+  font-family: var(--rs-font-mono);
+}
+
+.payloadValue {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.digest {
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.notice,
+.safety,
+.historyLabel,
+.warning {
+  padding: var(--rs-space-3);
+  border: var(--rs-size-hairline) solid var(--rs-chrome-border);
+  border-radius: var(--rs-radius-sm);
+}
+
+.historyLabel {
+  font-weight: bold;
+}
+
+.result:focus,
+.warning:focus {
+  outline: medium solid var(--rs-chrome-ink);
+  outline-offset: var(--rs-space-1);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rs-space-3);
+  margin-block-start: var(--rs-space-5);
+  padding: initial;
+  border: 0;
+}
+
+.actions form {
+  margin: initial;
+}
+
+.approve,
+.refuse {
+  min-block-size: var(--rs-size-control);
+  padding-inline: var(--rs-space-4);
+  border-radius: var(--rs-radius-sm);
+  font: inherit;
+}
+
+.approve {
+  background: var(--rs-chrome-ink);
+  color: var(--rs-chrome-surface);
+  border: var(--rs-size-hairline) solid var(--rs-chrome-ink);
+}
+
+.refuse {
+  background: transparent;
+  color: var(--rs-chrome-danger);
+  border: var(--rs-size-hairline) solid var(--rs-chrome-danger);
+}
+
+.approve:focus-visible,
+.refuse:focus-visible {
+  outline: medium solid var(--rs-chrome-ink);
+  outline-offset: var(--rs-space-1);
+}
+
+.approve:disabled,
+.refuse:disabled {
+  opacity: 0.6;
+}
+
+.progress,
+.error {
+  flex-basis: 100%;
+  margin: initial;
+}
+
+.error {
+  color: var(--rs-chrome-danger);
+}
+
+@media (max-width: 40rem) {
+  .chrome,
+  .plain {
+    padding: var(--rs-space-4);
+  }
+
+  .fact,
+  .payloadField {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--rs-space-1);
+  }
+
+  .actions,
+  .actions form,
+  .approve,
+  .refuse {
+    inline-size: 100%;
+  }
+}
