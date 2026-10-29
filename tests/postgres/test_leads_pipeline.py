@@ -301,15 +301,28 @@ def test_handoff_has_snapshot_and_deduplicates_payload_destination_and_purpose(
         payload={"title": "Approved scope"},
         idempotency_key="one",
     )
+    # A handoff needs a qualification first.
+    assert intake.call("leads.handoff.request", **payload).state == (
+        "qualification_required"
+    )
+    assessed = ok(
+        intake,
+        "qualification.assess",
+        ref=current.ref,
+        revision=current.revision,
+        objective="Example objective",
+    )
+    payload["revision"] = one(intake).revision
     result = ok(intake, "handoff.request", **payload)
     assert (
         result.data["state"] == "unavailable"
         and result.data["result_detail"] == "no_destination"
     )
+    assert result.data["qualification_ref"] == assessed.ref
     assert ok(intake, "handoff.request", **payload).ref == result.ref
     for change in (
         {"purpose": "share_with_referral"},
-        {"destination_ref": "example.destination:one"},
+        {"destination_ref": "current"},
         {"payload": {"title": "Different"}},
     ):
         assert (
@@ -1267,6 +1280,41 @@ JOBSEARCH_TABLES = (
 )
 
 
+def _undo_0020(connection: Any) -> None:
+    connection.execute(text("DROP TABLE leads.current_link_cursor"))
+    connection.execute(text("DROP INDEX leads.handoff_nonterminal_scan"))
+    connection.execute(text("DROP INDEX leads.handoff_succeeded_scan"))
+    connection.execute(
+        text(
+            "ALTER TABLE leads.handoff_snapshot "
+            "DROP CONSTRAINT handoff_snapshot_qualification, "
+            "DROP COLUMN qualification_ref, DROP COLUMN qualification_stale"
+        )
+    )
+    connection.execute(
+        text(
+            "ALTER TABLE leads.handoff "
+            + ", ".join(
+                f"DROP CONSTRAINT {name}"
+                for name in (
+                    "handoff_state_known",
+                    "handoff_attempts",
+                    "handoff_pending_staged",
+                    "handoff_success_result",
+                    "handoff_project_state",
+                    "handoff_project_live",
+                    "handoff_project_history",
+                    "handoff_link_revision",
+                    "handoff_link_projection",
+                )
+            )
+            + ", DROP COLUMN attempt_count, DROP COLUMN current_project_ref, "
+            "DROP COLUMN last_current_project_ref, DROP COLUMN current_project_state, "
+            "DROP COLUMN current_link_revision"
+        )
+    )
+
+
 def _undo_0018(connection: Any) -> None:
     """Back to the Job search preset's version 1 and each job mapping's previous
     version: what 0018 added is removed, and what it moved is moved back."""
@@ -1437,6 +1485,7 @@ def _undo_0005(connection: Any) -> None:
 # Newest first. Each step undoes one frozen Leads migration on a disposable
 # workspace that started at head, so a test can rebuild an exact predecessor.
 LEADS_REVISIONS = (
+    ("0020_current_handoff", _undo_0020),
     ("0018_invited_jobs", _undo_0018),
     ("0017_proposal_separate_answers", _undo_0017),
     ("0016_jobfeed_runs", _undo_0016),
@@ -1676,6 +1725,7 @@ def test_attach_by_field_survives_frozen_upgrade(intake: Intake) -> None:
     setup(intake)
     with open_unit_of_work(intake.ctx) as uow:
         assert rewind_leads(uow.connection, "0007_jobsearch_preset") == (
+            "0020_current_handoff",
             "0018_invited_jobs",
             "0017_proposal_separate_answers",
             "0016_jobfeed_runs",

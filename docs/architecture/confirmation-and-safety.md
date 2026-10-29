@@ -336,22 +336,55 @@ changing `qualification`'s columns.
 idempotency_key)`, **mutate class**, `NATURAL` idempotency on the unique index
 `(opportunity_id, idempotency_key)`, roles `owner`, `member`:
 
-1. Resolve the opportunity under the caller's context; refuse `not_found` otherwise.
+1. Take the workspace lifecycle lock and lock the opportunity; refuse `not_found` otherwise.
 2. Look up `handoff` by `(opportunity_id, idempotency_key)`. A row exists: this is a repeat.
-   Return that row unchanged when the request's payload digest equals its `snapshot_digest`, and
-   refuse `idempotency_key_reused` naming the handoff when it differs. The natural key carries the
-   opportunity, so the same key on a different opportunity is a different request and a different
-   row, and no stored-result table is needed to make a repeat safe.
-3. Otherwise write `handoff` and `handoff_snapshot` with the digest.
-4. If `destination_ref` is null or names no registered destination (release one registers
-   none), set `state = unavailable`, `result_detail = no_destination`, `resolved_at = now()`,
-   publish `leads.handoff.requested`, and return the record with its explicit `unavailable`
-   state. Nothing is created anywhere and no opportunity outcome changes (criterion 64,
-   guardrail 20).
-5. Otherwise (phase five onward) set `state = pending` and call the destination's execution
-   operation, which is the external-class step with its own approval, `DestinationGuard`, and
-   `external_action` record; its outcome is written back to `state`, `result_ref`, and
-   `result_detail` through the operation record it returns, never by a cross-schema write.
+   When the request's digest (purpose, destination and payload) equals its `snapshot_digest`,
+   copy the latest attempt's outcome from `core.external_action.get` when the caller may read
+   it, and return the row; refuse `idempotency_key_reused` when it differs. The natural key
+   carries the opportunity, so the same key on a different opportunity is a different request
+   and a different row, and no stored-result table is needed to make a repeat safe.
+3. Otherwise refuse `qualification_required` unless the opportunity has a qualification, then
+   write `handoff` and `handoff_snapshot` with the digest, the latest qualification's ref and
+   whether its evidence digest is stale. Stale is recorded as a warning; no score threshold
+   applies.
+4. With `destination_ref` null, set `state = unavailable`, `result_detail = no_destination`,
+   `resolved_at = now()`. Nothing is created anywhere and no opportunity outcome changes
+   (criterion 64, guardrail 20). `destination_ref` is `current` or null; anything else is
+   `input_invalid`.
+5. With `current`, stage attempt 1 of the KEYED `current.item.create_external` through core's
+   `stage_external_in_transaction`, in this transaction and under the requesting person's own
+   context, with core key `<handoff-ref>#1` and Current `source_ref` the handoff ref. The
+   handoff becomes `pending` with its approval and action ids. Current absent, disabled, not
+   ready or its destination unavailable leaves the handoff `unavailable` with
+   `destination_unavailable` and no core action, approval, job or effect. Publish
+   `leads.handoff.requested` either way.
+
+Outcomes reach the handoff only through core's public `core.external_action.get`, never by a
+cross-schema read or write. `leads.handoff.restage(handoff_id, attempt_count)` stages the same
+handoff again, under a new approval, as attempt `attempt_count + 1` with key
+`<handoff-ref>#<attempt_count + 1>`; the Current `source_ref` never changes. Its matrix is closed:
+request-time `destination_unavailable`, a core refusal `destination_unavailable_no_effect`, and a
+`failed` action (always proven no effect: an exhausted `retryable_no_effect` or a person's
+resolution) may restage; pending, succeeded, permanently refused, cancelled and unresolved may
+not, so an outcome-unknown effect never restages. A count one behind answers with the handoff as
+it now is, so a lost response never stages twice.
+
+### Reconciling the Current link
+
+Leads stores only the handoff's attempt count and a minimal projection of Current's
+`current.source_item_link`: live and last project ref, project state and link revision. The
+`current.source_item_link.changed` consumer and the `leads.current_links.reconcile` job copy only
+a strictly newer revision. The job, scheduled by the first staged handoff, pages two scans with
+one durable cursor each in `leads.current_link_cursor`, ordered by `(requested_at, id)`. The
+nonterminal scan reads `core.external_action.get` first and calls `current.item.link_state` only
+after a proven success with its item ref; the successful scan calls only
+`current.item.link_state`. Each scan reads one bounded page strictly after its stored key,
+advances past every examined row whatever the answer, and wraps to the start after a short page,
+so a first page Current cannot answer never starves later rows and old successful handoffs are
+revisited. Current absent, disabled, denied or unready leaves the projection as it was. The job
+runs under a restricted service context whose operation set is exactly those two reads. A
+workspace export carries no core external action, so a restored pending handoff is `unresolved`
+(`restored_unresolved`) and never restages.
 
 The request is mutate class because writing the record is an internal, reversible state change
 with no external effect; the external effect, when a destination exists, is the destination's
@@ -371,6 +404,7 @@ operations while the handoff operation still exists and is callable.
 | `leads.qualification.assess` (long-running when a model participates), `.list` | mutate, read | owner, member, service | `leads_qualify` |
 | `leads.followup.draft` | draft | owner, member, service | `leads_prepare_followup` |
 | `leads.handoff.request`, `.get` | mutate, read | owner, member | `leads_handoff`, `leads_get_handoff` |
+| `leads.handoff.restage`, `.list` | mutate, read | owner, member | none |
 | `leads.pipeline.create`, `.migrate_version` | mutate | owner | none in release one |
 | `leads.preset.edit` (creates the next version) | mutate | owner | none in release one |
 | `leads.funnel.create`, `.archive`, `leads.campaign.create`, `.archive` | mutate | owner | none in release one |

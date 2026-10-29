@@ -1,5 +1,11 @@
-"""Version-thirteen intake, pipeline, job feed, job scoring, review, proposal and
-pricing snapshot; restore preserves identities.
+"""Version-fourteen intake, pipeline, handoff, job feed, job scoring, review, proposal
+and pricing snapshot; restore preserves identities.
+
+Format 14 adds each handoff's attempt count, its Current project projection and the
+qualification its request was made against. A workspace export carries no core
+external action, so a handoff that was still pending is restored as ``unresolved``
+(``restored_unresolved``): nothing can prove whether its item was made, and an
+unresolved handoff never restages. The repair scans' cursors are not exported.
 
 Signing secret handles are deployment-local and are never exported. Imported
 webhook connections need new credentials. The job feed connection is exported
@@ -46,7 +52,7 @@ from sqlalchemy import (
 from rheo_leads.proposals.profile import ProposalPolicy
 from rheo_leads.scoring.profile import ScoringPolicy
 from rheo_leads.storage import jobfeed
-from rheo_leads.storage import pipeline as _pipeline  # noqa: F401
+from rheo_leads.storage import pipeline as _pipeline
 from rheo_leads.storage import proposals as _proposals
 from rheo_leads.storage import scoring as _scoring
 from rheo_leads.storage import tables as t
@@ -63,7 +69,12 @@ EXPORTED = tuple(
     table
     for table in TABLES
     if table
-    not in (jobfeed.jobfeed_authorization, _scoring.model_call, jobfeed.jobfeed_run)
+    not in (
+        jobfeed.jobfeed_authorization,
+        _scoring.model_call,
+        jobfeed.jobfeed_run,
+        _pipeline.current_link_cursor,
+    )
 )
 SECRET_COLUMNS = {"signing_secret_ref", "previous_secret_ref", "previous_valid_until"}
 # Left out of the export entirely, not nulled: a secret reference, the registered
@@ -115,6 +126,14 @@ RESTORED_PRICING: Mapping[str, object] = {
     "state": "failed",
     "retry_after": None,
     "failure_kind": "restored",
+}
+
+
+# Core's external action is not in the artifact, so a pending handoff's outcome
+# cannot be proved after a restore. Its attempt, approval and action ids are kept.
+RESTORED_HANDOFF: Mapping[str, object] = {
+    "state": "unresolved",
+    "result_detail": "restored_unresolved",
 }
 
 
@@ -215,6 +234,8 @@ def _decode(rows: Sequence[Mapping[str, object]]) -> dict[str, list[dict[str, An
                 "running",
             ):
                 values.update(RESTORED_PRICING)
+            if table is _pipeline.handoff and values["state"] == "pending":
+                values.update(RESTORED_HANDOFF, resolved_at=values["requested_at"])
             if table is jobfeed.jobfeed_connection:
                 # No token, no client, no claim, no backoff: the owner reconnects.
                 values.update(RESTORED_COLLECTOR)

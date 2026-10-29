@@ -113,6 +113,7 @@ export const MODULES = [
       "leads.connection.health",
       "leads.contact_permission.check",
       "leads.handoff.get",
+      "leads.handoff.list",
       "leads.intake.receipt",
       "leads.jobprofile.get",
       "leads.jobproposal.get",
