@@ -10,11 +10,17 @@ This path never calls :func:`rheo_current.items.repeat_signal`: a retry must not
 count an event, reopen, wake, raise priority or touch a project.
 """
 
+from datetime import datetime
 from typing import Any, Final
 
+from pydantic import BaseModel
 from rheo_contracts import RecordRef, WorkspaceContext
 from rheo_core.modules.manifest import DestinationMode, DestinationRegistration
-from rheo_core.operations.refusals import OperationRefused
+from rheo_core.operations.continuation import (
+    ExternalDestinationError,
+    ExternalFailureClass,
+)
+from rheo_core.operations.refusals import OPERATION_NOT_PERMITTED, OperationRefused
 from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import UnitOfWork
 from rheo_core.storage.repositories import list_module_states
@@ -27,18 +33,15 @@ from rheo_current.storage import tables as t
 
 OPERATION: Final = "current.item.create_external"
 DESTINATION_REF: Final = "current"
-SOURCE_KIND: Final = "handoff"
-"""The ``source_kind`` every external item carries beside its ``source_ref``."""
+SOURCE_KIND: Final = c.HANDOFF_SOURCE_KIND
+"""The ``source_kind`` every external item carries beside its ``source_ref``.
+
+``current.item.create`` refuses it, so only this path makes items of this kind."""
 SOURCE_TOMBSTONED: Final = "source_tombstoned"
 
 
 def _refused(state: str, detail: str) -> Exception:
     """A typed permanent no-effect refusal, which core settles without a retry."""
-    from rheo_core.operations.continuation import (
-        ExternalDestinationError,
-        ExternalFailureClass,
-    )
-
     return ExternalDestinationError(
         ExternalFailureClass.PERMANENT_REFUSAL_NO_EFFECT, state, detail
     )
@@ -55,6 +58,29 @@ def _link(uow: UnitOfWork, source_ref: str) -> dict[str, Any] | None:
         .one_or_none()
     )
     return None if found is None else dict(found)
+
+
+def _insert_link(
+    uow: UnitOfWork,
+    *,
+    source_ref: str,
+    item_ref: str,
+    project_ref: str | None,
+    moment: datetime,
+) -> None:
+    """The first link row for a source; a held project is live, else never assigned."""
+    uow.connection.execute(
+        insert(t.source_item_link).values(
+            source_ref=source_ref,
+            item_ref=item_ref,
+            revision=1,
+            item_state="available",
+            project_ref=project_ref,
+            last_project_ref=None,
+            project_state="never_assigned" if project_ref is None else "linked",
+            changed_at=moment,
+        )
+    )
 
 
 def _item_exists(uow: UnitOfWork, item_ref: str) -> bool:
@@ -104,17 +130,12 @@ def create(
         identifier = existing["id"]
         project = existing["project_id"]
         item_ref = ref("item", identifier)
-        uow.connection.execute(
-            insert(t.source_item_link).values(
-                source_ref=data.source_ref,
-                item_ref=item_ref,
-                revision=1,
-                item_state="available",
-                project_ref=None if project is None else ref("project", project),
-                last_project_ref=None,
-                project_state="never_assigned" if project is None else "linked",
-                changed_at=moment,
-            )
+        _insert_link(
+            uow,
+            source_ref=data.source_ref,
+            item_ref=item_ref,
+            project_ref=None if project is None else ref("project", project),
+            moment=moment,
         )
         return c.ExternalItemCreated(item_ref=item_ref)
     try:
@@ -143,17 +164,12 @@ def create(
     }
     uow.connection.execute(insert(t.item).values(**record))
     item_ref = ref("item", identifier)
-    uow.connection.execute(
-        insert(t.source_item_link).values(
-            source_ref=data.source_ref,
-            item_ref=item_ref,
-            revision=1,
-            item_state="available",
-            project_ref=None,
-            last_project_ref=None,
-            project_state="never_assigned",
-            changed_at=moment,
-        )
+    _insert_link(
+        uow,
+        source_ref=data.source_ref,
+        item_ref=item_ref,
+        project_ref=None,
+        moment=moment,
     )
     h.publish_item_event(ctx, uow, "created", record)
     return c.ExternalItemCreated(item_ref=item_ref)
@@ -184,8 +200,24 @@ def _ready(ctx: WorkspaceContext, uow: UnitOfWork) -> bool:
     )
 
 
+def refuse_inline(
+    ctx: WorkspaceContext, uow: UnitOfWork, data: c.ExternalItemCreate
+) -> c.ExternalItemCreated:
+    """The operation's declared handler, which never creates anything.
+
+    Core runs an EXTERNAL operation only through :data:`DESTINATION` inside the
+    approved continuation. A call that reaches the handler instead (an inline run at
+    dispatch or approval time) took a route the destination's guards never saw, so
+    it refuses before any write.
+    """
+    raise OperationRefused(
+        OPERATION_NOT_PERMITTED,
+        f"{OPERATION} runs only through its approved destination",
+    )
+
+
 def _execute(
-    ctx: WorkspaceContext, uow: UnitOfWork, data: Any
+    ctx: WorkspaceContext, uow: UnitOfWork, data: BaseModel
 ) -> c.ExternalItemCreated:
     if not isinstance(data, c.ExternalItemCreate):
         raise _refused(

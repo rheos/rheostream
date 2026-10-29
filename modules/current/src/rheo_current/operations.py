@@ -269,8 +269,8 @@ OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = (
         for name, model, output, handler, safety, roles, subject, _, _ in SPECS
     ),
     # Core never calls this handler for an EXTERNAL operation; it invokes the
-    # registered destination, which runs this same function.
-    (EXTERNAL_CREATE, external.create),
+    # registered destination. The handler refuses, so a misrouted call creates nothing.
+    (EXTERNAL_CREATE, external.refuse_inline),
 )
 TOOLS = (
     *(

@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from rheo_contracts import ExternalSpec, Idempotency, KeyedSpec, Role, SafetyClass
 from rheo_core.modules.manifest import DestinationMode
 from rheo_core.modules.production import PRODUCTION_EXTERNAL_ALLOWLIST
+from rheo_core.operations.refusals import OperationRefused
 from rheo_core.tokens.sets import ALERT_WRITER_OPERATIONS
 from rheo_current import MANIFEST
 from rheo_current.areas import DEFAULT_AREAS
@@ -366,6 +367,39 @@ def test_create_and_close_refuse_the_same_bad_pairs(pair: dict[str, str]) -> Non
         ItemCreate.model_validate({"title": "x", **pair})
     with pytest.raises(ValidationError):
         ItemCloseBySource.model_validate(pair)
+
+
+def test_ordinary_create_refuses_the_reserved_handoff_kind() -> None:
+    """Only the approved destination makes ``handoff`` items, because its source
+    index adopts any item already holding such a pair."""
+    reserved = {"source_kind": "handoff", "source_ref": EXTERNAL_PAYLOAD["source_ref"]}
+    with pytest.raises(ValidationError, match="reserved for approved handoffs"):
+        ItemCreate.model_validate({"title": "x", **reserved})
+    for near in ("handoff.leads", "leads.handoff", "handoffs"):
+        pair = {**reserved, "source_kind": near}
+        assert ItemCreate.model_validate({"title": "x", **pair}).source_kind == near
+
+
+def test_the_declared_external_handler_refuses_without_touching_storage() -> None:
+    """Core runs the create only through the registered destination; the handler
+    the operation declares refuses before it reads or writes anything."""
+    [handler] = [
+        handler
+        for declaration, handler in MANIFEST.operations
+        if declaration.safety_class is SafetyClass.EXTERNAL
+    ]
+
+    class NoStorage:
+        def __getattr__(self, name: str) -> Any:
+            raise AssertionError(f"the handler touched storage: {name}")
+
+    with pytest.raises(OperationRefused) as refused:
+        handler(
+            object(),  # type: ignore[arg-type]  # refuses before reading a context
+            NoStorage(),  # type: ignore[arg-type]  # any access fails the test
+            ExternalItemCreate.model_validate(EXTERNAL_PAYLOAD),
+        )
+    assert refused.value.state == "operation_not_permitted"
 
 
 def test_close_input_bounds_the_note_and_takes_nothing_else() -> None:

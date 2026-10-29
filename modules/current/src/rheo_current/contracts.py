@@ -1,7 +1,7 @@
 """Bounded wire shapes for items, projects, areas and the summary."""
 
 from datetime import date
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -26,6 +26,9 @@ Body = Annotated[str, Field(max_length=20000)]
 # One definition for create and close by source, so the two bounds cannot drift.
 SourceKind = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")]
 SourceRef = Annotated[str, Field(min_length=1, max_length=512)]
+HANDOFF_SOURCE_KIND: Final = "handoff"
+"""Reserved for the approved external destination. Its source index converges on any
+item already holding a pair of this kind, so no ordinary create may make one."""
 
 
 def _calendar_date(value: object) -> date:
@@ -73,6 +76,10 @@ class ItemCreate(Strict):
     def _source_pair(self) -> "ItemCreate":
         if (self.source_kind is None) != (self.source_ref is None):
             raise ValueError("source_kind and source_ref go together")
+        if self.source_kind == HANDOFF_SOURCE_KIND:
+            raise ValueError(
+                f"source_kind {HANDOFF_SOURCE_KIND!r} is reserved for approved handoffs"
+            )
         if self.fingerprint is not None and self.source_ref is None:
             raise ValueError("fingerprint needs source_ref")
         return self

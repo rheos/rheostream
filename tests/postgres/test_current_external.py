@@ -96,6 +96,10 @@ class Harness:
         return outcome
 
     def approve_and_run(self, held: OperationOutcome) -> None:
+        self.approve(held)
+        self.run_worker()
+
+    def approve(self, held: OperationOutcome) -> None:
         assert held.state == "approval_required", held
         assert held.approval_id is not None
         approved = dispatch(
@@ -106,6 +110,9 @@ class Harness:
             consumers=self.consumers,
         )
         assert approved.ok, approved
+
+    def run_worker(self) -> None:
+        """One real worker visit, which runs the queued approved continuation."""
         kinds = JobKindRegistry()
         kinds.register_continuation(EXTERNAL_ACTION_EXECUTE, run_external_continuation)
         at = datetime.now(UTC) + timedelta(seconds=1)
@@ -192,8 +199,13 @@ def test_external_approved_path_replays_core_result_without_reinvoking_destinati
     h = current_external
     held = h.stage()
     assert h.rows(t.item) == []  # staging alone never touches Current
-    h.approve_and_run(held)
+    h.approve(held)
+    # Approval only queues the continuation: nothing in Current yet, by any route.
+    assert h.rows(t.item) == [] and h.rows(t.source_item_link) == []
+    assert h.calls == []
+    h.run_worker()
     assert h.calls == ["handoff-1#1"]
+    assert len(h.rows(t.item)) == 1 and len(h.rows(t.source_item_link)) == 1
 
     action = h.action(held)
     assert action["state"] == "succeeded", action
@@ -365,11 +377,11 @@ def test_retry_after_completion_never_reopens_or_folds(
         )
 
 
-def test_a_direct_item_with_the_source_pair_is_linked_not_duplicated(
+def test_ordinary_create_cannot_plant_a_handoff_item(
     current_external: Harness,
 ) -> None:
-    """``uq_item_source`` is the backstop: an item created another way with the same
-    pair is adopted, its project carried into the link as live."""
+    """The reserved kind refuses before any write, so a later approved handoff for
+    the same source makes its own standalone item instead of adopting a planted one."""
     h = current_external
     project = dispatch(
         h.owner,
@@ -379,7 +391,7 @@ def test_a_direct_item_with_the_source_pair_is_linked_not_duplicated(
         consumers=h.consumers,
     )
     assert project.ok, project
-    direct = dispatch(
+    planted = dispatch(
         h.owner,
         "current.item.create",
         {
@@ -391,11 +403,60 @@ def test_a_direct_item_with_the_source_pair_is_linked_not_duplicated(
         registry=h.surfaces.operations,
         consumers=h.consumers,
     )
-    assert direct.ok, direct
+    assert planted.state == "input_invalid", planted
+    assert h.rows(t.item) == [] and h.rows(t.source_item_link) == []
+    held = h.stage()
+    h.approve_and_run(held)
+    [item] = h.rows(t.item)
+    assert (item["title"], item["project_id"]) == ("Prepare synthetic delivery", None)
+    [link] = h.rows(t.source_item_link)
+    assert (link["project_ref"], link["project_state"]) == (None, "never_assigned")
+
+
+def test_an_unlinked_item_with_the_source_pair_is_linked_not_duplicated(
+    current_external: Harness,
+) -> None:
+    """``uq_item_source`` is the backstop: an item that holds the pair without a link
+    (a row written before its link existed) is adopted, its project live in the link.
+    Ordinary create refuses the kind, so the row is written straight to the table."""
+    h = current_external
+    project = dispatch(
+        h.owner,
+        "current.project.create",
+        {"title": "Synthetic project"},
+        registry=h.surfaces.operations,
+        consumers=h.consumers,
+    )
+    assert project.ok, project
+    identifier = uuid7()
+    moment = datetime.now(UTC)
+    with open_unit_of_work(h.owner) as uow:
+        uow.connection.execute(
+            insert(t.item).values(
+                id=identifier,
+                title="Written earlier",
+                body="",
+                status="open",
+                priority="normal",
+                area=None,
+                project_id=RecordRef.parse(project.result.ref).id,
+                due_on=None,
+                snoozed_until=None,
+                provenance="handoff",
+                source_kind="handoff",
+                source_ref=SOURCE_REF,
+                event_count=1,
+                revision=1,
+                created_at=moment,
+                updated_at=moment,
+                closed_at=None,
+            )
+        )
+        uow.commit()
     with open_unit_of_work(h.service) as uow:
         made = h.execute(uow)
         uow.commit()
-    assert made.item_ref == direct.result.item.ref
+    assert made.item_ref == f"current.item:{identifier}"
     assert len(h.rows(t.item)) == 1
     [link] = h.rows(t.source_item_link)
     assert (link["item_ref"], link["project_ref"], link["project_state"]) == (
