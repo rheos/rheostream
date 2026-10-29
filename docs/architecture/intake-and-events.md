@@ -780,8 +780,9 @@ destination, whose effect commits with its settlement, proves absence from an op
 always proven no-effect; a
 possibly effective one is `unresolved` until `core.operation.resolve` moves it, which needs the
 destination's confirmed result ref for success and its proof of absence for failure. Callers
-read the outcome through `core.external_action.get`, whose `restage_eligible` is true only for
-`failed` and for a destination-unavailable refusal.
+read the outcome through `core.external_action.get` (roles owner, member, operator and service;
+a service context reaches it only when its operation set names it), whose `restage_eligible`
+is true only for `failed` and for a destination-unavailable refusal.
 
 ## Contact permission records (FR 46)
 
