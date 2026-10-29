@@ -95,8 +95,7 @@
   font-weight: bold;
 }
 
-.result:focus,
-.warning:focus {
+.outcomeHeading:focus {
   outline: medium solid var(--rs-chrome-ink);
   outline-offset: var(--rs-space-1);
 }
@@ -154,6 +153,11 @@
 
 .error {
   color: var(--rs-chrome-danger);
+}
+
+.error:focus {
+  outline: medium solid var(--rs-chrome-danger);
+  outline-offset: var(--rs-space-1);
 }
 
 @media (max-width: 40rem) {

@@ -217,6 +217,7 @@ describe("ApprovalDetail", () => {
     seams.action = action({ state: "pending" });
     const queued = await render();
     expect(queued).toContain("Handoff approved and queued");
+    expect(queued).toMatch(/<h1[^>]*tabindex="-1"[^>]*>Handoff approved and queued<\/h1>/);
     expect(queued).not.toContain("<form");
 
     seams.action = action({

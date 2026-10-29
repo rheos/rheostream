@@ -3,6 +3,7 @@
 import { useActionState } from "react";
 
 import type { ApprovalDecisionState } from "@/shell/approval-actions";
+import { ApprovalActionError } from "@/shell/approval-decision-focus";
 
 import styles from "./chrome/approval-detail.module.css";
 
@@ -44,9 +45,9 @@ function RefusalOnlyForm({ refuse }: { refuse: DecisionAction }) {
         </p>
       ) : null}
       {refuseState.message ? (
-        <p className={styles.error} role="alert">
+        <ApprovalActionError className={styles.error}>
           {refuseState.message}
-        </p>
+        </ApprovalActionError>
       ) : null}
     </fieldset>
   );
@@ -78,9 +79,9 @@ function ActionableForms({ approve, refuse }: { approve: DecisionAction; refuse:
         </p>
       ) : null}
       {error ? (
-        <p className={styles.error} role="alert">
+        <ApprovalActionError className={styles.error}>
           {error}
-        </p>
+        </ApprovalActionError>
       ) : null}
     </fieldset>
   );

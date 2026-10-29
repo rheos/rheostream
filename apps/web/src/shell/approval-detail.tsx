@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { callOperation, requestIdentity } from "@/lib/operations";
 import { approvalId } from "@/lib/routing/links";
 import { approveApproval, refuseApproval } from "@/shell/approval-actions";
+import { ApprovalOutcomeHeading } from "@/shell/approval-decision-focus";
 import {
   type ApprovalPreview,
   type ExternalAction,
@@ -111,23 +112,23 @@ function actionStatus(action: ExternalAction | null, preview: ApprovalPreview): 
   if (action === null) {
     if (preview.durable_state === "approved") {
       return (
-        <header className={styles.result} tabIndex={-1}>
-          <h1>Handoff approved</h1>
+        <header className={styles.result}>
+          <ApprovalOutcomeHeading className={styles.outcomeHeading}>Handoff approved</ApprovalOutcomeHeading>
           <p>The Current action status is temporarily unavailable. No repeat decision is available.</p>
         </header>
       );
     }
     if (preview.durable_state === "refused") {
       return (
-        <header className={styles.result} tabIndex={-1}>
-          <h1>Handoff refused</h1>
+        <header className={styles.result}>
+          <ApprovalOutcomeHeading className={styles.outcomeHeading}>Handoff refused</ApprovalOutcomeHeading>
           <p>This approval is closed. No repeat decision is available.</p>
         </header>
       );
     }
     return (
-      <header className={styles.result} tabIndex={-1}>
-        <h1>Approval resolved</h1>
+      <header className={styles.result}>
+        <ApprovalOutcomeHeading className={styles.outcomeHeading}>Approval resolved</ApprovalOutcomeHeading>
         <p>This approval is closed and has no repeat decision.</p>
       </header>
     );
@@ -136,50 +137,50 @@ function actionStatus(action: ExternalAction | null, preview: ApprovalPreview): 
   switch (action.state) {
     case "pending":
       return (
-        <header className={styles.result} tabIndex={-1}>
-          <h1>Handoff approved and queued</h1>
+        <header className={styles.result}>
+          <ApprovalOutcomeHeading className={styles.outcomeHeading}>Handoff approved and queued</ApprovalOutcomeHeading>
           <p>Creation is not yet confirmed.</p>
         </header>
       );
     case "executing":
       return (
-        <header className={styles.result} tabIndex={-1}>
-          <h1>Handoff in progress</h1>
+        <header className={styles.result}>
+          <ApprovalOutcomeHeading className={styles.outcomeHeading}>Handoff in progress</ApprovalOutcomeHeading>
           <p>Current is processing the approved request.</p>
         </header>
       );
     case "succeeded":
       return (
-        <header className={styles.result} tabIndex={-1}>
-          <h1>Current item created</h1>
+        <header className={styles.result}>
+          <ApprovalOutcomeHeading className={styles.outcomeHeading}>Current item created</ApprovalOutcomeHeading>
           <p>The external action reports a successful Current result.</p>
         </header>
       );
     case "failed":
       return (
-        <header className={styles.result} tabIndex={-1}>
-          <h1>Handoff failed with no effect</h1>
+        <header className={styles.result}>
+          <ApprovalOutcomeHeading className={styles.outcomeHeading}>Handoff failed with no effect</ApprovalOutcomeHeading>
           <p>No Current item was created by this attempt.</p>
         </header>
       );
     case "unresolved":
       return (
-        <header className={styles.warning} tabIndex={-1} role="alert">
-          <h1>Outcome unknown</h1>
+        <header className={styles.warning} role="alert">
+          <ApprovalOutcomeHeading className={styles.outcomeHeading}>Outcome unknown</ApprovalOutcomeHeading>
           <p>Rheo cannot confirm whether the Current effect occurred. Reconcile it before taking another action.</p>
         </header>
       );
     case "refused":
       return (
-        <header className={styles.result} tabIndex={-1}>
-          <h1>Handoff refused</h1>
+        <header className={styles.result}>
+          <ApprovalOutcomeHeading className={styles.outcomeHeading}>Handoff refused</ApprovalOutcomeHeading>
           <p>No Current item was created by this attempt.</p>
         </header>
       );
     case "cancelled":
       return (
-        <header className={styles.result} tabIndex={-1}>
-          <h1>Handoff cancelled</h1>
+        <header className={styles.result}>
+          <ApprovalOutcomeHeading className={styles.outcomeHeading}>Handoff cancelled</ApprovalOutcomeHeading>
           <p>The action is closed. Success is not claimed.</p>
         </header>
       );
