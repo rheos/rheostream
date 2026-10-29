@@ -8,7 +8,7 @@ new JSON-compatible mappings; no context, storage, clock, or handler is availabl
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any, Final
 from uuid import UUID
@@ -38,6 +38,10 @@ class IdempotencyContractError(ValueError):
 
 class IdempotencySchemaIncompatible(Exception):
     """A retained value has no valid path to the declaration's current version."""
+
+
+class KeyedReplayCompatibilityError(RuntimeError):
+    """Final composition cannot safely read every retained KEYED envelope."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,8 +266,159 @@ class KeyedCompatibilityRegistry:
             self._result, operation_name, value, from_version, to_version
         )
 
+    @staticmethod
+    def _require_path(
+        table: Mapping[tuple[str, int], tuple[int, Adapter]],
+        operation_name: str,
+        from_version: int,
+        to_version: int,
+        *,
+        kind: str,
+    ) -> None:
+        current = from_version
+        visited: set[int] = set()
+        while current != to_version:
+            if current in visited:
+                raise KeyedReplayCompatibilityError(
+                    f"{operation_name!r} {kind} adapter graph contains a cycle at "
+                    f"version {current}"
+                )
+            visited.add(current)
+            edge = table.get((operation_name, current))
+            if edge is None:
+                raise KeyedReplayCompatibilityError(
+                    f"{operation_name!r} retained {kind} schema {from_version} has "
+                    f"no adapter path to current version {to_version}"
+                )
+            current = edge[0]
+
+    def require_request_path(
+        self, operation_name: str, from_version: int, to_version: int
+    ) -> None:
+        self._require_path(
+            self._request,
+            operation_name,
+            from_version,
+            to_version,
+            kind="request",
+        )
+
+    def require_result_path(
+        self, operation_name: str, from_version: int, to_version: int
+    ) -> None:
+        self._require_path(
+            self._result,
+            operation_name,
+            from_version,
+            to_version,
+            kind="result",
+        )
+
+    def validate_graphs(self, registry: object) -> None:
+        """Every registered adapter graph terminates at its declaration's version."""
+        lookup = getattr(registry, "lookup", None)
+        if not callable(lookup):
+            raise TypeError("registry must provide lookup(name)")
+        for kind, table in (("request", self._request), ("result", self._result)):
+            for operation_name, from_version in sorted(table):
+                operation = lookup(operation_name)
+                keyed = (
+                    None
+                    if operation is None
+                    else getattr(operation.declaration, "keyed", None)
+                )
+                if keyed is None:
+                    raise KeyedReplayCompatibilityError(
+                        f"{kind} adapter for {operation_name!r} has no registered "
+                        "KEYED operation"
+                    )
+                current_version = (
+                    keyed.request_schema_version
+                    if kind == "request"
+                    else keyed.result_schema_version
+                )
+                if (operation_name, current_version) in table:
+                    raise KeyedReplayCompatibilityError(
+                        f"{operation_name!r} {kind} adapter graph continues past "
+                        f"current version {current_version}"
+                    )
+                self._require_path(
+                    table,
+                    operation_name,
+                    from_version,
+                    current_version,
+                    kind=kind,
+                )
+
 
 KEYED_COMPATIBILITY: Final = KeyedCompatibilityRegistry()
+
+
+def check_keyed_replay_compatibility(
+    backend: object,
+    registry: object,
+    *,
+    adapters: KeyedCompatibilityRegistry = KEYED_COMPATIBILITY,
+    now: datetime | None = None,
+) -> None:
+    """Fail startup when any active workspace retains an unreadable KEYED row.
+
+    The control plane chooses the active workspace databases; no request or module
+    supplies a path. Only nonexpired envelopes for operations in this final
+    composition participate. A registered operation that is no longer KEYED is
+    incompatible because accepting it would weaken a retained replay guarantee.
+    """
+    from rheo_core.storage.control_plane import list_workspaces
+    from rheo_core.storage.control_tables import WorkspaceState
+
+    control_engine = getattr(backend, "control_engine", None)
+    pools = getattr(backend, "pools", None)
+    if control_engine is None or pools is None:
+        raise TypeError("backend must provide control_engine and workspace pools")
+    lookup = getattr(registry, "lookup", None)
+    if not callable(lookup):
+        raise TypeError("registry must provide lookup(name)")
+
+    adapters.validate_graphs(registry)
+    checked_at = datetime.now(UTC) if now is None else now
+    with control_engine.connect() as connection:
+        workspaces = list_workspaces(connection, state=WorkspaceState.ACTIVE)
+    versions = (
+        idempotency_result.c.operation_name,
+        idempotency_result.c.request_schema_version,
+        idempotency_result.c.result_schema_version,
+    )
+    for workspace in workspaces:
+        with pools.acquire(workspace.database_name) as engine:
+            with engine.connect() as connection:
+                retained = connection.execute(
+                    select(*versions)
+                    .where(idempotency_result.c.retained_until >= checked_at)
+                    .distinct()
+                ).all()
+        for operation_name, request_version, result_version in retained:
+            name = str(operation_name)
+            operation = lookup(name)
+            if operation is None:
+                continue
+            keyed = getattr(operation.declaration, "keyed", None)
+            if keyed is None:
+                raise KeyedReplayCompatibilityError(
+                    f"active workspace {workspace.id} retains {name!r}, but the "
+                    "registered operation is no longer KEYED"
+                )
+            try:
+                adapters.require_request_path(
+                    name, int(request_version), keyed.request_schema_version
+                )
+                if result_version is not None:
+                    adapters.require_result_path(
+                        name, int(result_version), keyed.result_schema_version
+                    )
+            except KeyedReplayCompatibilityError as exc:
+                raise KeyedReplayCompatibilityError(
+                    f"active workspace {workspace.id} is incompatible: {exc}"
+                ) from exc
 
 
 def _row(row: RowMapping) -> IdempotencyRow:

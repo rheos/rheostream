@@ -723,6 +723,14 @@ handler; a changed protected request refuses `idempotency_key_reused`; a missing
 path refuses `idempotency_schema_incompatible`. The default retention window is 90 days, with a
 hard 30-day minimum, and `retained_until` never changes after reservation. The daily sweep removes
 an expired envelope only when no pending, executing, or unresolved external action references it.
+After module composition and backend opening, both the Core and worker startup roots scan every
+active workspace's nonexpired retained rows before serving or leasing. Each retained operation
+must still be declared `KEYED`, and its request version and any stored result version must have a
+unique registered adapter path to the declaration's current versions. Adapter graphs themselves
+must terminate at those current versions. A registered operation that no longer has a keyed
+contract, a missing path, or a graph that continues past current fails startup rather than
+silently weakening the replay promise. Retained rows for operations absent from the selected final
+composition are not callable there and are not part of that composition's scan.
 Revision `0015_terminal_action_history` removes the original composite foreign key: a terminal
 action keeps its copied operation name and key as immutable history without pinning the expired
 envelope, while the sweep's explicit state predicate preserves every live or unknown outcome. After

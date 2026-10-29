@@ -41,10 +41,13 @@ from rheo_core.modules.operations import (
     ModuleInstallPayload,
     run_module_install_job,
 )
+from rheo_core.modules.production import assert_production_external_composition
 from rheo_core.operations.continuation import (
     EXTERNAL_ACTION_EXECUTE,
     run_external_continuation,
 )
+from rheo_core.operations.idempotency import check_keyed_replay_compatibility
+from rheo_core.operations.registry import REGISTRY
 from rheo_core.runtime import (
     ACCOUNT_BOUND_CREDENTIAL_KINDS,
     RUNTIME_RUN,
@@ -165,6 +168,7 @@ def register_modules() -> None:
     about the production kinds could read it.
     """
     load_modules(kinds=JOB_KINDS, consumers=CONSUMERS)
+    assert_production_external_composition()
 
 
 def main() -> None:
@@ -187,6 +191,7 @@ def main() -> None:
     register_oneshot_adapters(ADAPTERS)
     register_modules()
     backend = get_backend()
+    check_keyed_replay_compatibility(backend, REGISTRY)
     stop = threading.Event()
     install_stop_signals(stop)
     try:

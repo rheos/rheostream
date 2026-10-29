@@ -590,7 +590,10 @@ NOTE_WRITE_DECLARATION: Final = OperationDeclaration(
 
 
 def register_harness(
-    *, registry: OperationRegistry = REGISTRY, resolvers: ResolverRegistry = RESOLVERS
+    *,
+    registry: OperationRegistry = REGISTRY,
+    resolvers: ResolverRegistry = RESOLVERS,
+    include_external: bool = True,
 ) -> None:
     """Register the note resolver and every ``harness.note.*`` operation this module
     declares (idempotent).
@@ -598,10 +601,13 @@ def register_harness(
     Scoped rather than counted, deliberately: the previous wording named a number,
     and the number went stale the first time a run added a declaration here.
 
-    **Every declaration above is registered here, and that matters.** A declaration
-    that exists as a module constant but is never passed to a registry is never
-    actually registered, and reads as present to anyone grepping for it while being
-    invisible to ``REGISTRY.names()`` and to anything derived from it.
+    **Every declaration above is registered here by default, and that matters.** A
+    declaration that exists as a module constant but is never passed to a registry is
+    never actually registered, and reads as present to anyone grepping for it while
+    being invisible to ``REGISTRY.names()`` and to anything derived from it. Actual
+    startup-root tests pass ``include_external=False`` because their fresh composition
+    must not contain the deliberately forbidden unkeyed EXTERNAL fixture; tests of the
+    approval and dispatch contract keep the default and exercise it directly.
 
     **It installs the harness module's audit sink too**, the same
     ``CORE_AUDIT_SINK`` the core installs for itself: ``harness`` has no manifest, so
@@ -627,7 +633,8 @@ def register_harness(
         NOTE_SCHEDULE_DECLARATION, _schedule_note, origin=TEST_HARNESS_ORIGIN
     )
     registry.register(FIXTURE_ACT_DECLARATION, _fixture_act, origin=TEST_HARNESS_ORIGIN)
-    registry.register(SINK_SEND_DECLARATION, _sink_send, origin=TEST_HARNESS_ORIGIN)
+    if include_external:
+        registry.register(SINK_SEND_DECLARATION, _sink_send, origin=TEST_HARNESS_ORIGIN)
 
 
 # --- B2 scaffolding: input models a registration must refuse --------------------------

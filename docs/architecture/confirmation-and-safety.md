@@ -28,15 +28,20 @@ grow) and can never loosen (the three upper classes cannot be moved to a standin
 setting; the class-to-behaviour table is code, not configuration). `approvals.confirm_operations`
 is not a declared setting yet, so no lower-class call requires confirmation today.
 
-Core migration `0014_external_actions` creates the durable `external_action` shape, but no
-production operation is external or financial class yet. Approving a staged keyed external or
-financial action never runs it inline: approval rechecks the binding, the held caller and the
-guards, then queues one `core.external_action.execute` continuation job, and the worker's
-grant-bound continuation performs the effect ([intake and events](intake-and-events.md#external-actions)).
-Refusing a pending one refuses the action and its keyed reservation with it. Destructive
-operations, and the test harness's unkeyed recording sink, still execute inside
-`core.approval.approve`'s transaction. `core.operation.resolve` is not token-issuable. The
-financial payload check is not written.
+Core migration `0014_external_actions` creates the durable `external_action` shape. No production
+operation is external or financial class yet; final composition nevertheless reserves exactly
+one future external tuple, `current.item.create_external` owned by Current with its exact
+`ExternalSpec` and in-process `current` destination. Every other external declaration or
+registration and every financial declaration fails both shipped composition roots. The allowed
+operation must be keyed: unkeyed external and financial inline holds are rejected at those roots,
+including in tests. Approving a staged keyed external or financial action never runs it inline:
+approval rechecks the binding, the held caller and the guards, then queues one
+`core.external_action.execute` continuation job, and the worker's grant-bound continuation
+performs the effect ([intake and events](intake-and-events.md#external-actions)). Refusing a pending
+one refuses the action and its keyed reservation with it. Destructive operations still execute
+inside `core.approval.approve`'s transaction. The test harness's unkeyed recording sink remains an
+isolated dispatcher fixture, not a valid final startup composition. `core.operation.resolve` is
+not token-issuable. The financial payload check is not written.
 
 ## The approval record
 
@@ -100,7 +105,7 @@ operation `cancelled`, and a staged external action and its keyed reservation `r
    audit row. State `approved`.
 3. Execution: for destructive, the dispatcher runs the original operation now, with the approval
    id, inside the approve operation's own transaction; for external and financial, it enqueues
-   the `external_action` job (not built yet, see above). Either path reruns the guards first.
+   the `external_action` job. Either path reruns the guards first.
 4. On success, `executed`; on a guard failure, `refused` with the guard named. Nothing moves an
    approval to `expired` yet: one past its window stays `pending`, and approving it refuses
    `invalid_approval`. A restored `requires_reapproval` approval is the exception, because its
@@ -172,8 +177,9 @@ it must add, because the core's are always present.
 | `ContactPermissionGuard` | external operations with a party destination, by Leads | `leads.contact_permission.check(destination party, purpose, channel)` returns anything but `permitted` (criterion 61). |
 | `DestinationGuard` | external operations that execute a handoff or send through a connector, by the connector owning the destination | The destination is not registered, or the connector's credential is unavailable. Release one has no such operation outside the test harness: `leads.handoff.request` is mutate class and records `unavailable` itself ([handoffs](#opportunities-parties-qualifications-and-handoffs)), and the guard's first production use is the phase-five execution operation. |
 
-Only the first three are built (`rheo_core.approvals.guards`). `ContactPermissionGuard` and
-`DestinationGuard` are domain guards that arrive with Leads and the first connector.
+The four Core guards, including fail-closed `DestinationGuard`, are built in
+`rheo_core.approvals.guards`. `ContactPermissionGuard` is supplied by Leads and resolved through
+the module guard registry.
 
 A refused guard leaves the external action `refused`, the operation `failed` with the guard's
 code, and the sink or provider untouched. An earlier approval never overrides a later revocation

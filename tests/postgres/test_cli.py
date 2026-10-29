@@ -353,7 +353,7 @@ def test_migrate_and_doctor_return_zero(
 
 
 async def test_lifespan_runs_startup_and_healthz_stays_database_free(
-    cluster: ClusterSession, workspace: UUID
+    cluster: ClusterSession, workspace: UUID, fresh_startup_composition: None
 ) -> None:
     async with lifespan(app):
         report = app.state.startup
@@ -475,7 +475,9 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
 
 
 def test_startup_refuses_to_complete_when_an_operation_has_no_audit_sink(
-    cluster: ClusterSession, workspace: UUID
+    cluster: ClusterSession,
+    workspace: UUID,
+    fresh_startup_composition: None,
 ) -> None:
     """AC 22, whose subject is **startup** and not the function startup calls.
 
@@ -493,7 +495,10 @@ def test_startup_refuses_to_complete_when_an_operation_has_no_audit_sink(
     process-wide registry whose module has nothing to write with, which is exactly the
     misassembled deployment the layer exists to refuse.
     """
-    register_harness()
+    # The missing-audit probe excludes the deliberately forbidden EXTERNAL fixture.
+    # Keeping that poison would correctly stop at the earlier final-composition gate
+    # and never exercise this test's audit seam.
+    register_harness(include_external=False)
     reset_sinks()
     try:
         with pytest.raises(RuntimeError) as excinfo:

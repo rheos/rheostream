@@ -786,6 +786,11 @@ def test_the_worker_registers_the_extraction_provider_on_its_own_adapters(
     ):
         monkeypatch.setattr(worker_main, attribute, _record(label))
     monkeypatch.setattr(worker_main, "register_claude_cli_extraction", _register)
+    monkeypatch.setattr(
+        worker_main,
+        "check_keyed_replay_compatibility",
+        _record("check_keyed_replay_compatibility"),
+    )
 
     worker_main.main()
 

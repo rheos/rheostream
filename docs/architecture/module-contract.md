@@ -401,14 +401,20 @@ At process start, in `core` and `worker` alike:
    registered" are both unreachable rather than refused. `tests/test_module_registration.py` pins
    the property instead of building a second mechanism for it. A future run that lets a module
    supply registration code of its own is the run that has to build the check.
-5. The production-profile rule (criterion 18): under `RHEO_PROFILE=production` the registry
-   must contain no item whose `origin` is `test_harness` and no operation in the `EXTERNAL` or
-   `FINANCIAL` classes. At runtime the only gate is the first half: every registry refuses the
-   `test_harness` origin unless the profile is `test`. The whole assertion is a CI check,
-   `tests/test_production_registration.py`, which starts a real production-profile process and
-   enumerates what it registered; no startup code refuses an `EXTERNAL` or `FINANCIAL`
-   operation. Test fixtures register with `origin=test_harness` by calling the harness's own
-   `register_harness()` (`tests/harness/`), which no production process imports.
+5. The final production-composition rule (criterion 18) is shipped code, not only a CI
+   enumeration. After all selected modules load, both the Core startup root and the worker root
+   call the same fail-closed assertion. It rejects every `FINANCIAL` declaration and every
+   `EXTERNAL` declaration or destination registration except the one exact tuple
+   `current.item.create_external` / owner `current` / destination `current` / in-process mode /
+   `ExternalSpec(destination_field="destination_ref", destination_ref="current",
+   result_ref_field="item_ref")`. The operation must be `KEYED`; an unkeyed upper-class inline
+   hold is not a production alternative. Wrong or missing specs and destinations, owner,
+   operation or mode mismatches, and orphan registrations all fail startup. Current may be absent
+   only as the wholly absent declaration-and-registration pair. There is no wildcard, prefix,
+   class-wide, profile or test bypass. Separately, every registry refuses the `test_harness`
+   origin unless the profile is `test`; test fixtures register through `register_harness()` in
+   `tests/harness/`, which no production process imports. Production-profile tests drive the real
+   Core and worker roots for both rules.
 
 The registry is global to the process. Per-workspace activation is applied at every boundary by
 `WorkspaceContext.enabled_modules`, so a tool listing, a route resolution, an event fan-out, a

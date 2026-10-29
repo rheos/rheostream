@@ -14,6 +14,7 @@ import pytest
 from harness.modules import install as _install
 from harness.modules import manifest as _manifest
 from harness.modules import publish as _publish
+from harness.registry import SINK_SEND, register_harness
 from pydantic import BaseModel, ConfigDict, ValidationError
 from rheo_app_worker import main as worker_main
 from rheo_app_worker.main import ADAPTERS, CONSUMERS, JOB_KINDS, register_modules
@@ -34,6 +35,8 @@ from rheo_core.modules.operations import (
     ModuleInstallPayload,
     run_module_install_job,
 )
+from rheo_core.modules.production import ProductionExternalCompositionError
+from rheo_core.operations import REGISTRY
 from rheo_core.runtime import RUNTIME_RUN, AdapterRegistry, RuntimeJobPayload
 from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.work.cancellation import CancellationToken
@@ -191,7 +194,9 @@ def test_a_kind_is_either_ordinary_or_a_continuation_never_both() -> None:
 
 
 @pytest.fixture
-def restored_composition_root(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def restored_composition_root(
+    monkeypatch: pytest.MonkeyPatch, fresh_startup_composition: None
+) -> Iterator[None]:
     """Let a test write into the real ``JOB_KINDS``/``CONSUMERS`` and hand them back.
 
     Neither registry publishes an unregister, so the table each holds is swapped for
@@ -211,6 +216,25 @@ def restored_composition_root(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]
     yield
     reset_surfaces()
     reset_sinks()
+
+
+def test_actual_worker_root_refuses_broad_harness_external_composition(
+    fresh_startup_composition: None,
+) -> None:
+    """The real worker root rejects the broad harness before the next fresh root.
+
+    Keeping this immediately before the positive root case makes the pair a
+    same-process regression: this node installs the ordinary broad harness (including
+    its forbidden EXTERNAL operation), drives the actual ``register_modules()`` root,
+    and leaves pytest's shared process to the positive node below.  That node's owned
+    fixture must replace the operation, destination, and keyed-adapter tables rather
+    than inherit this poison.
+    """
+    register_harness()
+    assert SINK_SEND in REGISTRY
+
+    with pytest.raises(ProductionExternalCompositionError, match=SINK_SEND):
+        register_modules()
 
 
 def test_register_modules_puts_a_modules_job_kind_and_consumer_on_the_worker(
@@ -266,6 +290,10 @@ def test_main_registers_modules_after_the_login_check_and_before_the_loop(
         ("refuse_misconfigured_login", "login"),
         ("register_modules", "register_modules"),
         ("get_backend", "get_backend"),
+        (
+            "check_keyed_replay_compatibility",
+            "check_keyed_replay_compatibility",
+        ),
         ("install_stop_signals", "install_stop_signals"),
         ("worker_loop", "worker_loop"),
         ("reset_backend", "reset_backend"),
@@ -278,6 +306,7 @@ def test_main_registers_modules_after_the_login_check_and_before_the_loop(
         "login",
         "register_modules",
         "get_backend",
+        "check_keyed_replay_compatibility",
         "install_stop_signals",
         "worker_loop",
         "reset_backend",
