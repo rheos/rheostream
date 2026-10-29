@@ -100,7 +100,7 @@ vi.mock("@/modules.generated", () => {
     surface: "hostile_probe",
     navigation: [],
     routes: [{ id: "home", path: "/", screen }],
-    recordRoutes: [],
+    recordRoutes: [{ recordType: "note", routeId: "home", refQuery: "ref" }],
     recordViews: [],
     forms: [],
     searchProviders: [],
@@ -224,5 +224,19 @@ describe("a module screen's shell.call", () => {
       expect(outcome.state).toBe("refused");
     }
     expect(seams.calls.length).toBe(before);
+  });
+
+  it("binds record navigation without widening the screen call gate", async () => {
+    renderToStaticMarkup(await renderSurface(moduleRequest()));
+    const ref = "hostile_probe.note:12345678-1234-5678-9abc-1234567890ab";
+    const expectedBase =
+      MODE === "path"
+        ? "https://example.test/hostile/"
+        : "https://hostile.example.test/";
+    expect(seams.shell?.recordHref?.(ref)).toBe(
+      `${expectedBase}?ref=hostile_probe.note%3A12345678-1234-5678-9abc-1234567890ab`,
+    );
+    expect(seams.shell?.recordHref?.("current.item:not-a-ref")).toBeNull();
+    expect(seams.calls).not.toContain("current.item.get");
   });
 });

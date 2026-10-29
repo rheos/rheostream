@@ -17,6 +17,7 @@ import {
   type WorkspaceStatusResult,
 } from "@/lib/operations";
 import type { RoutingConfig } from "@/lib/routing/config";
+import { recordHref } from "@/lib/routing/record-href";
 import {
   approvalHref,
   approvalLoginHref,
@@ -424,6 +425,8 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
       callOperation(operation, input, identity),
     ),
     href: (routeId, query) => moduleHref(config, owner, routeId, query),
+    recordHref: (ref) =>
+      recordHref(config, MODULES, decision.visibility.enabledModuleIds, ref),
     approvalHref: (approvalId) => approvalHref(config, approvalId),
     refresh: refreshScreen,
     timeZone: timeZone?.zone ?? "UTC",
