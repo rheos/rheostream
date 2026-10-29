@@ -23,6 +23,7 @@ from rheo_core.modules.readiness import ModuleNotReady
 from rheo_core.operations import dispatch
 from rheo_core.operations.transaction import call_in_transaction
 from rheo_core.storage.routing import open_unit_of_work
+from rheo_core.storage.work_tables import schedule
 from rheo_leads import current_links as cl
 from rheo_leads import handoff_routing as routing_module
 from rheo_leads.export import export_records, import_records
@@ -30,11 +31,11 @@ from rheo_leads.storage import pipeline as p
 from sqlalchemy import select, update
 
 from postgres.test_leads_current_handoff import (
-    ALLOWED,
     Routing,
     routing_harness,
     set_module_state,
 )
+from postgres.test_leads_pipeline import ok
 
 pytestmark = pytest.mark.postgres
 
@@ -158,9 +159,7 @@ def test_a_core_outcome_is_copied_without_any_link_read_unless_it_succeeded(
     routing: Routing, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (result,) = many(routing, 1, approve=False)
-    routing.set_action(
-        routing.row(result)["external_action_id"], **ALLOWED["exhausted_retryable"]
-    )
+    routing.exhaust(monkeypatch, result)
     names: list[str] = []
 
     def spy(ctx: WorkspaceContext, uow: Any, name: str, payload: Any, **kw: Any) -> Any:
@@ -173,6 +172,140 @@ def test_a_core_outcome_is_copied_without_any_link_read_unless_it_succeeded(
     row = routing.row(result)
     assert (row["state"], row["result_detail"]) == ("failed", "retryable_no_effect")
     assert row["current_link_revision"] is None
+
+
+# --- a person's resolution of an unresolved action ------------------------------------
+
+
+def history(r: Routing, handoff: Any) -> Any:
+    opportunity = f"leads.opportunity:{r.row(handoff)['opportunity_id']}"
+    (item,) = ok(r.i, "handoff.list", ref=opportunity).items
+    return item
+
+
+def test_a_resolution_to_succeeded_reaches_leads_and_then_its_link(
+    routing: Routing, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (result,) = many(routing, 1, approve=False)
+    double = routing.unresolve(monkeypatch, result)
+    reconcile(routing, page_size=10)
+    row = routing.row(result)
+    assert (row["state"], row["result_detail"]) == ("unresolved", "outcome_unknown")
+
+    # The provider had acted; a person checks it and resolves the action.
+    double.landed = routing.land(result)
+    resolved = routing.resolve(
+        result,
+        "succeeded",
+        terminal_check_kind="provider_status",
+        result_ref=double.landed,
+    )
+    assert resolved.ok, resolved
+    routing.swap_destination(monkeypatch)
+    report = reconcile(routing, page_size=10)
+    assert report.nonterminal.examined == 1 and report.nonterminal.updated == 1
+    row = routing.row(result)
+    assert (row["state"], row["result_ref"], row["result_detail"]) == (
+        "succeeded",
+        double.landed,
+        None,
+    )
+    assert projection(routing, result) == ("never_assigned", None, None, 1)
+    shown = history(routing, result)
+    assert (shown.state, shown.result_ref) == ("succeeded", double.landed)
+
+    # From here the successful scan carries it: a later move is repaired.
+    without_leads_events(routing)
+    target = move_to_project(routing, result, "Resolved project")
+    again = reconcile(routing, page_size=10)
+    assert again.nonterminal.examined == 0 and again.succeeded.updated == 1
+    assert projection(routing, result) == ("linked", target, None, 2)
+
+
+def test_a_resolution_to_failed_reaches_leads_and_restages_on_a_new_approval(
+    routing: Routing, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (result,) = many(routing, 1, approve=False)
+    routing.unresolve(monkeypatch, result)
+    reconcile(routing, page_size=10)
+    assert routing.row(result)["state"] == "unresolved"
+    assert routing.restage(result).state == "handoff_not_restageable"
+
+    # Nothing landed: the provider proves absence and a person resolves it failed.
+    resolved = routing.resolve(result, "failed")
+    assert resolved.ok, resolved
+    routing.swap_destination(monkeypatch)
+    report = reconcile(routing, page_size=10)
+    assert report.nonterminal.updated == 1
+    first = routing.row(result)
+    assert (first["state"], first["result_detail"], first["result_ref"]) == (
+        "failed",
+        "resolved_no_effect",
+        None,
+    )
+    assert history(routing, result).state == "failed"
+
+    restaged = routing.restage(result)
+    assert restaged.ok, restaged
+    second = routing.row(result)
+    assert (second["state"], second["attempt_count"]) == ("pending", 2)
+    assert second["approval_id"] != first["approval_id"]
+    routing.run_worker()
+    assert routing.current_items() == []
+    routing.approve(second["approval_id"])
+    routing.run_worker()
+    (item,) = routing.current_items()
+    assert item["source_ref"] == result.ref
+
+
+def test_a_settled_absence_leaves_the_nonterminal_scan(routing: Routing) -> None:
+    """An unresolved handoff whose core action is gone is read once, then left."""
+    (result,) = many(routing, 1, approve=False)
+    with open_unit_of_work(routing.ctx) as uow:
+        uow.connection.execute(
+            update(p.handoff)
+            .where(p.handoff.c.id == ident(result))
+            .values(
+                state="unresolved",
+                result_detail="outcome_unknown",
+                external_action_id=UUID(int=98),
+                approval_id=None,
+            )
+        )
+        uow.commit()
+    first = reconcile(routing, page_size=10)
+    assert first.nonterminal.examined == 1
+    row = routing.row(result)
+    assert (row["state"], row["result_detail"]) == (
+        "unresolved",
+        "external_action_missing",
+    )
+    assert reconcile(routing, page_size=10).nonterminal.examined == 0
+
+
+def test_an_out_of_contract_link_is_skipped_without_pinning_the_cursor(
+    routing: Routing, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad, good = many(routing, 2)
+    reconcile(routing, page_size=10)
+    without_leads_events(routing)
+    move_to_project(routing, bad, "Bad project")
+    good_target = move_to_project(routing, good, "Good project")
+
+    def spy(ctx: WorkspaceContext, uow: Any, name: str, payload: Any, **kw: Any) -> Any:
+        answer = call_in_transaction(ctx, uow, name, payload, **kw)
+        if name == cl.LINK_STATE and payload["source_ref"] == bad.ref:
+            dumped = {**answer.model_dump(mode="json"), "project_state": "archived"}
+            return SimpleNamespace(model_dump=lambda mode: dumped)
+        return answer
+
+    spy_on_public_calls(monkeypatch, spy)
+    report = reconcile(routing, page_size=2)
+    assert report.succeeded.examined == 2
+    assert report.succeeded.unavailable == 1 and report.succeeded.updated == 1
+    assert projection(routing, bad) == ("never_assigned", None, None, 1)
+    assert projection(routing, good) == ("linked", good_target, None, 2)
+    assert after(routing, "succeeded") == ident(good)
 
 
 # --- two independent cursors ----------------------------------------------------------
@@ -449,17 +582,10 @@ def test_the_schedule_runs_the_repair_after_an_approved_effect(
 # --- restore --------------------------------------------------------------------------
 
 
-def test_a_restored_nonterminal_handoff_is_unresolved_and_never_restaged(
-    routing: Routing,
-    make_workspace: MakeWorkspace,
-    owner_account_id: UUID,
-) -> None:
-    waiting, delivered = many(routing, 2, approve=False)
-    routing.approve(routing.row(delivered)["approval_id"])
-    routing.run_worker()
-    reconcile(routing, page_size=10)
-    assert routing.row(waiting)["state"] == "pending"
-    assert routing.row(delivered)["state"] == "succeeded"
+def restore_elsewhere(
+    routing: Routing, make_workspace: MakeWorkspace, owner_account_id: UUID
+) -> tuple[UUID, WorkspaceContext]:
+    """Export this workspace's Leads rows and import them into a fresh one."""
     with open_unit_of_work(routing.ctx) as uow:
         rows = [
             {
@@ -484,6 +610,48 @@ def test_a_restored_nonterminal_handoff_is_unresolved_and_never_restaged(
         uow.commit()
     owner = context_for_harness(other, owner_account_id, Role.OWNER)
     assert isinstance(owner, WorkspaceContext)
+    return other, owner
+
+
+def repair_schedule_enabled(ctx: WorkspaceContext) -> bool | None:
+    with open_unit_of_work(ctx) as uow:
+        found: bool | None = uow.connection.execute(
+            select(schedule.c.enabled).where(
+                schedule.c.module_id == "leads",
+                schedule.c.name == cl.RECONCILE_SCHEDULE,
+            )
+        ).scalar_one_or_none()
+    return found
+
+
+@pytest.mark.parametrize("destination", ["current", None])
+def test_a_restore_with_current_handoffs_turns_the_repair_schedule_on(
+    routing: Routing,
+    make_workspace: MakeWorkspace,
+    owner_account_id: UUID,
+    destination: str | None,
+) -> None:
+    opportunity = routing.opportunity()
+    routing.qualify(opportunity)
+    routing.handoff(opportunity, "restored", destination_ref=destination)
+    other, owner = restore_elsewhere(routing, make_workspace, owner_account_id)
+    # Restored successful handoffs are revisited only if the job runs there too;
+    # a restore with no handoff to Current has nothing to repair.
+    assert bool(repair_schedule_enabled(owner)) is (destination == "current")
+
+
+def test_a_restored_nonterminal_handoff_is_unresolved_and_never_restaged(
+    routing: Routing,
+    make_workspace: MakeWorkspace,
+    owner_account_id: UUID,
+) -> None:
+    waiting, delivered = many(routing, 2, approve=False)
+    routing.approve(routing.row(delivered)["approval_id"])
+    routing.run_worker()
+    reconcile(routing, page_size=10)
+    assert routing.row(waiting)["state"] == "pending"
+    assert routing.row(delivered)["state"] == "succeeded"
+    other, owner = restore_elsewhere(routing, make_workspace, owner_account_id)
 
     def restored(result: Any) -> dict[str, Any]:
         with open_unit_of_work(owner) as uow:

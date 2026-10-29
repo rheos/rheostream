@@ -9,9 +9,11 @@ places only, and both copy a strictly newer revision and nothing else:
   a missed or reordered event and a core outcome Leads has not copied yet.
 
 The job runs two independent scans, each with its own durable cursor in
-``leads.current_link_cursor``. The nonterminal scan pages pending handoffs and reads
-``core.external_action.get`` first; only a proven success with its item ref goes on
-to ``current.item.link_state``. The successful scan pages succeeded handoffs and reads
+``leads.current_link_cursor``. The nonterminal scan pages pending handoffs, and
+unresolved ones whose core action still exists (so a person's later
+``core.operation.resolve`` reaches Leads), and reads ``core.external_action.get``
+first; only a proven success with its item ref goes on to
+``current.item.link_state``. The successful scan pages succeeded handoffs and reads
 only ``current.item.link_state``. Both order by ``(requested_at, id)``, store the
 complete last examined key, read one bounded page strictly after it, advance past
 every examined row whatever its answer, and wrap to the start when a page comes back
@@ -26,7 +28,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Final
+from typing import Any, Final, Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
@@ -49,6 +51,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from rheo_leads import handoff_routing as routing
 from rheo_leads import pipeline_common as h
+from rheo_leads.pipeline_contracts import ProjectState
 from rheo_leads.references import ref
 from rheo_leads.storage import pipeline as p
 
@@ -70,11 +73,18 @@ NONTERMINAL: Final = "nonterminal"
 SUCCEEDED: Final = "succeeded"
 
 
+ItemState = Literal["available", "deleted"]
+"""Current's item states for a source link, mirrored from its contract."""
+
+
 class CurrentLink(BaseModel):
     """Current's link read shape, field for field, as Leads accepts it.
 
     Declared here rather than imported: Leads names no Current type. Only the
     project fields and the revision are copied; the item state is never stored.
+    Both states are closed: a value outside Current's contract fails validation
+    here, before any write, so it is skipped like an unreadable link rather than
+    reaching the handoff's checks and rolling back a whole repair page.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -83,8 +93,8 @@ class CurrentLink(BaseModel):
     item_ref: str
     project_ref: str | None
     last_project_ref: str | None
-    item_state: str
-    project_state: str
+    item_state: ItemState
+    project_state: ProjectState
     revision: int = Field(ge=1)
     changed_at: AwareDatetime
 
@@ -181,6 +191,9 @@ def repair_context(workspace_id: UUID, uow: UnitOfWork) -> WorkspaceContext | Re
     """The job's restricted service context, from core's boundary factory for a
     routed worker transaction: system actor, service role, no account, no audience,
     the modules enabled in this transaction, and exactly :data:`REPAIR_OPERATIONS`."""
+    # A scheduled job, not an event delivery: this is core's one factory for a
+    # system context on an already-routed worker transaction, and it grants nothing
+    # beyond the operation set named here.
     return context_for_event_consumer(
         workspace_id, uow, request_id=uuid7(), operation_names=REPAIR_OPERATIONS
     )
@@ -218,7 +231,7 @@ def reconcile(
     _scan(
         uow,
         NONTERMINAL,
-        p.handoff.c.state == "pending",
+        p.NONTERMINAL_SCAN,
         lambda row: _settle(ctx, uow, row, report.nonterminal, now),
         report.nonterminal,
         page_size,
@@ -240,7 +253,7 @@ def _scan(
     uow: UnitOfWork,
     scan: str,
     members: ColumnElement[bool],
-    examine: Callable[[dict[str, Any]], object],
+    examine: Callable[[dict[str, Any]], bool],
     report: ScanReport,
     page_size: int,
     now: datetime,
@@ -275,7 +288,8 @@ def _scan(
     ]
     for row in rows:
         report.examined += 1
-        examine(row)
+        if examine(row):
+            report.updated += 1
     if len(rows) < page_size:
         report.wrapped = True
         values: dict[str, Any] = dict(
@@ -295,17 +309,17 @@ def _settle(
     row: dict[str, Any],
     report: ScanReport,
     now: datetime,
-) -> None:
-    """Core first: copy the action's outcome, then the link only after success."""
+) -> bool:
+    """Core first: copy the action's outcome, then the link only after success.
+    Whether the row moved."""
     read = routing.read_action(ctx, uow, row["external_action_id"])
     if read.record is None and not read.missing:
         report.unavailable += 1
-        return
+        return False
     moved = routing.write(uow, row, routing.outcome_values(row, read, now))
     if row["state"] == "succeeded" and row["result_ref"] is not None:
-        moved = _relink(ctx, uow, row, report, counted=moved) or moved
-    if moved:
-        report.updated += 1
+        moved = _relink(ctx, uow, row, report) or moved
+    return moved
 
 
 def read_link(
@@ -331,11 +345,9 @@ def _relink(
     uow: UnitOfWork,
     row: dict[str, Any],
     report: ScanReport,
-    *,
-    counted: bool | None = None,
 ) -> bool:
-    """Read the link of a succeeded handoff and copy a newer revision. With
-    ``counted`` set the caller owns the row's ``updated`` count."""
+    """Read the link of a succeeded handoff and copy a newer revision; whether it
+    moved. The scan counts a moved row once, however it moved."""
     reference = ref("handoff", row["id"])
     link = read_link(ctx, uow, reference)
     if (
@@ -345,9 +357,6 @@ def _relink(
     ):
         report.unavailable += 1
         return False
-    moved = is_newer(row["current_link_revision"], link.revision) and apply_link(
+    return is_newer(row["current_link_revision"], link.revision) and apply_link(
         uow, link
     )
-    if moved and counted is None:
-        report.updated += 1
-    return moved

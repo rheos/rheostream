@@ -282,7 +282,7 @@ def handoff_restage(
     ctx: WorkspaceContext, uow: UnitOfWork, m: c.HandoffRestage
 ) -> c.RecordOutput:
     """Stage the same handoff again, under a new approval, where the closed matrix
-    allows it (:func:`rheo_leads.handoff_routing.restage_allowed`).
+    allows it (:func:`rheo_leads.handoff_routing.may_restage`).
 
     The attempt count rises by one and derives the next core key; the Current source
     stays the handoff. A request whose count is one behind answers with the handoff
@@ -295,10 +295,8 @@ def handoff_restage(
         return _handoff_output(uow, routing.refresh(ctx, uow, found, now))
     if found["attempt_count"] != m.attempt_count:
         raise StaleRecord("handoff changed")
-    routing.refresh(ctx, uow, found, now)
-    if not routing.restage_allowed(
-        found["state"], found["result_detail"], found["destination_ref"]
-    ):
+    read = routing.settle(ctx, uow, found, now)
+    if not routing.may_restage(found, read):
         raise OperationRefused(
             routing.NOT_RESTAGEABLE, f"a {found['state']} handoff cannot be restaged"
         )

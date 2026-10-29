@@ -782,7 +782,9 @@ possibly effective one is `unresolved` until `core.operation.resolve` moves it, 
 destination's confirmed result ref for success and its proof of absence for failure. Callers
 read the outcome through `core.external_action.get` (roles owner, member, operator and service;
 a service context reaches it only when its operation set names it), whose `restage_eligible`
-is true only for `failed` and for a destination-unavailable refusal.
+is true only for `failed` and for a destination-unavailable refusal. The read is not limited to
+actions the reading module staged: a context that may call it reads any action in its workspace,
+and today the only service context that names it is Leads' handoff repair job.
 
 ## Contact permission records (FR 46)
 

@@ -16,6 +16,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    and_,
+    func,
+    or_,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
@@ -446,12 +449,25 @@ for _name, _check in (
     ),
 ):
     handoff.append_constraint(CheckConstraint(_check, name=_name))
+ACTION_ABSENT_DETAILS = ("restored_unresolved", "external_action_missing")
+"""Details of an unresolved handoff whose core action is known to be absent (a
+restore carries none, or a read proved it gone): rereading it can change nothing."""
+NONTERMINAL_SCAN = or_(
+    handoff.c.state == "pending",
+    and_(
+        handoff.c.state == "unresolved",
+        handoff.c.external_action_id.is_not(None),
+        func.coalesce(handoff.c.result_detail, "").not_in(ACTION_ABSENT_DETAILS),
+    ),
+)
+"""The settlement scan's rows: pending handoffs, and unresolved ones whose core
+action still exists, so a person's later ``core.operation.resolve`` reaches Leads."""
 # The two repair scans page in (requested_at, id) order over their own class.
 Index(
     "handoff_nonterminal_scan",
     handoff.c.requested_at,
     handoff.c.id,
-    postgresql_where=handoff.c.state == "pending",
+    postgresql_where=NONTERMINAL_SCAN,
 )
 Index(
     "handoff_succeeded_scan",

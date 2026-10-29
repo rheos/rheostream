@@ -87,9 +87,11 @@ live project ref, the last project ref, the project state (`never_assigned`, `li
 content or availability. The `current.source_item_link.changed` consumer and the
 bounded `leads.current_links.reconcile` job copy only a strictly newer revision. The
 job, which the first staged handoff schedules every 15 minutes, runs two scans with
-one durable cursor each: pending handoffs read `core.external_action.get` first and
-reach `current.item.link_state` only after a proven success, and succeeded handoffs
-read only `current.item.link_state`, so missed or reordered events and later
+one durable cursor each: pending handoffs, and unresolved ones whose core action still
+exists, read `core.external_action.get` first and reach `current.item.link_state`
+only after a proven success, so a person's later `core.operation.resolve` reaches
+Leads (a resolution to failed records `resolved_no_effect` and may restage), and
+succeeded handoffs read only `current.item.link_state`, so missed or reordered events and later
 assignments, moves, clears, item deletions and project deletions are repaired. Each
 scan pages strictly after its stored `(requested_at, id)` key, advances past every row
 it examined and wraps at the end. When Current is absent, disabled, denies the read
@@ -136,7 +138,8 @@ projection and the qualification its request was made against. A workspace expor
 carries no core external action, so a handoff that was still pending restores as
 `unresolved` with `restored_unresolved`: nothing can prove whether its item was made,
 the repair job leaves it alone and it never restages; a new intent needs a new
-handoff. The repair scans' cursors are not exported.
+handoff. The repair scans' cursors are not exported; a restore that brings handoffs
+to Current turns the repair schedule on, so its successful handoffs are revisited.
 
 ## Job-search capability
 

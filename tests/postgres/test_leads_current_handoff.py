@@ -3,10 +3,13 @@
 Synthetic, local-only data throughout. Every request goes through the real public
 dispatcher as the requesting person, every approval through core's own approval
 operation, and every effect through one real worker visit running core's approved
-continuation into Current's registered destination. Where a test needs a core
-action in a state the approved path cannot reach cheaply (an exhausted retry
-budget, a person's resolution), it writes that one published state onto the real
-staged row, satisfying core's own constraints, and says so.
+continuation into Current's registered destination. Every outcome that may restage
+is reached the real way: an exhausted retry budget through repeated worker visits,
+and a person's resolution through ``core.operation.resolve``. Current is in process
+with no reconcile, so core can neither leave its action unresolved nor verify a
+resolution; for those cases :class:`LostReply` stands in front of Current as a
+provider whose reply is lost. Only the outcomes that may never restage are written
+as one published core state onto the real staged row, and the test says so.
 """
 
 from collections.abc import Iterator
@@ -25,7 +28,8 @@ from rheo_core.boundary import context_for_harness, context_for_operator
 from rheo_core.boundary.factories import context_for_event_consumer
 from rheo_core.deletion import OWNED_DELETIONS
 from rheo_core.events import ConsumerRegistry
-from rheo_core.modules import DESTINATIONS
+from rheo_core.events.consumers import HandlerUnitOfWork
+from rheo_core.modules import DESTINATIONS, DestinationMode
 from rheo_core.modules.execution import RegisteredDestination
 from rheo_core.operations import (
     REGISTRY,
@@ -36,6 +40,8 @@ from rheo_core.operations import (
 )
 from rheo_core.operations.continuation import (
     EXTERNAL_ACTION_EXECUTE,
+    ExternalDestinationError,
+    ExternalFailureClass,
     run_external_continuation,
 )
 from rheo_core.operations.dispatch import OperationOutcome
@@ -249,23 +255,136 @@ class Routing:
             )
             uow.commit()
 
-    def destination_ready(self, monkeypatch: pytest.MonkeyPatch, ready: bool) -> None:
-        """Make Current's registered destination report not ready, or ready again."""
+    def action(self, action_id: object) -> dict[str, Any]:
+        return next(a for a in self.actions() if a["id"] == action_id)
+
+    def swap_destination(self, monkeypatch: pytest.MonkeyPatch, **changes: Any) -> None:
+        """Replace fields of Current's registered destination; none restores it."""
         found = DESTINATIONS.lookup("current")
         assert found is not None
         original = getattr(self, "_original", None) or found
         self._original = original  # type: ignore[attr-defined]
         replaced = (
-            original
-            if ready
-            else RegisteredDestination(
-                original.registration.model_copy(
-                    update={"is_ready": lambda ctx, uow: False}
-                ),
-                original.origin,
+            RegisteredDestination(
+                original.registration.model_copy(update=changes), original.origin
             )
+            if changes
+            else original
         )
         monkeypatch.setitem(DESTINATIONS._destinations, "current", replaced)
+
+    def destination_ready(self, monkeypatch: pytest.MonkeyPatch, ready: bool) -> None:
+        """Make Current's registered destination report not ready, or ready again."""
+        if ready:
+            self.swap_destination(monkeypatch)
+        else:
+            self.swap_destination(monkeypatch, is_ready=lambda ctx, uow: False)
+
+    def exhaust(self, monkeypatch: pytest.MonkeyPatch, handoff: Any) -> None:
+        """Approve the latest attempt and run real worker visits, Current busy on
+        each, until core spends the retry budget and settles the action ``failed``.
+
+        The budget is lowered the way an operator would, through the deployment
+        layer, so it runs out inside the approval's execution window."""
+
+        def busy(ctx: WorkspaceContext, uow: Any, data: Any) -> Any:
+            raise ExternalDestinationError(
+                ExternalFailureClass.RETRYABLE_NO_EFFECT,
+                "synthetic_busy",
+                "Current is busy",
+            )
+
+        monkeypatch.setenv("RHEO__work__max_attempts", "3")
+        row = self.row(handoff)
+        self.swap_destination(monkeypatch, execute=busy)
+        self.approve(row["approval_id"])
+        for seconds in (1, 30, 120, 400, 800):
+            self.run_worker(seconds=seconds)
+            if self.action(row["external_action_id"])["state"] == "failed":
+                break
+        self.swap_destination(monkeypatch)
+        action = self.action(row["external_action_id"])
+        assert (
+            action["state"],
+            action["failure_class"],
+            action["error_code"],
+            action["attempts"],
+        ) == ("failed", "retryable_no_effect", "retry_budget_exhausted", 3)
+
+    def unresolve(self, monkeypatch: pytest.MonkeyPatch, handoff: Any) -> "LostReply":
+        """Approve the latest attempt and run it once with Current behind a provider
+        whose reply is lost, so core settles the action ``unresolved``. The double
+        stays registered: a resolution asks its reconcile."""
+        double = LostReply()
+        self.swap_destination(
+            monkeypatch,
+            mode=DestinationMode.PROVIDER,
+            execute=double.execute,
+            reconcile=double.reconcile,
+            credentials_available=lambda ctx, uow: True,
+        )
+        row = self.row(handoff)
+        self.approve(row["approval_id"])
+        self.run_worker()
+        action = self.action(row["external_action_id"])
+        assert (action["state"], action["failure_class"]) == (
+            "unresolved",
+            "outcome_unknown",
+        )
+        return double
+
+    def land(self, handoff: Any) -> str:
+        """The item the provider made before its reply was lost, made by Current's
+        own create for the handoff's source, in its own committed transaction."""
+        from rheo_current import contracts as current_contracts
+        from rheo_current.external import create
+
+        with open_unit_of_work(self.ctx) as uow:
+            made = create(
+                self.ctx,
+                HandlerUnitOfWork(uow, consumers=self.i.consumers),
+                current_contracts.ExternalItemCreate(
+                    destination_ref="current",
+                    source_ref=handoff.ref,
+                    title=PAYLOAD["title"],
+                    idempotency_key=handoff.ref + "#1",
+                ),
+            )
+            uow.commit()
+        return made.item_ref
+
+    def resolve(self, handoff: Any, outcome: str, **fields: Any) -> OperationOutcome:
+        """A person's ``core.operation.resolve`` of the latest attempt's operation."""
+        action = self.action(self.row(handoff)["external_action_id"])
+        return self.call(
+            "core.operation.resolve",
+            operation_id=str(action["operation_id"]),
+            outcome=outcome,
+            note="Synthetic check with the provider",
+            **fields,
+        )
+
+
+@dataclass
+class LostReply:
+    """A provider in front of Current whose reply is always lost.
+
+    Its execute raises after the call, which core classifies ``outcome_unknown``.
+    Its reconcile answers from ``landed``: the item the provider is known to have
+    made, or ``None`` for proven absence.
+    """
+
+    landed: str | None = None
+
+    def execute(self, ctx: WorkspaceContext, uow: Any, data: Any) -> Any:
+        raise RuntimeError("synthetic reply lost")
+
+    def reconcile(self, ctx: WorkspaceContext, uow: Any, request_id: str | None) -> Any:
+        from rheo_current.contracts import ExternalItemCreated
+
+        return (
+            None if self.landed is None else ExternalItemCreated(item_ref=self.landed)
+        )
 
 
 @contextmanager
@@ -637,13 +756,45 @@ def _terminal(state: str, failure_class: str | None, **extra: Any) -> dict[str, 
     return values
 
 
+def _exhausted(r: Routing, monkeypatch: pytest.MonkeyPatch, result: Any) -> None:
+    r.exhaust(monkeypatch, result)
+
+
+def _resolved_failed(r: Routing, monkeypatch: pytest.MonkeyPatch, result: Any) -> None:
+    r.unresolve(monkeypatch, result)
+    # Nothing landed: the provider proves absence, and a person resolves it failed.
+    resolved = r.resolve(result, "failed")
+    assert resolved.ok, resolved
+    r.swap_destination(monkeypatch)
+    action = r.action(r.row(result)["external_action_id"])
+    # Core keeps the class it first recorded and names the resolution.
+    assert (action["state"], action["failure_class"], action["error_code"]) == (
+        "failed",
+        "outcome_unknown",
+        "resolved_no_effect",
+    )
+
+
+def _destination_unavailable(
+    r: Routing, monkeypatch: pytest.MonkeyPatch, result: Any
+) -> None:
+    r.approve(r.row(result)["approval_id"])
+    r.destination_ready(monkeypatch, False)
+    r.run_worker()
+    r.destination_ready(monkeypatch, True)
+    action = r.action(r.row(result)["external_action_id"])
+    assert (action["state"], action["failure_class"]) == (
+        "refused",
+        "destination_unavailable_no_effect",
+    )
+
+
 ALLOWED = {
-    "exhausted_retryable": _terminal("failed", "retryable_no_effect"),
-    "resolved_failed": _terminal("failed", "permanent_refusal_no_effect"),
-    "destination_unavailable": _terminal(
-        "refused", "destination_unavailable_no_effect"
-    ),
+    "exhausted_retryable": _exhausted,
+    "resolved_failed": _resolved_failed,
+    "destination_unavailable": _destination_unavailable,
 }
+"""Each outcome that may restage, reached through core's real paths."""
 FORBIDDEN = {
     "pending": {},
     "succeeded": _terminal(
@@ -659,11 +810,12 @@ FORBIDDEN = {
 
 @pytest.mark.parametrize("name", sorted(ALLOWED))
 def test_each_allowed_core_outcome_restages_the_same_handoff(
-    routing: Routing, name: str
+    routing: Routing, monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
     result = staged(routing)
     first = routing.row(result)
-    routing.set_action(first["external_action_id"], **ALLOWED[name])
+    ALLOWED[name](routing, monkeypatch, result)
+    assert routing.current_items() == []
     restaged = routing.restage(result)
     assert restaged.ok, restaged
     second = routing.row(result)
@@ -671,6 +823,13 @@ def test_each_allowed_core_outcome_restages_the_same_handoff(
     assert second["state"] == "pending"
     assert second["approval_id"] != first["approval_id"]
     assert routing.actions()[-1]["idempotency_key"] == result.ref + "#2"
+    # The new attempt runs only once a person approves it, on the same source.
+    routing.run_worker()
+    assert routing.current_items() == []
+    routing.approve(second["approval_id"])
+    routing.run_worker()
+    (item,) = routing.current_items()
+    assert item["source_ref"] == result.ref
 
 
 @pytest.mark.parametrize("name", sorted(FORBIDDEN))
@@ -689,11 +848,10 @@ def test_each_forbidden_core_outcome_refuses_a_restage(
 
 
 def test_a_restage_replays_a_lost_response_and_refuses_a_stale_attempt(
-    routing: Routing,
+    routing: Routing, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     result = staged(routing)
-    first = routing.row(result)
-    routing.set_action(first["external_action_id"], **ALLOWED["exhausted_retryable"])
+    routing.exhaust(monkeypatch, result)
     restaged = routing.restage(result, attempt=1)
     assert restaged.ok, restaged
     # The same restage again, after a lost response: the same answer, no new stage.
@@ -704,11 +862,11 @@ def test_a_restage_replays_a_lost_response_and_refuses_a_stale_attempt(
     assert stale.state == "record_stale", stale
 
 
-def test_a_member_may_restage_and_a_service_context_may_not(routing: Routing) -> None:
+def test_a_member_may_restage_and_a_service_context_may_not(
+    routing: Routing, monkeypatch: pytest.MonkeyPatch
+) -> None:
     result = staged(routing)
-    routing.set_action(
-        routing.row(result)["external_action_id"], **ALLOWED["exhausted_retryable"]
-    )
+    routing.exhaust(monkeypatch, result)
     service = routing.service("leads.handoff.restage", CREATE)
     refused = routing.restage(result, ctx=service)
     assert refused.state == "role_not_permitted", refused

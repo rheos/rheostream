@@ -376,15 +376,17 @@ Leads stores only the handoff's attempt count and a minimal projection of Curren
 `current.source_item_link.changed` consumer and the `leads.current_links.reconcile` job copy only
 a strictly newer revision. The job, scheduled by the first staged handoff, pages two scans with
 one durable cursor each in `leads.current_link_cursor`, ordered by `(requested_at, id)`. The
-nonterminal scan reads `core.external_action.get` first and calls `current.item.link_state` only
-after a proven success with its item ref; the successful scan calls only
-`current.item.link_state`. Each scan reads one bounded page strictly after its stored key,
-advances past every examined row whatever the answer, and wraps to the start after a short page,
-so a first page Current cannot answer never starves later rows and old successful handoffs are
-revisited. Current absent, disabled, denied or unready leaves the projection as it was. The job
+nonterminal scan covers pending handoffs and unresolved ones whose core action still exists, so a
+person's later `core.operation.resolve` reaches Leads; it reads `core.external_action.get` first
+and calls `current.item.link_state` only after a proven success with its item ref; the successful
+scan calls only `current.item.link_state`. Each scan reads one bounded page strictly after its
+stored key, advances past every examined row whatever the answer, and wraps to the start after a
+short page, so a first page Current cannot answer never starves later rows and old successful
+handoffs are revisited. Current absent, disabled, denied or unready leaves the projection as it was. The job
 runs under a restricted service context whose operation set is exactly those two reads. A
 workspace export carries no core external action, so a restored pending handoff is `unresolved`
-(`restored_unresolved`) and never restages.
+(`restored_unresolved`), is left out of the nonterminal scan and never restages. A restore that
+brings handoffs to Current turns the job's schedule on.
 
 The request is mutate class because writing the record is an internal, reversible state change
 with no external effect; the external effect, when a destination exists, is the destination's

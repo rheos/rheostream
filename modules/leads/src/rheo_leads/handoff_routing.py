@@ -95,6 +95,9 @@ def current_request(
     }
 
 
+OUTCOME_UNKNOWN: Final = "outcome_unknown"
+
+
 def restage_allowed(
     state: str, detail: str | None, destination_ref: str | None
 ) -> bool:
@@ -115,6 +118,22 @@ def restage_allowed(
     if state == "refused":
         return detail == "destination_unavailable_no_effect"
     return state == "failed"
+
+
+def schedule_repair(uow: UnitOfWork, now: datetime) -> None:
+    """Turn the ``leads.current_links.reconcile`` schedule on, due ``now``.
+
+    Off by default; the first staged handoff turns it on, and so does a restore
+    that brings handoffs to Current, whose successful ones only this job revisits.
+    The caller holds the workspace lifecycle lock, which orders this write.
+    """
+    ensure_module_schedule(
+        uow.connection,
+        module_id=MODULE_ID,
+        name=RECONCILE_SCHEDULE,
+        enabled=True,
+        due_at=now,
+    )
 
 
 def stage(
@@ -143,13 +162,7 @@ def stage(
             return None
         raise
     # The lifecycle lock is held, which orders this against module enable.
-    ensure_module_schedule(
-        uow.connection,
-        module_id=MODULE_ID,
-        name=RECONCILE_SCHEDULE,
-        enabled=True,
-        due_at=now,
-    )
+    schedule_repair(uow, now)
     return dict(
         state=CORE_STATES.get(staged.state, "pending"),
         attempt_count=attempt,
@@ -193,16 +206,24 @@ def outcome_values(
 
     A pending handoff whose action no longer exists (a restored workspace carries no
     core action) becomes unresolved: nothing can prove whether the item was made.
-    A handoff Leads already settled keeps what it recorded from core.
+    An unresolved one whose action is gone records that, which takes it out of the
+    settlement scan. A handoff Leads already settled keeps what it recorded from core.
     """
     if read.record is None:
-        if read.missing and handoff["state"] == "pending":
+        if not read.missing:
+            return {}
+        if handoff["state"] == "pending":
             values: dict[str, Any] = dict(
                 state="unresolved",
                 result_ref=None,
                 result_detail=EXTERNAL_ACTION_MISSING,
                 resolved_at=now,
             )
+        elif (
+            handoff["state"] == "unresolved"
+            and handoff["result_detail"] not in p.ACTION_ABSENT_DETAILS
+        ):
+            values = dict(result_detail=EXTERNAL_ACTION_MISSING)
         else:
             return {}
     else:
@@ -212,12 +233,16 @@ def outcome_values(
             values = dict(state=state)
         else:
             succeeded = state == "succeeded"
+            failure = record["failure_class"]
+            if state == "failed" and failure == OUTCOME_UNKNOWN:
+                # A person resolved an unknown outcome to failed on the destination's
+                # proof of no effect. Core keeps the class it first recorded and
+                # names the resolution in its error code, the fact Leads records.
+                failure = None
             values = dict(
                 state=state,
                 result_ref=record["result_ref"] if succeeded else None,
-                result_detail=None
-                if succeeded
-                else record["failure_class"] or record["error_code"],
+                result_detail=None if succeeded else failure or record["error_code"],
                 resolved_at=record["terminal_at"],
             )
     return {key: value for key, value in values.items() if handoff[key] != value}
@@ -234,13 +259,43 @@ def write(uow: UnitOfWork, handoff: dict[str, Any], values: dict[str, Any]) -> b
     return True
 
 
+def settle(
+    ctx: WorkspaceContext, uow: UnitOfWork, handoff: dict[str, Any], now: datetime
+) -> ActionRead | None:
+    """Copy core's outcome for the handoff's latest attempt, when ``ctx`` may read
+    it, and answer with that read; ``None`` when no attempt was staged. A handoff
+    whose action is unreadable is unchanged."""
+    if handoff["external_action_id"] is None:
+        return None
+    read = read_action(ctx, uow, handoff["external_action_id"])
+    write(uow, handoff, outcome_values(handoff, read, now))
+    return read
+
+
 def refresh(
     ctx: WorkspaceContext, uow: UnitOfWork, handoff: dict[str, Any], now: datetime
 ) -> dict[str, Any]:
-    """Copy core's outcome for the handoff's latest attempt, when ``ctx`` may read
-    it. A handoff with no staged attempt, or an unreadable action, is unchanged."""
-    if handoff["external_action_id"] is None:
-        return handoff
-    read = read_action(ctx, uow, handoff["external_action_id"])
-    write(uow, handoff, outcome_values(handoff, read, now))
+    """:func:`settle`, answering with the handoff."""
+    settle(ctx, uow, handoff, now)
     return handoff
+
+
+def may_restage(handoff: dict[str, Any], read: ActionRead | None) -> bool:
+    """Whether the handoff, just settled with ``read``, may be staged again.
+
+    A staged attempt with a fresh core record answers with core's published
+    ``restage_eligible``. It encodes the same rule as :func:`restage_allowed`'s
+    closed matrix for a staged attempt (a ``failed`` action, or a
+    ``destination_unavailable_no_effect`` refusal), so Leads does not re-derive it.
+    Without a fresh record (nothing staged yet, an action proven absent after a
+    restore, or one this context cannot read) the matrix decides on what Leads
+    recorded: for a staged attempt that was copied from core, and a recorded state
+    that lags core is pending or unresolved, both of which refuse.
+    """
+    if handoff["destination_ref"] != CURRENT:
+        return False
+    if read is not None and read.record is not None:
+        return bool(read.record["restage_eligible"])
+    return restage_allowed(
+        handoff["state"], handoff["result_detail"], handoff["destination_ref"]
+    )

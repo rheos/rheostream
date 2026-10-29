@@ -51,9 +51,13 @@ def upgrade() -> None:
         "(current_link_revision IS NOT NULL OR (current_project_state = "
         "'never_assigned' AND last_current_project_ref IS NULL))"
     )
+    # Pending handoffs, and unresolved ones whose core action still exists: a
+    # person's later resolution of that action reaches Leads through this scan.
     op.execute(
         "CREATE INDEX handoff_nonterminal_scan ON leads.handoff "
-        "(requested_at, id) WHERE state = 'pending'"
+        "(requested_at, id) WHERE state = 'pending' OR (state = 'unresolved' "
+        "AND external_action_id IS NOT NULL AND COALESCE(result_detail, '') "
+        "NOT IN ('restored_unresolved', 'external_action_missing'))"
     )
     op.execute(
         "CREATE INDEX handoff_succeeded_scan ON leads.handoff "

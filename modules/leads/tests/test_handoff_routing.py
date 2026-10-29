@@ -49,6 +49,28 @@ def test_handoff_restage_matrix_refuses_every_other_state(
     assert r.restage_allowed(state, detail, destination) is False
 
 
+def test_handoff_restage_follows_cores_published_answer_for_a_staged_attempt() -> None:
+    staged = {
+        "destination_ref": "current",
+        "state": "failed",
+        "result_detail": "retryable_no_effect",
+    }
+    fresh = r.ActionRead({"restage_eligible": True}, missing=False)
+    closed = r.ActionRead({"restage_eligible": False}, missing=False)
+    assert r.may_restage(staged, fresh) is True
+    assert r.may_restage(staged, closed) is False
+    assert r.may_restage({**staged, "destination_ref": None}, fresh) is False
+    # No fresh record (none staged yet, or proven absent): the matrix decides.
+    assert r.may_restage(staged, r.ActionRead(None, missing=True)) is True
+    assert r.may_restage({**staged, "state": "unresolved"}, None) is False
+    unstaged = {
+        "destination_ref": "current",
+        "state": "unavailable",
+        "result_detail": "destination_unavailable",
+    }
+    assert r.may_restage(unstaged, None) is True
+
+
 def test_handoff_attempt_key_is_the_handoff_ref_and_its_attempt() -> None:
     assert r.attempt_key(HANDOFF, 1) == HANDOFF + "#1"
     assert r.attempt_key(HANDOFF, 3) == HANDOFF + "#3"
@@ -101,6 +123,31 @@ def test_current_links_event_model_is_the_link_shape_and_nothing_else() -> None:
         links.CurrentLink.model_validate({**_link(2), "title": "copied content"})
     with pytest.raises(ValueError):
         links.CurrentLink.model_validate(_link(0))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"item_state": "archived"},
+        {"project_state": "archived"},
+        {"item_state": ""},
+        {"project_state": "LINKED"},
+    ],
+)
+def test_current_links_refuse_a_state_outside_currents_contract(
+    change: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        links.CurrentLink.model_validate(_link(2, **change))
+
+
+def test_current_links_unresolved_rows_known_to_have_no_action_leave_the_scan() -> None:
+    from rheo_leads.storage import pipeline
+
+    assert set(pipeline.ACTION_ABSENT_DETAILS) == {
+        r.RESTORED_UNRESOLVED,
+        r.EXTERNAL_ACTION_MISSING,
+    }
 
 
 @pytest.mark.parametrize(

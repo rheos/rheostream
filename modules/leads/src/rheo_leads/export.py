@@ -5,7 +5,9 @@ Format 14 adds each handoff's attempt count, its Current project projection and 
 qualification its request was made against. A workspace export carries no core
 external action, so a handoff that was still pending is restored as ``unresolved``
 (``restored_unresolved``): nothing can prove whether its item was made, and an
-unresolved handoff never restages. The repair scans' cursors are not exported.
+unresolved handoff never restages. The repair scans' cursors are not exported; a
+restore that brings handoffs to Current turns the repair schedule on, so the
+restored successful ones are revisited from the start of each scan.
 
 Signing secret handles are deployment-local and are never exported. Imported
 webhook connections need new credentials. The job feed connection is exported
@@ -23,12 +25,13 @@ a destructive merge.
 """
 
 from collections.abc import Callable, Mapping, Sequence
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import ValidationError
+from rheo_core.deletion.lifecycle import lock_workspace_lifecycle
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs.resolver import UnitOfWork
 from sqlalchemy import (
@@ -49,6 +52,7 @@ from sqlalchemy import (
     select,
 )
 
+from rheo_leads import handoff_routing as routing
 from rheo_leads.proposals.profile import ProposalPolicy
 from rheo_leads.scoring.profile import ScoringPolicy
 from rheo_leads.storage import jobfeed
@@ -320,6 +324,14 @@ def import_records(
     for table in TABLES:
         if grouped[table.name]:
             uow.connection.execute(insert(table), grouped[table.name])
+    if any(
+        row["destination_ref"] == routing.CURRENT
+        for row in grouped[_pipeline.handoff.name]
+    ):
+        # No stage will turn the repair job on for these, and only it revisits
+        # their links; the cursors start fresh, at the beginning of each scan.
+        lock_workspace_lifecycle(uow.connection)
+        routing.schedule_repair(uow, datetime.now(UTC))
 
     def finish() -> None:
         """No cross-module references are materialized in the intake-only release."""
