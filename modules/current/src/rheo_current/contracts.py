@@ -224,6 +224,31 @@ class ItemPage(Strict):
     next_offset: int | None
 
 
+# --- the approved external destination ---------------------------------------------
+
+
+class ExternalItemCreate(Strict):
+    """One approved request for one standalone item from an outside source.
+
+    The destination is fixed by type, so a request can only ever name Current. There
+    is deliberately no ``project_ref``: assigning a project is a person's later act
+    through ``current.item.update``, never part of an approved handoff.
+    """
+
+    destination_ref: Literal["current"]
+    source_ref: SourceRef
+    title: Title
+    body: Body = ""
+    priority: Priority = "normal"
+    area: AreaKey | None = None
+    due_on: CalendarDate | None = None
+    idempotency_key: str = Field(min_length=1, max_length=256)
+
+
+class ExternalItemCreated(Strict):
+    item_ref: str
+
+
 # --- projects --------------------------------------------------------------------
 
 

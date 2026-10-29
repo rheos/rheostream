@@ -19,6 +19,7 @@ from rheo_core.modules.manifest import (
 
 from rheo_current.contracts import ItemEvent
 from rheo_current.export import export_records, import_records
+from rheo_current.external import DESTINATION
 from rheo_current.lifecycle import authorize_delete, delete_owned
 from rheo_current.operations import OPERATIONS, TOOLS
 from rheo_current.references import MODULE_ID
@@ -59,6 +60,7 @@ MANIFEST = ModuleManifest(
     ),
     configuration_schema=(),
     operations=OPERATIONS,
+    destinations=(DESTINATION,),
     tools=TOOLS,
     events=tuple(
         EventDeclaration(type=f"current.item.{verb}", schema_version=1, data=ItemEvent)

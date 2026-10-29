@@ -8,13 +8,17 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from rheo_contracts import Role, SafetyClass
+from rheo_contracts import ExternalSpec, Idempotency, KeyedSpec, Role, SafetyClass
+from rheo_core.modules.manifest import DestinationMode
+from rheo_core.modules.production import PRODUCTION_EXTERNAL_ALLOWLIST
 from rheo_core.tokens.sets import ALERT_WRITER_OPERATIONS
 from rheo_current import MANIFEST
 from rheo_current.areas import DEFAULT_AREAS
 from rheo_current.common import READ_ITEM
 from rheo_current.contracts import (
     DependencyInput,
+    ExternalItemCreate,
+    ExternalItemCreated,
     ItemCloseBySource,
     ItemCreate,
     ItemCreated,
@@ -25,7 +29,8 @@ from rheo_current.contracts import (
 )
 from rheo_current.export import TABLES
 from rheo_current.operations import OPERATIONS, OWN_REFUSALS, REFUSALS, SPECS
-from sqlalchemy import Date, DateTime, Integer, Table, Text, Uuid
+from rheo_current.storage import tables
+from sqlalchemy import CheckConstraint, Date, DateTime, Integer, Table, Text, Uuid
 
 SOURCE = Path(__file__).parents[1] / "src" / "rheo_current"
 ITEM = "current.item:00000000-0000-7000-8000-000000000001"
@@ -108,12 +113,150 @@ def test_current_web_surface_and_forms() -> None:
     assert {f.operation for f in web.forms} == mutating - {CLOSE}
 
 
-def test_current_declares_no_external_or_financial_operation() -> None:
+def test_current_declares_exactly_one_external_operation_and_no_financial() -> None:
     classes = {d.safety_class for d, _ in MANIFEST.operations}
-    assert classes <= {SafetyClass.READ, SafetyClass.MUTATE}
+    assert classes <= {SafetyClass.READ, SafetyClass.MUTATE, SafetyClass.EXTERNAL}
+    external = [
+        declaration
+        for declaration, _ in MANIFEST.operations
+        if declaration.safety_class is SafetyClass.EXTERNAL
+    ]
+    assert len(external) == 1
+    declaration = external[0]
+    assert declaration.name == "current.item.create_external"
+    # The held person core rebuilds for the continuation; never a service context.
+    assert declaration.roles == frozenset({Role.OWNER, Role.MEMBER})
+    assert declaration.input_model is ExternalItemCreate
+    assert declaration.output is ExternalItemCreated
+    assert declaration.idempotency is Idempotency.KEYED
+    assert declaration.keyed == KeyedSpec(
+        key_field="idempotency_key",
+        request_schema_version=1,
+        result_schema_version=1,
+    )
+    assert declaration.external == ExternalSpec(
+        destination_field="destination_ref",
+        destination_ref="current",
+        result_ref_field="item_ref",
+    )
+    # The exact production tuple core allowlists, compared to core's own constant.
+    assert PRODUCTION_EXTERNAL_ALLOWLIST[declaration.name] == (
+        MANIFEST.module_id,
+        declaration.external,
+    )
+    # One in-process destination registered for exactly this operation; Current is
+    # its own database, so there is no credential check and nothing to reconcile.
+    assert len(MANIFEST.destinations) == 1
+    destination = MANIFEST.destinations[0]
+    assert destination.destination_ref == "current"
+    assert destination.operation_name == declaration.name
+    assert destination.mode is DestinationMode.IN_PROCESS
+    assert destination.credentials_available is None
+    assert destination.reconcile is None
+    assert MANIFEST.dependencies == ()
+    # No tool: a model, a token or a person cannot reach it except through approval.
+    assert declaration.name not in {t.operation for t in MANIFEST.tools}
     assert all(t.name.startswith("current_") for t in MANIFEST.tools)
     deletes = {t.name for t in MANIFEST.tools if t.operation == "core.record.delete"}
     assert deletes == {"current_delete_item", "current_delete_project"}
+
+
+EXTERNAL_PAYLOAD = {
+    "destination_ref": "current",
+    "source_ref": "leads.handoff:00000000-0000-7000-8000-000000000001",
+    "title": "Prepare synthetic delivery",
+    "body": "Public-safe fixture body",
+    "priority": "high",
+    "area": "work",
+    "due_on": "2030-02-03",
+    "idempotency_key": "handoff-1#1",
+}
+
+
+def test_external_item_input_is_exact_and_cannot_create_a_project() -> None:
+    model = ExternalItemCreate.model_validate(EXTERNAL_PAYLOAD)
+    assert model.destination_ref == "current"
+    assert set(ExternalItemCreate.model_fields) == set(EXTERNAL_PAYLOAD)
+    assert "project_ref" not in ExternalItemCreate.model_fields
+    assert set(ExternalItemCreated.model_fields) == {"item_ref"}
+    assert ExternalItemCreated(item_ref=ITEM).item_ref == ITEM
+    minimal = {
+        k: EXTERNAL_PAYLOAD[k]
+        for k in ("destination_ref", "source_ref", "title", "idempotency_key")
+    }
+    defaults = ExternalItemCreate.model_validate(minimal)
+    assert (defaults.body, defaults.priority, defaults.area, defaults.due_on) == (
+        "",
+        "normal",
+        None,
+        None,
+    )
+    for invalid in (
+        {**EXTERNAL_PAYLOAD, "destination_ref": "other"},
+        {k: v for k, v in EXTERNAL_PAYLOAD.items() if k != "destination_ref"},
+        {
+            **EXTERNAL_PAYLOAD,
+            "project_ref": "current.project:00000000-0000-7000-8000-000000000002",
+        },
+        {**EXTERNAL_PAYLOAD, "idempotency_key": ""},
+        {**EXTERNAL_PAYLOAD, "idempotency_key": "k" * 257},
+        {**EXTERNAL_PAYLOAD, "source_ref": ""},
+        {**EXTERNAL_PAYLOAD, "title": ""},
+        {**EXTERNAL_PAYLOAD, "priority": "urgent"},
+        {**EXTERNAL_PAYLOAD, "due_on": "2030-2-3"},
+        {**EXTERNAL_PAYLOAD, "provenance": "manual"},
+    ):
+        with pytest.raises(ValidationError):
+            ExternalItemCreate.model_validate(invalid)
+    with pytest.raises(ValidationError):
+        ExternalItemCreated.model_validate({"item_ref": ITEM, "project_ref": None})
+
+
+def test_source_item_link_migration_is_append_only_and_matches_metadata() -> None:
+    versions = SOURCE / "migrations" / "versions"
+    assert sorted(p.name for p in versions.glob("0*.py")) == [
+        "0001_current.py",
+        "0002_source_item_link.py",
+    ]
+    tree = ast.parse((versions / "0002_source_item_link.py").read_text("utf-8"))
+    assigned = {
+        node.targets[0].id: node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+    }
+    assert ast.literal_eval(assigned["revision"]) == "0002_source_item_link"
+    assert ast.literal_eval(assigned["down_revision"]) == "0001_current"
+    statements = ast.literal_eval(assigned["STATEMENTS"])
+    ddl = " ".join(" ".join(statements).split())
+    # Only the one new table and its index: nothing 0001 created is altered.
+    assert ddl.count("CREATE TABLE") == 1
+    assert "current.source_item_link" in ddl
+    assert not any(word in ddl for word in ("ALTER", "DROP", "current.item ("))
+    link = tables.source_item_link
+    assert list(link.primary_key.columns.keys()) == ["source_ref"]
+    assert set(link.columns.keys()) == {
+        "source_ref",
+        "item_ref",
+        "revision",
+        "item_state",
+        "project_ref",
+        "last_project_ref",
+        "project_state",
+        "changed_at",
+    }
+    assert not link.foreign_keys
+    checks = {
+        constraint.name: " ".join(str(constraint.sqltext).split())
+        for constraint in link.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert len(checks) == 6
+    for name, text in checks.items():
+        assert f"CONSTRAINT {name} CHECK" in ddl
+        assert text.replace(" ", "") in ddl.replace(" ", ""), name
+    assert {i.name for i in link.indexes} == {"uq_source_item_link_item"}
+    assert all(i.unique for i in link.indexes)
+    assert "CREATE UNIQUE INDEX uq_source_item_link_item" in ddl
 
 
 def test_export_schema_matches_tables() -> None:
