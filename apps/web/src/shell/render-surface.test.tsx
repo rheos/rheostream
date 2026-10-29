@@ -95,6 +95,13 @@ const SHELL_REQUEST = {
   query: {},
 };
 
+const APPROVAL_ID = "123e4567-e89b-12d3-a456-426614174000";
+const APPROVAL_REQUEST = {
+  host: MODE === "path" ? "example.test" : "circuit.example.test",
+  pathname: "/approvals/detail",
+  query: { approval_id: APPROVAL_ID },
+};
+
 async function render(request: Parameters<typeof renderSurface>[0]): Promise<string> {
   return renderToStaticMarkup(await renderSurface(request));
 }
@@ -231,6 +238,47 @@ describe("module screens through the real composition", () => {
     expect(html).toContain("session: signed out (session_expired)");
     expect(html).not.toContain('type="search"');
     expect(html).not.toMatch(NAV);
+  });
+});
+
+describe("the shell-owned approval route", () => {
+  it("renders inside the signed-in shell and reads preview under the active workspace", async () => {
+    const html = await render(APPROVAL_REQUEST);
+    expect(html).toContain("Approval temporarily unavailable");
+    expect(html).toContain("Alpha Desk (member)");
+    expect(seams.calls).toContain("core.approval.preview");
+  });
+
+  it("returns signed-out people to the exact bounded approval URL", async () => {
+    seams.session = { state: "unauthenticated", refusal: "session_expired" };
+    const html = await render(APPROVAL_REQUEST);
+    expect(html).toContain("Sign in to continue");
+    const href = html.match(/href="([^"]+)"[^>]*>Sign in to continue/)?.[1];
+    expect(href).toBeDefined();
+    const login = new URL(href!);
+    const returnTo = new URL(login.searchParams.get("return")!);
+    expect(returnTo.pathname.endsWith("/approvals/detail")).toBe(true);
+    expect(returnTo.searchParams.get("approval_id")).toBe(APPROVAL_ID);
+    expect(seams.calls).not.toContain("core.approval.preview");
+  });
+
+  it("keeps no-workspace sessions fully outside approval content", async () => {
+    seams.session = { state: "no-workspace" };
+    const html = await render(APPROVAL_REQUEST);
+    expect(html).toContain("No workspace yet");
+    expect(html).not.toContain("Review Current handoff");
+    expect(seams.calls).not.toContain("core.approval.preview");
+  });
+
+  it("treats an unreadable session as temporary failure with no sign-in or decision", async () => {
+    seams.session = { state: "unavailable" };
+    const html = await render(APPROVAL_REQUEST);
+    expect(html).toContain("Approval temporarily unavailable");
+    expect(html).toContain("Session is temporarily unavailable");
+    expect(html).not.toContain("Sign in to continue");
+    expect(html).not.toContain("Approve handoff");
+    expect(html).not.toContain(">Refuse</button>");
+    expect(seams.calls).not.toContain("core.approval.preview");
   });
 });
 
