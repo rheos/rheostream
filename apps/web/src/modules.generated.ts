@@ -19,6 +19,7 @@ export const MODULES = [
       { id: "project", path: "/project", screen: currentWeb.screens.project },
       { id: "areas", path: "/areas", screen: currentWeb.screens.areas },
     ],
+    recordRoutes: [],
     recordViews: [],
     forms: [
       { operation: "current.item.create", component: currentWeb.components.ActionForm },
@@ -71,6 +72,7 @@ export const MODULES = [
       { id: "receipt", path: "/receipt", screen: leadsWeb.screens.receipt },
       { id: "connections", path: "/connections", screen: leadsWeb.screens.connections },
     ],
+    recordRoutes: [],
     recordViews: [],
     forms: [
       { operation: "leads.intake.capture", component: leadsWeb.components.ActionForm },
@@ -164,6 +166,7 @@ export const MODULES = [
       { id: "history-item", path: "/history/item", screen: recallatronWeb.screens.historyItem },
       { id: "duplicates", path: "/duplicates", screen: recallatronWeb.screens.duplicates },
     ],
+    recordRoutes: [],
     recordViews: [],
     forms: [],
     searchProviders: [

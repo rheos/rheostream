@@ -143,6 +143,7 @@ secret_ref = ""
 due_reconcile_seconds = 900
 max_attempts = 8
 outbox_retention_days = 30
+idempotency_retention_days = 90
 
 # The approval record's two bounds (C6, run 0c3). max_payload_bytes bounds the stored
 # snapshot of one approved operation's input — what a person reads at the point of

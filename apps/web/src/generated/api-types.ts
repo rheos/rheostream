@@ -21,6 +21,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations/core.approval.preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.approval.preview (read) */
+        post: operations["core.approval.preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/core.approval.refuse": {
         parameters: {
             query?: never;
@@ -117,6 +134,23 @@ export interface paths {
         put?: never;
         /** core.evidence_enrollment.rotate (mutate) */
         post: operations["core.evidence_enrollment.rotate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/core.external_action.get": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** core.external_action.get (read) */
+        post: operations["core.external_action.get"];
         delete?: never;
         options?: never;
         head?: never;
@@ -553,6 +587,138 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * ApprovalDecision
+         * @description Which approval to approve or refuse, and optionally the digest the person saw.
+         *
+         *     ``expected_payload_digest`` is the lowercase hex ``core.approval.preview``
+         *     published. When present it is compared with the row's digest under the row lock
+         *     the decision holds, and a difference refuses :data:`APPROVAL_DIGEST_MISMATCH`.
+         *     It is an assertion about the binding, never a substitute for it: the decision
+         *     still verifies the stored snapshot against the stored digest on its own.
+         */
+        ApprovalDecision: {
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+            /**
+             * Expected Payload Digest
+             * @default null
+             */
+            expected_payload_digest: string | null;
+        };
+        /**
+         * ApprovalPreview
+         * @description What a person is shown before deciding, or the redacted answer.
+         *
+         *     **Disclosed** (``pending``, ``restored``, ``expired``, ``resolved``): every field
+         *     below is the verified persisted binding — the ids, the operation, who asked (the
+         *     original held caller, never the viewer), the subject read from the verified
+         *     payload, the exact canonical destination (null for a class with no destination),
+         *     the complete validated payload, its digest as lowercase hex, the purpose and
+         *     window, and the durable approval state (``requires_reapproval`` for
+         *     ``restored``). ``external_action_id`` is set for a staged KEYED EXTERNAL action,
+         *     whose own outcome ``core.external_action.get`` reports.
+         *
+         *     **Redacted** (``invalid``, ``unavailable``): every content field is null. The
+         *     default-false ``refusable`` capability is true only for an eligible,
+         *     subject-visible, durable restored approval whose KEYED EXTERNAL/FINANCIAL staged
+         *     action is specifically absent. It discloses no content and does not make the
+         *     preview actionable or approvable. Every other ``unavailable`` cause is
+         *     byte-identical with ``refusable=false``.
+         *
+         *     ``actionable`` is true exactly when ``status`` is ``pending`` or ``restored``.
+         *     The validator makes every other combination unconstructable, so a handler bug
+         *     cannot publish one.
+         */
+        ApprovalPreview: {
+            /** Actionable */
+            actionable: boolean;
+            /**
+             * Approval Id
+             * @default null
+             */
+            approval_id: string | null;
+            /**
+             * Destination Ref
+             * @default null
+             */
+            destination_ref: string | null;
+            /**
+             * Durable State
+             * @default null
+             */
+            durable_state: string | null;
+            /**
+             * External Action Id
+             * @default null
+             */
+            external_action_id: string | null;
+            /**
+             * Operation Id
+             * @default null
+             */
+            operation_id: string | null;
+            /**
+             * Operation Name
+             * @default null
+             */
+            operation_name: string | null;
+            /**
+             * Payload
+             * @default null
+             */
+            payload: {
+                [key: string]: components["schemas"]["JsonValue"];
+            } | null;
+            /**
+             * Payload Digest
+             * @default null
+             */
+            payload_digest: string | null;
+            /**
+             * Purpose
+             * @default null
+             */
+            purpose: string | null;
+            /**
+             * Refusable
+             * @default false
+             */
+            refusable: boolean;
+            /**
+             * Requester Id
+             * @default null
+             */
+            requester_id: string | null;
+            /**
+             * Requester Kind
+             * @default null
+             */
+            requester_kind: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "restored" | "expired" | "resolved" | "invalid" | "unavailable";
+            /**
+             * Subject Ref
+             * @default null
+             */
+            subject_ref: string | null;
+            /**
+             * Window End
+             * @default null
+             */
+            window_end: string | null;
+            /**
+             * Window Start
+             * @default null
+             */
+            window_start: string | null;
+        };
+        /**
          * ApprovalRecord
          * @description One approval as these operations publish it.
          *
@@ -623,7 +789,7 @@ export interface components {
         };
         /**
          * ApprovalRef
-         * @description Which approval to act on. ``approval_id`` is not a reserved input field, so a
+         * @description Which approval to read. ``approval_id`` is not a reserved input field, so a
          *     declaration may name it.
          */
         ApprovalRef: {
@@ -906,6 +1072,76 @@ export interface components {
              * Format: uuid
              */
             enrollment_id: string;
+        };
+        /**
+         * ExternalActionRecord
+         * @description One durable external action as core publishes it.
+         *
+         *     ``restage_eligible`` is core's answer to "may the same intent be staged again
+         *     under a new approval": true only for a ``failed`` action (always proven no
+         *     effect) and for a destination-unavailable refusal. The idempotency key is not
+         *     published; the caller already holds it.
+         */
+        ExternalActionRecord: {
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+            /** Attempts */
+            attempts: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Destination Ref */
+            destination_ref: string;
+            /** Error Code */
+            error_code: string | null;
+            /** Error Detail */
+            error_detail: string | null;
+            /** Execution Job Id */
+            execution_job_id: string | null;
+            /**
+             * External Action Id
+             * Format: uuid
+             */
+            external_action_id: string;
+            /** Failure Class */
+            failure_class: string | null;
+            /**
+             * Operation Id
+             * Format: uuid
+             */
+            operation_id: string;
+            /** Operation Name */
+            operation_name: string;
+            /** Restage Eligible */
+            restage_eligible: boolean;
+            /** Result Ref */
+            result_ref: string | null;
+            /** Source Ref */
+            source_ref: string | null;
+            /** State */
+            state: string;
+            /** Subject Ref */
+            subject_ref: string | null;
+            /** Terminal At */
+            terminal_at: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** ExternalActionRef */
+        ExternalActionRef: {
+            /**
+             * External Action Id
+             * Format: uuid
+             */
+            external_action_id: string;
         };
         /**
          * FailedDelivery
@@ -1313,6 +1549,11 @@ export interface components {
              * @enum {string}
              */
             outcome: "succeeded" | "failed" | "cancelled";
+            /**
+             * Result Ref
+             * @default null
+             */
+            result_ref: string | null;
             /**
              * Terminal Check Kind
              * @default null
@@ -1815,7 +2056,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ApprovalRef"];
+                "application/json": components["schemas"]["ApprovalDecision"];
             };
         };
         responses: {
@@ -1841,7 +2082,7 @@ export interface operations {
             };
         };
     };
-    "core.approval.refuse": {
+    "core.approval.preview": {
         parameters: {
             query?: never;
             header?: never;
@@ -1851,6 +2092,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ApprovalRef"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ApprovalPreview"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.approval.refuse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalDecision"];
             };
         };
         responses: {
@@ -2045,6 +2321,41 @@ export interface operations {
                         /** Format: uuid */
                         operation_id: string | null;
                         result?: components["schemas"]["EnrollmentCreated"];
+                        state: string;
+                    };
+                };
+            };
+        };
+    };
+    "core.external_action.get": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExternalActionRef"];
+            };
+        };
+        responses: {
+            /** @description the operation envelope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        approval_id?: string;
+                        error?: {
+                            error_code: string;
+                            error_text: string;
+                        };
+                        /** Format: uuid */
+                        operation_id: string | null;
+                        result?: components["schemas"]["ExternalActionRecord"];
                         state: string;
                     };
                 };

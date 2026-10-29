@@ -30,6 +30,7 @@ import pytest
 from pydantic import BaseModel
 from rheo_core.approvals import (
     APPROVAL_APPROVE,
+    APPROVAL_PREVIEW,
     APPROVAL_REFUSE,
     STANDING_GRANT_CREATE,
     STANDING_GRANT_REVOKE,
@@ -155,10 +156,14 @@ def test_the_operations_built_inside_the_registrar_are_in_the_document_too(
             OPERATION_GET,
             OPERATION_LIST,
             OPERATION_RESOLVE,
+            # The public read of a durable external action, after the record reads.
+            "core.external_action.get",
             # 0c2's C5 adds core.audit.list. Listed in registration order, the
             # order CORE_OPERATIONS itself holds; the assertion sorts both sides.
             AUDIT_LIST,
-            # 0c3's C6 and C7, registered last and from another package.
+            # 0c3's C6 and C7, registered last and from another package; #481
+            # adds the bound preview beside the two decisions.
+            APPROVAL_PREVIEW,
             APPROVAL_APPROVE,
             APPROVAL_REFUSE,
             STANDING_GRANT_CREATE,

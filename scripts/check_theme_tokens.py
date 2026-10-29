@@ -51,10 +51,9 @@ Five rules, each independently self-tested:
 4. Every `var(--rs-…)` reference names an actual token on the v1 contract (or the
    `--rs-font-brand` font-loader variable) — catches a typo'd custom property that would
    otherwise silently resolve to nothing at runtime.
-5. No `--rs-chrome-*` reference anywhere yet: contract-v1.json reserves the confirmation
-   chrome's token subset (AC 5), but no chrome-consuming component exists in this run
-   (spec.md: the rule "loosens to a `chrome/` directory allowance when the first one
-   lands", which is not this run).
+5. `--rs-chrome-*` references are allowed only below the shell-owned
+   `apps/web/src/shell/chrome/` directory. contract-v1.json reserves that subset for
+   confirmation chrome (AC 5); ordinary shell and module styles cannot consume it.
 
 Exemptions are exact paths from spec.md, anchored at the repository root, never "a
 directory of that name anywhere" — a module package cannot hide literals by growing its
@@ -101,6 +100,7 @@ CONTRACT_PATH = ROOT / "packages" / "web-contract" / "theme" / "contract-v1.json
 _SHELL_WEB_SRC = "apps/web/src"
 # The exact exempt directories (POSIX, repository-relative, trailing slash).
 _EXEMPT_PREFIXES = ("apps/web/src/theme/themes/", "apps/web/src/generated/")
+_CHROME_PREFIX = "apps/web/src/shell/chrome/"
 
 _SCRIPT_SUFFIXES = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"})
 _JSX_SUFFIXES = frozenset({".tsx", ".jsx"})
@@ -437,7 +437,11 @@ def _token_findings(
 ) -> list[str]:
     findings = []
     for match in _CHROME_REF.finditer(stripped):
-        findings.append(f"{path}: forbidden chrome-token reference {match.group(0)}")
+        name = match.group(0)
+        if not path.startswith(_CHROME_PREFIX):
+            findings.append(f"{path}: forbidden chrome-token reference {name}")
+        elif name not in contract_var_names:
+            findings.append(f"{path}: {name} does not name a contract token")
     for match in _VAR_REF.finditer(stripped):
         name = match.group(1)
         if name.startswith("--rs-chrome-"):
@@ -674,6 +678,18 @@ _PLANTED = {
         ".u { color: var(--rs-chrome-surface); }\n",
         "chrome-token",
     ),
+    "apps/web/src/shell/unsafe-chrome.module.css": (
+        ".u { color: var(--rs-chrome-ink); }\n",
+        "chrome-token",
+    ),
+    "modules/scratch/web/src/shell/chrome/unsafe.module.css": (
+        ".u { color: var(--rs-chrome-ink); }\n",
+        "chrome-token",
+    ),
+    "apps/web/src/shell/chrome/unknown.module.css": (
+        ".u { color: var(--rs-chrome-nope); }\n",
+        "does not name a contract token",
+    ),
     # The exemptions are exact shell paths: a module package cannot borrow them.
     "modules/scratch/web/src/theme/themes/planted.css": (
         ".x { color: #fff; }\n",
@@ -743,6 +759,10 @@ _CLEAN = {
     "apps/web/src/generated/api-types.ts": 'export const c = "#fff";\n',
     "apps/web/src/components/pinned.test.tsx": 'expect(c).toBe("#fff");\n',
     "apps/web/src/components/pinned.test.js": 'expect(c).toBe("#fff");\n',
+    "apps/web/src/shell/chrome/approval.module.css": (
+        ".approval { color: var(--rs-chrome-ink); "
+        "background: var(--rs-chrome-surface); }\n"
+    ),
 }
 
 
@@ -753,6 +773,8 @@ def _self_test() -> str | None:
             "--rs-space-3",
             "--rs-size-hairline",
             "--rs-color-control-focus",
+            "--rs-chrome-ink",
+            "--rs-chrome-surface",
         }
     )
     by_path = _findings_by_path(

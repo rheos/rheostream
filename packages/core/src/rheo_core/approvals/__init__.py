@@ -9,8 +9,11 @@ any of those three classes.
 - ``binding.py`` — the payload digest and the comparison execution makes against it.
 - ``guards.py`` — the guard protocol, the three guards the core attaches, and the
   attachment rule that decides which of them an operation gets.
+- ``snapshot.py`` — the one verifier of a stored snapshot against its binding, which
+  the preview, both decisions and the execution share.
 - ``gate.py`` — hold a gated call, and execute an approved one.
-- ``operations.py`` — the two operations a person approves or refuses through.
+- ``operations.py`` — the preview a person reads, and the two operations they approve
+  or refuse through.
 - ``grant_tables.py`` — ``core.standing_grant`` and ``core.standing_grant_operation``,
   on their own ``MetaData`` so ``0004_standing_grants`` creates exactly those two.
 - ``grants.py`` — the grant repository, and what "covered" means.
@@ -71,23 +74,32 @@ from rheo_core.approvals.guards import (
     CORE_GUARDS,
     GUARDED_CLASSES,
     ActorPermissionGuard,
+    DestinationGuard,
     Guard,
     GuardRefusal,
     RecordStateGuard,
     WindowGuard,
     core_guards_for,
+    effective_guards_for,
     run_guards,
 )
 from rheo_core.approvals.operations import (
     APPROVAL_APPROVE,
+    APPROVAL_DIGEST_MISMATCH,
     APPROVAL_OPERATIONS,
+    APPROVAL_PREVIEW,
     APPROVAL_REFUSE,
     APPROVAL_STATE,
     APPROVE_DECLARATION,
+    PREVIEW_DECLARATION,
+    REDACTED_PREVIEW,
     REFUSE_DECLARATION,
+    ApprovalDecision,
+    ApprovalPreview,
     ApprovalRecord,
     ApprovalRef,
     approve_handler,
+    preview_handler,
     refuse_handler,
 )
 from rheo_core.approvals.records import ApprovalRow
@@ -100,11 +112,15 @@ from rheo_core.approvals.tables import (
 
 __all__ = [
     "APPROVAL_APPROVE",
+    "APPROVAL_DIGEST_MISMATCH",
     "APPROVAL_OPERATIONS",
+    "APPROVAL_PREVIEW",
     "APPROVAL_REFUSE",
     "APPROVAL_STATE",
     "APPROVAL_STATES",
     "APPROVE_DECLARATION",
+    "PREVIEW_DECLARATION",
+    "REDACTED_PREVIEW",
     "CORE_GUARDS",
     "GRANT_CREATE_DECLARATION",
     "GRANT_OPERATIONS",
@@ -121,6 +137,9 @@ __all__ = [
     "STANDING_GRANT_REVOKE",
     "STANDING_GRANT_STATE",
     "ActorPermissionGuard",
+    "DestinationGuard",
+    "ApprovalDecision",
+    "ApprovalPreview",
     "ApprovalRecord",
     "ApprovalRef",
     "ApprovalRow",
@@ -139,12 +158,14 @@ __all__ = [
     "approve_handler",
     "binding_detail",
     "core_guards_for",
+    "effective_guards_for",
     "executable_payload",
     "execute_approved",
     "grant_metadata",
     "hold_for_approval",
     "payload_bytes",
     "payload_digest",
+    "preview_handler",
     "refuse_handler",
     "run_guards",
     "standing_grant",

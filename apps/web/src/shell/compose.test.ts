@@ -106,6 +106,7 @@ describe("the role filter, over an injected module", () => {
         { id: "entries", path: "/", screen },
         { id: "settings", path: "/settings", screen },
       ],
+      recordRoutes: [],
       recordViews: [],
       forms: [],
       searchProviders: [],

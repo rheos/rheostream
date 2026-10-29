@@ -50,12 +50,13 @@ that intersection under any profile that never calls it.
 
 import warnings
 from datetime import UTC, datetime
-from typing import Final
+from typing import Final, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from rheo_contracts import (
     AuditSpec,
+    ExternalSpec,
     Idempotency,
     OperationDeclaration,
     RecordRef,
@@ -372,16 +373,15 @@ class FixtureActed(BaseModel):
 class SinkSendInput(BaseModel):
     """``destination`` is who it would have sent to, ``message`` is what.
 
-    ``destination`` is a payload field rather than something the declaration names,
-    because no declaration surface carries a destination at all
-    (``rheo_contracts.manifest``) — which is the same reason
-    ``core.approval.destination_ref`` is written null in release one, and why a
-    differing destination is caught as a differing payload digest.
+    ``destination`` is the payload field the declaration's ``ExternalSpec`` names,
+    constrained to its exact destination, so a differing destination is caught as a
+    differing payload digest and the hold records it as
+    ``core.approval.destination_ref``.
     """
 
     model_config = _IGNORE_EXTRA
 
-    destination: str
+    destination: Literal["party:one"]
     message: str
 
 
@@ -537,6 +537,11 @@ SINK_SEND_DECLARATION: Final = OperationDeclaration(
     # ``subject_field=None``: a send acts on no record of a registered type. Its
     # destination is a payload field, which is not what a subject field names.
     audit=AuditSpec(subject_field=None),
+    external=ExternalSpec(
+        destination_field="destination",
+        destination_ref="party:one",
+        result_ref_field="recorded_ref",
+    ),
 )
 
 
@@ -585,7 +590,10 @@ NOTE_WRITE_DECLARATION: Final = OperationDeclaration(
 
 
 def register_harness(
-    *, registry: OperationRegistry = REGISTRY, resolvers: ResolverRegistry = RESOLVERS
+    *,
+    registry: OperationRegistry = REGISTRY,
+    resolvers: ResolverRegistry = RESOLVERS,
+    include_external: bool = True,
 ) -> None:
     """Register the note resolver and every ``harness.note.*`` operation this module
     declares (idempotent).
@@ -593,10 +601,13 @@ def register_harness(
     Scoped rather than counted, deliberately: the previous wording named a number,
     and the number went stale the first time a run added a declaration here.
 
-    **Every declaration above is registered here, and that matters.** A declaration
-    that exists as a module constant but is never passed to a registry is never
-    actually registered, and reads as present to anyone grepping for it while being
-    invisible to ``REGISTRY.names()`` and to anything derived from it.
+    **Every declaration above is registered here by default, and that matters.** A
+    declaration that exists as a module constant but is never passed to a registry is
+    never actually registered, and reads as present to anyone grepping for it while
+    being invisible to ``REGISTRY.names()`` and to anything derived from it. Actual
+    startup-root tests pass ``include_external=False`` because their fresh composition
+    must not contain the deliberately forbidden unkeyed EXTERNAL fixture; tests of the
+    approval and dispatch contract keep the default and exercise it directly.
 
     **It installs the harness module's audit sink too**, the same
     ``CORE_AUDIT_SINK`` the core installs for itself: ``harness`` has no manifest, so
@@ -622,7 +633,8 @@ def register_harness(
         NOTE_SCHEDULE_DECLARATION, _schedule_note, origin=TEST_HARNESS_ORIGIN
     )
     registry.register(FIXTURE_ACT_DECLARATION, _fixture_act, origin=TEST_HARNESS_ORIGIN)
-    registry.register(SINK_SEND_DECLARATION, _sink_send, origin=TEST_HARNESS_ORIGIN)
+    if include_external:
+        registry.register(SINK_SEND_DECLARATION, _sink_send, origin=TEST_HARNESS_ORIGIN)
 
 
 # --- B2 scaffolding: input models a registration must refuse --------------------------

@@ -4,7 +4,7 @@ Checked by name, in two places: ``issue.py`` strips it from any set a token coul
 ever carry (an explicit list naming one is refused; a named package set never
 contained one in the first place, by ``sets.py``'s own construction), and
 ``presentation.py``/``context_from_token`` refuses any presented token whose
-snapshot somehow contains one of these eight names anyway (a row that cannot arise
+snapshot somehow contains one of these names anyway (a row that cannot arise
 from ``issue()`` itself -- only from a row inserted directly, outside it -- checked
 regardless, so the rule holds at both ends).
 
@@ -19,17 +19,22 @@ from typing import Final
 NON_TOKEN_ISSUABLE: Final[frozenset[str]] = frozenset(
     {
         "core.approval.approve",
+        "core.approval.preview",
         "core.approval.refuse",
         "core.evidence_enrollment.create",
         "core.evidence_enrollment.rotate",
+        "core.operation.resolve",
         "core.standing_grant.create",
         "core.standing_grant.revoke",
         "core.token.issue",
         "core.token.revoke",
     }
 )
-"""The eight operation names no token may ever carry. Literal strings, not imported
-constants: ``core.token.issue``/``core.token.revoke`` are also declared in
+"""The ten operation names no token may ever carry; ``core.operation.resolve`` joined
+when it became the act that settles an unresolved external action, and
+``core.approval.preview`` joined with it in #481 because it discloses the whole
+held payload a person is about to approve, which no model may read. Literal strings,
+not imported constants: ``core.token.issue``/``core.token.revoke`` are also declared in
 ``operations/core_ops.py`` as ``TOKEN_ISSUE``/``TOKEN_REVOKE``, but importing them
 from there would route ``rheo_core.tokens.policy`` -> ``rheo_core.operations.
 core_ops`` -> ``rheo_core.tokens.issue`` -> ``rheo_core.tokens.policy``, a real

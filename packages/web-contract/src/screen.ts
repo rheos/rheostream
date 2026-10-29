@@ -15,6 +15,10 @@ export interface ShellApi {
    * hosts that cannot; a screen then falls back to reloading the page. */
   refresh?: () => Promise<void>;
   href(routeId: string, query?: Record<string, string | undefined>): string;
+  /** Resolve a provider-published route for one canonical record reference. */
+  recordHref?: (ref: string) => string | null;
+  /** Resolve the shell-owned review route for one approval id. */
+  approvalHref?: (approvalId: string) => string | null;
   /** The viewer's IANA time zone (#465), for formatting moments. Absent in hosts
    * that do not know it; a screen then formats in UTC and labels it so. */
   timeZone?: string;
@@ -63,6 +67,7 @@ export interface ComposedModule {
   surface: string;
   navigation: readonly { id: string; label: string; path: string; roles: readonly string[] }[];
   routes: readonly { id: string; path: string; screen: Screen }[];
+  recordRoutes: readonly { recordType: string; routeId: string; refQuery: string }[];
   recordViews: readonly { recordType: string; component: unknown }[];
   forms: readonly { operation: string; component: unknown }[];
   searchProviders: readonly { id: string; operation: string }[];

@@ -35,10 +35,12 @@ value, a `var()` fallback, a gradient's arguments in any property) or a length l
 in CSS, an inline style (a JSX `style=` attribute, a `style:` props key behind a spread,
 a `createElement(…, { style: … })` call) or an imperative style write, an unrecognised
 `var(--rs-…)` reference, or any
-`--rs-chrome-*` reference, anywhere under `apps/web/src` or `modules/*/web` (TS and JS
-sources alike) outside test files and the two exact exempt directories
-`apps/web/src/theme/themes/` and `apps/web/src/generated/`. A missing `apps/web/src`
-fails it. Self-tests itself on every run before scanning the real tree.
+`--rs-chrome-*` reference outside the exact shell-owned
+`apps/web/src/shell/chrome/` directory, anywhere under `apps/web/src` or
+`modules/*/web` (TS and JS sources alike) outside test files and the two exact
+exempt directories `apps/web/src/theme/themes/` and `apps/web/src/generated/`.
+An unknown chrome token still fails inside the shell-owned directory. A missing
+`apps/web/src` fails it. Self-tests itself on every run before scanning the real tree.
 
 `python3 scripts/check_search_boundary.py` fails on a search input — a `search`
 `type`, `inputMode`, `enterKeyHint` or `role` in any JSX quoting, the `<search>`

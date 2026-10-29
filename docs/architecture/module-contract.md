@@ -193,17 +193,18 @@ OperationDeclaration
   output: type[BaseModel]
   handler: Callable[[WorkspaceContext, UnitOfWork, input], output]   # travels beside the declaration, not in it
   roles: set[Role]                          # who may call; Role in {owner, member, operator, service}; default {owner, member}
-  idempotency: Idempotency                  # NONE | NATURAL(unique index); KEYED arrives with phase five
+  idempotency: Idempotency                  # NONE | NATURAL(unique index) | KEYED(retained result)
+  keyed: KeyedSpec | None                   # key field plus positive request/result schema versions
   audit: AuditSpec | None                   # required unless safety_class is READ
-  guards: list[ExecutionGuard]              # domain rechecks added to the core's; not declared yet
+  guards: tuple[str, ...]                    # ordered qualified domain-guard names
+  external: ExternalSpec | None             # exact destination and returned-reference fields
   long_running: bool                        # returns an operation id and runs as a job
 ```
 
-The shipped `rheo_contracts.OperationDeclaration` carries neither `handler` nor `guards`. The
-handler is the second half of the manifest's `(OperationDeclaration, Handler)` pair, for the
-reason [the manifest](#the-manifest) gives. `guards` has no field yet: the core's own guards are
-attached by `core_guards_for` (`packages/core/src/rheo_core/approvals/guards.py`), and the first
-module that needs a domain guard adds the field.
+The shipped `rheo_contracts.OperationDeclaration` does not carry its `handler`; the handler is
+the second half of the manifest's `(OperationDeclaration, Handler)` pair, for the reason
+[the manifest](#the-manifest) gives. Its guard names are ordered and qualified; the owned
+registrations that resolve them arrive with the first production external destination.
 
 `roles` is checked by the dispatcher against `ctx.role` on every call. `service` is the role a
 `connection` actor at `entry = intake` and a `system` actor at `entry = job` carry
@@ -255,9 +256,10 @@ Registration rules the core enforces at startup (criterion 18, criterion 14, cri
   handler is what returns the existing row on a repeat, and the declaration exists so the
   registry can assert the index is present in the module's schema at install. That assertion is
   not written yet: `Idempotency.NATURAL` carries no index name, and registration accepts it
-  without checking any schema. Release one has no
-  keyed idempotency and no stored-result table; the first operation that must return a created
-  reference on a retry is phase five's ([idempotency](intake-and-events.md#idempotency)).
+  without checking any schema. `KEYED` instead declares a validated string key field and
+  positive request/result wire versions. Core retains the canonical request identity and the
+  terminal result or error; compatibility across retained versions is explicit through pure
+  adapters ([idempotency](intake-and-events.md#idempotency)).
 - A tool registered by a module may name a core operation (the deletion tools do) only when its
   input restricts the reference to the module's own record types. This one is a contract rule
   rather than a registration check: the tool's own narrower `input_model` is what carries the
@@ -399,14 +401,20 @@ At process start, in `core` and `worker` alike:
    registered" are both unreachable rather than refused. `tests/test_module_registration.py` pins
    the property instead of building a second mechanism for it. A future run that lets a module
    supply registration code of its own is the run that has to build the check.
-5. The production-profile rule (criterion 18): under `RHEO_PROFILE=production` the registry
-   must contain no item whose `origin` is `test_harness` and no operation in the `EXTERNAL` or
-   `FINANCIAL` classes. At runtime the only gate is the first half: every registry refuses the
-   `test_harness` origin unless the profile is `test`. The whole assertion is a CI check,
-   `tests/test_production_registration.py`, which starts a real production-profile process and
-   enumerates what it registered; no startup code refuses an `EXTERNAL` or `FINANCIAL`
-   operation. Test fixtures register with `origin=test_harness` by calling the harness's own
-   `register_harness()` (`tests/harness/`), which no production process imports.
+5. The final production-composition rule (criterion 18) is shipped code, not only a CI
+   enumeration. After all selected modules load, both the Core startup root and the worker root
+   call the same fail-closed assertion. It rejects every `FINANCIAL` declaration and every
+   `EXTERNAL` declaration or destination registration except the one exact tuple
+   `current.item.create_external` / owner `current` / destination `current` / in-process mode /
+   `ExternalSpec(destination_field="destination_ref", destination_ref="current",
+   result_ref_field="item_ref")`. The operation must be `KEYED`; an unkeyed upper-class inline
+   hold is not a production alternative. Wrong or missing specs and destinations, owner,
+   operation or mode mismatches, and orphan registrations all fail startup. Current may be absent
+   only as the wholly absent declaration-and-registration pair. There is no wildcard, prefix,
+   class-wide, profile or test bypass. Separately, every registry refuses the `test_harness`
+   origin unless the profile is `test`; test fixtures register through `register_harness()` in
+   `tests/harness/`, which no production process imports. Production-profile tests drive the real
+   Core and worker roots for both rules.
 
 The registry is global to the process. Per-workspace activation is applied at every boundary by
 `WorkspaceContext.enabled_modules`, so a tool listing, a route resolution, an event fan-out, a

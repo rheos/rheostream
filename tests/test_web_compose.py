@@ -47,6 +47,7 @@ from rheo_core.modules import (
     FormDeclaration,
     ManifestInvalid,
     NavigationEntry,
+    RecordRoute,
     RecordType,
     RecordView,
     SearchProvider,
@@ -128,6 +129,9 @@ COMPOSE_MANIFEST = _manifest(
         record_views=(
             RecordView(record_type=f"{COMPOSE_ID}.note", component="NoteView"),
         ),
+        record_routes=(
+            RecordRoute(record_type="note", route_id="settings", ref_query="ref"),
+        ),
         forms=(
             FormDeclaration(operation=f"{COMPOSE_ID}.note.add", component="NoteForm"),
         ),
@@ -184,6 +188,7 @@ export const MODULES = [
     routes: [
       { id: "index", path: "/", screen: anotherProbeWeb.screens.index },
     ],
+    recordRoutes: [],
     recordViews: [],
     forms: [],
     searchProviders: [],
@@ -200,6 +205,9 @@ export const MODULES = [
     routes: [
       { id: "home", path: "/", screen: composeProbeWeb.screens.home },
       { id: "settings", path: "/settings", screen: composeProbeWeb.screens.settings },
+    ],
+    recordRoutes: [
+      { recordType: "note", routeId: "settings", refQuery: "ref" },
     ],
     recordViews: [
       { recordType: "compose_probe.note", component: composeProbeWeb.components.NoteView },
@@ -238,6 +246,52 @@ FUTURE_ENTRY_POINT = _entry_point(FUTURE_ID, "FUTURE_MANIFEST")
 
 def test_render_matches_the_golden_output() -> None:
     assert render([QUIET_MANIFEST, COMPOSE_MANIFEST, ANOTHER_MANIFEST]) == GOLDEN
+
+
+def test_record_routes_default_empty_for_existing_providers() -> None:
+    assert ANOTHER_MANIFEST.web is not None
+    assert ANOTHER_MANIFEST.web.record_routes == ()
+    assert "    recordRoutes: [],\n" in render([ANOTHER_MANIFEST])
+
+
+@pytest.mark.parametrize(
+    ("record_routes", "message"),
+    [
+        (
+            (RecordRoute(record_type="contact", route_id="settings", ref_query="ref"),),
+            "record type 'contact' is not one of module",
+        ),
+        (
+            (RecordRoute(record_type="note", route_id="missing", ref_query="ref"),),
+            "route 'missing', which none of this contribution's routes declares",
+        ),
+        (
+            (
+                RecordRoute(record_type="note", route_id="home", ref_query="ref"),
+                RecordRoute(record_type="note", route_id="settings", ref_query="id"),
+            ),
+            "record type 'note' is declared twice",
+        ),
+    ],
+)
+def test_record_routes_refuse_unowned_missing_or_duplicate_mappings(
+    record_routes: tuple[RecordRoute, ...], message: str
+) -> None:
+    assert COMPOSE_MANIFEST.web is not None
+    web = COMPOSE_MANIFEST.web.model_copy(update={"record_routes": record_routes})
+    with pytest.raises(pydantic.ValidationError, match=message):
+        _manifest(
+            COMPOSE_ID,
+            operations=COMPOSE_MANIFEST.operations,
+            record_types=COMPOSE_MANIFEST.record_types,
+            web=web,
+        )
+
+
+@pytest.mark.parametrize("ref_query", ["", "record-ref", "ref&next", "ref[]", "é"])
+def test_record_routes_refuse_unsafe_query_keys(ref_query: str) -> None:
+    with pytest.raises(pydantic.ValidationError, match="safe query-key identifier"):
+        RecordRoute(record_type="note", route_id="settings", ref_query=ref_query)
 
 
 def test_read_operations_are_the_module_s_own_read_class_declarations() -> None:

@@ -22,11 +22,19 @@ the run that introduces them has to revisit this rule.
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
+from typing import TYPE_CHECKING
+from uuid import UUID
 
 from pydantic import BaseModel
 
-from rheo_core.storage.backend import HandlerUnitOfWork
+from rheo_core.storage.backend import HandlerUnitOfWork, UnitOfWork
 from rheo_core.work.cancellation import CancellationToken
+
+if TYPE_CHECKING:
+    from rheo_core.events.consumers import ConsumerRegistry
 
 JobHandler = Callable[[HandlerUnitOfWork, BaseModel, CancellationToken], None]
 """``(uow, payload, token) -> None``: what one job kind actually does.
@@ -48,6 +56,67 @@ long work.
 """
 
 
+class ContinuationMode(StrEnum):
+    """Why the loop is running a continuation kind this time.
+
+    ``run`` may perform the effect at most once. ``cancel_requested`` and
+    ``budget_exhausted_recovery`` reconcile only: they never start a new effect.
+    """
+
+    RUN = "run"
+    CANCEL_REQUESTED = "cancel_requested"
+    BUDGET_EXHAUSTED_RECOVERY = "budget_exhausted_recovery"
+
+
+class ContinuationDisposition(StrEnum):
+    """The closed set a continuation returns; the loop maps each to one job write.
+
+    ``succeeded`` and ``handled_terminal`` end the job ``succeeded``, ``retry``
+    requeues it with backoff, ``failed_terminal`` ends it ``failed`` and
+    ``cancelled_terminal`` ends it ``cancelled``. The continuation has already written
+    every related row in the same transaction.
+    """
+
+    SUCCEEDED = "succeeded"
+    HANDLED_TERMINAL = "handled_terminal"
+    RETRY = "retry"
+    FAILED_TERMINAL = "failed_terminal"
+    CANCELLED_TERMINAL = "cancelled_terminal"
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuationLease:
+    """What the loop hands a continuation about the job it leased."""
+
+    workspace_id: UUID
+    job_id: UUID
+    owner: str
+    payload: dict[str, object]
+    attempts: int
+    max_attempts: int
+    mode: ContinuationMode
+    now: datetime
+    consumers: "ConsumerRegistry | None" = None
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuationResult:
+    """A disposition and the short text the job row records with it."""
+
+    disposition: ContinuationDisposition
+    detail: str | None = None
+
+
+ContinuationHandler = Callable[[UnitOfWork, ContinuationLease], ContinuationResult]
+"""``(uow, lease) -> result``: a core continuation kind.
+
+Unlike :data:`JobHandler` it receives the raw unit of work, because it owns the
+settlement of its own durable rows, and the lease facts (attempts, budget, mode),
+because it, not the loop, decides what a cancelled or exhausted lease means. It must
+not commit; the loop writes the job's terminal or retry state in the same
+transaction and commits only when that write applied."""
+
+
 class JobKindUnknown(Exception):
     """Raised by :meth:`JobKindRegistry.lookup` for a ``kind`` nobody registered."""
 
@@ -58,20 +127,47 @@ class JobKindRegistry:
     Registration is deliberately last-writer-wins rather than a refusal: the one
     production instance is populated once at import of the composition root, and a
     test that re-registers a kind inside a single case is expressing intent rather
-    than colliding with another caller.
+    than colliding with another caller. The one refusal is across the two maps: a
+    kind is either ordinary or a continuation, never both.
     """
 
-    __slots__ = ("_kinds",)
+    __slots__ = ("_continuations", "_kinds")
 
     def __init__(self) -> None:
         self._kinds: dict[str, tuple[type[BaseModel], JobHandler]] = {}
+        self._continuations: dict[str, ContinuationHandler] = {}
+
+    def register_continuation(self, kind: str, handler: ContinuationHandler) -> None:
+        """Declare a core-only continuation kind.
+
+        Kept apart from :meth:`register` so ordinary handlers keep their ``None``
+        contract and a module cannot register one: the name must be ``core.``.
+        """
+        if not isinstance(kind, str) or not kind.startswith("core."):
+            raise ValueError("a continuation kind is a core-owned 'core.' kind")
+        if kind in self._kinds:
+            raise ValueError(f"{kind!r} is already an ordinary job kind")
+        self._continuations[kind] = handler
+
+    def continuation_for(self, kind: str) -> ContinuationHandler | None:
+        """The continuation registered for ``kind``, or ``None``."""
+        return self._continuations.get(kind)
+
+    def continuation_names(self) -> frozenset[str]:
+        return frozenset(self._continuations)
 
     def register(
         self, kind: str, input_model: type[BaseModel], handler: JobHandler
     ) -> None:
-        """Declare that ``kind`` is run by ``handler`` with ``input_model``."""
+        """Declare that ``kind`` is run by ``handler`` with ``input_model``.
+
+        A kind already registered as a continuation is refused: the loop looks
+        continuations up first, so this handler would be silently shadowed.
+        """
         if not isinstance(kind, str) or not kind:
             raise ValueError("a job kind is a non-empty string")
+        if kind in self._continuations:
+            raise ValueError(f"{kind!r} is already a continuation kind")
         self._kinds[kind] = (input_model, handler)
 
     def names(self) -> frozenset[str]:
