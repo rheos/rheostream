@@ -29,7 +29,7 @@ from rheo_core.exports import (
     run_restore_job,
 )
 from rheo_core.exports.erasure import SWEEP_JOB_KIND
-from rheo_core.modules import ENTRY_POINT_GROUP, JobKind, reset_surfaces
+from rheo_core.modules import DESTINATIONS, ENTRY_POINT_GROUP, JobKind, reset_surfaces
 from rheo_core.modules.operations import (
     MODULE_INSTALL,
     ModuleInstallPayload,
@@ -37,6 +37,7 @@ from rheo_core.modules.operations import (
 )
 from rheo_core.modules.production import ProductionExternalCompositionError
 from rheo_core.operations import REGISTRY
+from rheo_core.operations.idempotency import KEYED_COMPATIBILITY
 from rheo_core.runtime import RUNTIME_RUN, AdapterRegistry, RuntimeJobPayload
 from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.work.cancellation import CancellationToken
@@ -218,23 +219,35 @@ def restored_composition_root(
     reset_sinks()
 
 
-def test_actual_worker_root_refuses_broad_harness_external_composition(
+def _reset_owned_startup_composition() -> None:
+    """Reset the four process tables owned by ``fresh_startup_composition``."""
+    REGISTRY._operations.clear()  # noqa: SLF001
+    DESTINATIONS._destinations.clear()  # noqa: SLF001
+    KEYED_COMPATIBILITY._request.clear()  # noqa: SLF001
+    KEYED_COMPATIBILITY._result.clear()  # noqa: SLF001
+
+
+def test_actual_worker_root_refuses_poison_then_succeeds_after_owned_reset(
     fresh_startup_composition: None,
 ) -> None:
-    """The real worker root rejects the broad harness before the next fresh root.
-
-    Keeping this immediately before the positive root case makes the pair a
-    same-process regression: this node installs the ordinary broad harness (including
-    its forbidden EXTERNAL operation), drives the actual ``register_modules()`` root,
-    and leaves pytest's shared process to the positive node below.  That node's owned
-    fixture must replace the operation, destination, and keyed-adapter tables rather
-    than inherit this poison.
-    """
+    """One process rejects broad poison, resets all owned tables, then starts clean."""
     register_harness()
     assert SINK_SEND in REGISTRY
 
     with pytest.raises(ProductionExternalCompositionError, match=SINK_SEND):
         register_modules()
+
+    # No fixture teardown occurs between these phases. These are exactly the four
+    # tables in the three final-composition registries the startup fixture owns; reset
+    # each explicitly so the second call models a new worker process rather than
+    # inheriting harness poison.
+    _reset_owned_startup_composition()
+    assert REGISTRY.names() == frozenset()
+    assert DESTINATIONS.names() == frozenset()
+    assert KEYED_COMPATIBILITY._request == {}  # noqa: SLF001
+    assert KEYED_COMPATIBILITY._result == {}  # noqa: SLF001
+
+    register_modules()
 
 
 def test_register_modules_puts_a_modules_job_kind_and_consumer_on_the_worker(

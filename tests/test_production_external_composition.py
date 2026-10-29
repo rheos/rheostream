@@ -26,7 +26,8 @@ from rheo_core.modules.production import (
     PRODUCTION_EXTERNAL_ALLOWLIST,
     ProductionExternalCompositionError,
 )
-from rheo_core.operations.registry import REGISTRY
+from rheo_core.operations.registry import REGISTRY, RegisteredOperation
+from rheo_core.settings import current_profile
 
 
 class _CurrentInput(BaseModel):
@@ -198,6 +199,17 @@ def _mismatched_owner() -> None:
     )
 
 
+def _mismatched_operation_owner() -> None:
+    registered = REGISTRY.register(_declaration(), _handler, origin="current")
+    REGISTRY._operations[registered.name] = RegisteredOperation(  # noqa: SLF001
+        declaration=registered.declaration,
+        handler=registered.handler,
+        origin="other",
+        module_id="other",
+    )
+    DESTINATIONS.register(_destination(), origin="current")
+
+
 def _mismatched_mode() -> None:
     REGISTRY.register(_declaration(), _handler, origin="current")
     DESTINATIONS.register(_destination(mode=DestinationMode.PROVIDER), origin="current")
@@ -233,6 +245,7 @@ SCENARIOS: dict[str, tuple[Callable[[], None], bool]] = {
     "missing_destination": (_missing_destination, False),
     "mismatched_operation": (_mismatched_operation, False),
     "mismatched_owner": (_mismatched_owner, False),
+    "mismatched_operation_owner": (_mismatched_operation_owner, False),
     "mismatched_mode": (_mismatched_mode, False),
     "orphan_registration": (_orphan_registration, False),
     "unkeyed_external_inline_hold": (_unkeyed_external, False),
@@ -251,11 +264,6 @@ def test_production_external_allowlist_is_the_one_immutable_tuple() -> None:
         )
 
 
-class _ProductionSettings:
-    def get_str(self, key: str) -> str:
-        return "production" if key == "profile" else "https"
-
-
 def _prepare_core_root(
     monkeypatch: pytest.MonkeyPatch, scenario: Callable[[], None], tmp_path: Path
 ) -> None:
@@ -266,7 +274,6 @@ def _prepare_core_root(
         return ()
 
     monkeypatch.setattr(startup, "register_module_settings", lambda: None)
-    monkeypatch.setattr(startup, "resolve", lambda: _ProductionSettings())
     monkeypatch.setattr(
         startup,
         "resolve_data_root",
@@ -304,9 +311,14 @@ def _prepare_core_root(
 def test_production_external_composition_through_actual_root(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, root: str, scenario: str
 ) -> None:
-    """Both shipped roots accept only the exact tuple or a wholly absent Current."""
+    """Both shipped roots enforce the matrix under a resolved production profile."""
     builder, accepted = SCENARIOS[scenario]
     call: Callable[[], object]
+    monkeypatch.setenv("RHEO_PROFILE", "production")
+    monkeypatch.delenv("RHEO__profile", raising=False)
+    monkeypatch.delenv("RHEO__PROFILE", raising=False)
+    monkeypatch.setenv("RHEO_DATA_ROOT", str(tmp_path))
+    assert current_profile() == "production"
     monkeypatch.setattr(REGISTRY, "_operations", {})
     monkeypatch.setattr(DESTINATIONS, "_destinations", {})
 
@@ -330,10 +342,13 @@ def test_production_external_composition_through_actual_root(
         call = worker_main.register_modules
 
     if accepted:
-        call()
+        result = call()
+        if root == "core":
+            assert getattr(result, "profile", None) == "production"
     else:
         with pytest.raises(ProductionExternalCompositionError):
             call()
+    assert current_profile() == "production"
 
 
 def test_core_keyed_replay_compatibility_fails_before_startup_returns(
