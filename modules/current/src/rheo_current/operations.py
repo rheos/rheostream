@@ -4,7 +4,9 @@ from typing import Final
 
 from rheo_contracts import (
     AuditSpec,
+    ExternalSpec,
     Idempotency,
+    KeyedSpec,
     OperationDeclaration,
     Role,
     SafetyClass,
@@ -12,7 +14,7 @@ from rheo_contracts import (
 )
 from rheo_core.operations.registry import Handler
 
-from rheo_current import areas, items, projects
+from rheo_current import areas, external, items, links, projects
 from rheo_current import contracts as c
 
 MEMBERS = frozenset({Role.OWNER, Role.MEMBER})
@@ -71,6 +73,20 @@ SPECS = (
         "passed, flagged woke. Filter by area, project_ref, priority, due_before "
         "(inclusive date), overdue, woke, blocked, or query (full-text over title, "
         "body and comments). Page with offset and next_offset.",
+    ),
+    (
+        # The lifecycle read of one source's link, authorized as its own operation:
+        # it answers for a deleted item and needs no item-content permission. No
+        # tool; a module or job that holds a source ref calls it by name.
+        "item.link_state",
+        c.SourceItemLinkInput,
+        c.SourceItemLink,
+        links.state,
+        READ,
+        READERS,
+        None,
+        None,
+        "",
     ),
     (
         "item.update",
@@ -226,20 +242,49 @@ SPECS = (
         "Counts of work items by status and by area, plus woke, overdue and blocked.",
     ),
 )
-OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = tuple(
-    (
-        OperationDeclaration(
-            name="current." + name,
-            safety_class=safety,
-            roles=roles,
-            input_model=model,
-            output=output,
-            idempotency=Idempotency.NONE,
-            audit=None if safety is READ else AuditSpec(subject_field=subject),
-        ),
-        handler,
-    )
-    for name, model, output, handler, safety, roles, subject, _, _ in SPECS
+EXTERNAL_CREATE: Final = OperationDeclaration(
+    name=external.OPERATION,
+    safety_class=SafetyClass.EXTERNAL,
+    # The members a handoff request comes from. Core rebuilds that held person for
+    # the continuation and authorizes them again at effect time, so these are the
+    # roles it must name. No call has a direct effect: dispatch only stages the
+    # request for approval, the destination runs only in the approved continuation's
+    # sealed transaction view, and there is no tool.
+    roles=MEMBERS,
+    input_model=c.ExternalItemCreate,
+    output=c.ExternalItemCreated,
+    idempotency=Idempotency.KEYED,
+    keyed=KeyedSpec(
+        key_field="idempotency_key",
+        request_schema_version=1,
+        result_schema_version=1,
+    ),
+    external=ExternalSpec(
+        destination_field="destination_ref",
+        destination_ref=external.DESTINATION_REF,
+        result_ref_field="item_ref",
+    ),
+    audit=AuditSpec(subject_field=None),
+)
+OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = (
+    *(
+        (
+            OperationDeclaration(
+                name="current." + name,
+                safety_class=safety,
+                roles=roles,
+                input_model=model,
+                output=output,
+                idempotency=Idempotency.NONE,
+                audit=None if safety is READ else AuditSpec(subject_field=subject),
+            ),
+            handler,
+        )
+        for name, model, output, handler, safety, roles, subject, _, _ in SPECS
+    ),
+    # Core never calls this handler for an EXTERNAL operation; it invokes the
+    # registered destination. The handler refuses, so a misrouted call creates nothing.
+    (EXTERNAL_CREATE, external.refuse_inline),
 )
 TOOLS = (
     *(
