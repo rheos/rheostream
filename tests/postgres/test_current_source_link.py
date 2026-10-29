@@ -701,9 +701,13 @@ def test_restore_refuses_a_link_and_items_that_disagree(
             assert list(uow.connection.execute(select(t.item))) == [], reason
 
 
-def test_item_ref_is_pinned_by_the_database_too(links: Links) -> None:
-    """No lifecycle path rewrites ``item_ref``; the unique index keeps one source per
-    item even for a write that tried."""
+def test_two_links_cannot_share_one_item(links: Links) -> None:
+    """The unique index on ``item_ref`` refuses a write that would point a second
+    source's link at an item another link already holds.
+
+    It proves uniqueness only: the database does not stop ``item_ref`` changing to an
+    unused item. That ``item_ref`` stays fixed is pinned by the write-path tests,
+    because no lifecycle path rewrites it."""
     h = links
     one, two = h.handoff(), h.handoff(OTHER)
     with open_unit_of_work(h.owner) as uow:

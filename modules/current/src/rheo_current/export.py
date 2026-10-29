@@ -14,7 +14,7 @@ item or leave an item whose project history no reader could see.
 
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_args
 from uuid import UUID
 
 from rheo_contracts import RecordRef
@@ -22,7 +22,7 @@ from rheo_core.operations.refusals import OperationRefused
 from rheo_core.storage.backend import UnitOfWork
 from sqlalchemy import Date, DateTime, Integer, Text, Uuid, delete, select
 
-from rheo_current.contracts import HANDOFF_SOURCE_KIND
+from rheo_current.contracts import HANDOFF_SOURCE_KIND, ItemState, LinkProjectState
 from rheo_current.references import MODULE_ID, ref
 from rheo_current.storage import tables as t
 
@@ -40,8 +40,9 @@ TABLES = (
 )
 """Parents first, which is also the insert order. The link names its item and
 projects by reference, with no foreign key, so it can go last."""
-ITEM_STATES = frozenset({"available", "deleted"})
-PROJECT_STATES = frozenset({"never_assigned", "linked", "cleared", "deleted"})
+ITEM_STATES: frozenset[str] = frozenset(get_args(ItemState))
+PROJECT_STATES: frozenset[str] = frozenset(get_args(LinkProjectState))
+"""The link contract's own state values, so restore accepts exactly what it does."""
 
 
 def export_records(snapshot: "ExportSnapshot") -> Sequence[Mapping[str, object]]:
