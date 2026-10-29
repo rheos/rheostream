@@ -117,6 +117,9 @@ describe("queue", () => {
     );
     const html = renderToStaticMarkup(await screens.queue({ shell: api, query: {} }));
     expect(html).toMatch(/<h2 id="woke">Woke up<\/h2>[\s\S]*Call the landlord back[\s\S]*In motion[\s\S]*Renew the example.com domain/);
+    // Each row carries the project control.
+    expect(html).toContain('aria-label="Change project: Renew the example.com domain"');
+    expect(html).toContain('aria-label="Change project: Call the landlord back"');
     expect(html).toContain("Overdue");
     expect(html).toContain("Blocked");
     expect(html).toContain("Studio move");
@@ -272,6 +275,25 @@ describe("item detail", () => {
     expect(html).not.toContain("Garden (retired)");
     expect(api.submit).not.toHaveBeenCalled();
   });
+  it("changes the project from an icon beside it, outside the edit form", async () => {
+    const html = renderToStaticMarkup(
+      await screens.item({ shell: detailShell(detail()), query: { ref: ITEM } }),
+    );
+    // The edit form no longer carries the project.
+    expect(html).not.toContain('name="project_ref"');
+    expect(html).toContain('aria-label="Change project: Renew the example.com domain"');
+    expect(html).toContain('aria-haspopup="dialog"');
+    // The dialog's list renders only once it is opened.
+    expect(html).toContain("<dialog");
+    expect(html).not.toContain(">No project</button>");
+    const loose = renderToStaticMarkup(
+      await screens.item({
+        shell: detailShell(detail({ project_ref: null, project: null })),
+        query: { ref: ITEM },
+      }),
+    );
+    expect(loose).toContain('aria-label="Add to project: Renew the example.com domain"');
+  });
   it("offers only reopen for a done item", async () => {
     const html = renderToStaticMarkup(
       await screens.item({
@@ -341,21 +363,38 @@ describe("new item, projects and areas", () => {
     expect(html).toContain("2 open, 1 waiting, 4 done");
     expect(html).toContain("Create project");
   });
-  it("shows a project's items with their quick actions", async () => {
+  function projectShell(submit = true) {
     const api = shell((name) =>
       ({
         "current.project.get": ok((projectList as { result: { items: unknown[] } }).result.items[0]),
         "current.area.list": areaList,
+        "current.project.list": projectList,
         "current.item.list": ok({ items: [item()], next_offset: null }),
       })[name],
     );
+    if (!submit) delete (api as Partial<typeof api>).submit;
+    return api;
+  }
+  it("shows a project's items with their quick actions and project control", async () => {
+    const api = projectShell();
     const html = renderToStaticMarkup(
       await screens.project({ shell: api, query: { ref: PROJECT } }),
     );
     expect(html).toContain("Renew the example.com domain");
     expect(html).toContain(`/current/new?project=${encodeURIComponent(PROJECT)}`);
+    expect(html).toContain('aria-label="Change project: Renew the example.com domain"');
     const list = api.call.mock.calls.find(([name]) => name === "current.item.list");
     expect(list?.[1]).toMatchObject({ project_ref: PROJECT, status: "active" });
+    expect(api.submit).not.toHaveBeenCalled();
+  });
+  it("shows no project control, and reads no project list, without editing", async () => {
+    const api = projectShell(false);
+    const html = renderToStaticMarkup(
+      await screens.project({ shell: api, query: { ref: PROJECT } }),
+    );
+    expect(html).toContain("Renew the example.com domain");
+    expect(html).not.toContain("<dialog");
+    expect(api.call.mock.calls.map(([name]) => name)).not.toContain("current.project.list");
   });
   it("refuses area management to members without reading anything", async () => {
     const api = shell(standard(() => ok({ items: [] })), "member");

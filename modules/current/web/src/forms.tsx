@@ -1,9 +1,12 @@
 "use client";
 import {
+  useEffect,
   useId,
+  useRef,
   useState,
   useTransition,
   type FormEvent,
+  type ReactNode,
 } from "react";
 import type {
   OperationOutcome,
@@ -272,6 +275,237 @@ export function ActionForm({
   );
 }
 
+/** A project the picker offers. */
+export interface PickableProject {
+  ref: string;
+  title: string;
+  status: string;
+}
+
+/**
+ * The projects an item can move to: live ones, paused marked as such, and a
+ * done one only when the item already sits in it.
+ */
+export function pickableProjects<T extends PickableProject>(
+  projects: readonly T[],
+  held: string | null,
+): T[] {
+  return projects.filter((p) => p.status !== "done" || p.ref === held);
+}
+
+/** The update a pick makes, or null when it names the project already held. */
+export function projectInput(
+  itemRef: string,
+  revision: number,
+  held: string | null,
+  picked: string | null,
+): Record<string, unknown> | null {
+  if (picked === held) return null;
+  return picked === null
+    ? { ref: itemRef, revision, clear: ["project_ref"] }
+    : { ref: itemRef, revision, project_ref: picked };
+}
+
+function FolderIcon({ plus }: { plus: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+      {plus ? <path d="M12 10v6M9 13h6" /> : null}
+    </svg>
+  );
+}
+
+/**
+ * The project control for one item: an icon that opens a modal list of
+ * projects. Picking one saves and closes; "No project" takes the item out.
+ * A native modal dialog, like the Leads edit dialogs: focus moves in, Escape
+ * closes, the page behind is inert.
+ */
+export function ProjectPicker({
+  submit,
+  itemRef,
+  revision,
+  subject,
+  held,
+  projects,
+  reloadHref,
+}: {
+  submit: Submit;
+  itemRef: string;
+  revision: number;
+  /** The item's title, for the button's accessible name in a list. */
+  subject: string;
+  /** The project the item is in now. */
+  held: string | null;
+  projects: readonly PickableProject[];
+  reloadHref?: string;
+}) {
+  const dialog = useRef<HTMLDialogElement | null>(null);
+  const heading = useId();
+  const [result, setResult] = useState<OperationOutcome | null>(null);
+  // The list renders only while open: a queue has a picker on every row.
+  const [isOpen, setIsOpen] = useState(false);
+  const [pending, startTransition] = useTransition();
+  // The opening a save belongs to, so a slow save cannot touch a later one.
+  const opening = useRef(0);
+  const offered = pickableProjects(projects, held);
+  const verb = held ? "Change project" : "Add to project";
+  // Once the list is in, straight to it, on the project held if any, not Close.
+  // By class, not "li button": a selector matches against the whole page, and a
+  // row's dialog sits inside the row's <li>, so Close would match first.
+  useEffect(() => {
+    if (!isOpen) return;
+    const box = dialog.current;
+    (
+      box?.querySelector<HTMLElement>('[aria-current="true"]') ??
+      box?.querySelector<HTMLElement>(`.${styles.choice}`)
+    )?.focus();
+  }, [isOpen]);
+  function open() {
+    opening.current += 1;
+    setResult(null);
+    setIsOpen(true);
+    if (!dialog.current?.open) dialog.current?.showModal();
+  }
+  function pick(picked: string | null) {
+    const input = projectInput(itemRef, revision, held, picked);
+    if (input === null) {
+      dialog.current?.close();
+      return;
+    }
+    const mine = opening.current;
+    startTransition(async () => {
+      let outcome: OperationOutcome;
+      try {
+        outcome = await submit("current.item.update", input);
+      } catch {
+        outcome = { state: "unavailable" };
+      }
+      if (mine !== opening.current) return;
+      setResult(outcome);
+      if (outcome.state === "ok") dialog.current?.close();
+    });
+  }
+  return (
+    <>
+      <button
+        type="button"
+        className={styles.iconButton}
+        aria-label={`${verb}: ${subject}`}
+        title={verb}
+        aria-haspopup="dialog"
+        onClick={open}
+      >
+        <FolderIcon plus={!held} />
+      </button>
+      <dialog
+        ref={dialog}
+        className={styles.modal}
+        aria-labelledby={heading}
+        onClose={() => setIsOpen(false)}
+        // Escape while a save is in flight would hide its outcome.
+        onCancel={(e) => {
+          if (pending) e.preventDefault();
+        }}
+      >
+        <div className={styles.modalHead}>
+          <h2 id={heading} className={styles.modalTitle}>
+            {verb}
+          </h2>
+          <button
+            type="button"
+            className={styles.modalClose}
+            aria-label="Close"
+            disabled={pending}
+            onClick={() => dialog.current?.close()}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <p className={styles.modalSubject}>{subject}</p>
+        {!isOpen ? null : offered.length || held ? (
+          <ul className={styles.choices} aria-busy={pending}>
+            {offered.map((p) => (
+              <li key={p.ref}>
+                <button
+                  type="button"
+                  className={styles.choice}
+                  aria-current={p.ref === held ? "true" : undefined}
+                  disabled={pending}
+                  onClick={() => pick(p.ref)}
+                >
+                  <span>{p.title}</span>
+                  {p.ref === held ? (
+                    <span className={styles.choiceNote}>Now in</span>
+                  ) : p.status !== "active" ? (
+                    <span className={styles.choiceNote}>
+                      {p.status === "paused" ? "Paused" : "Done"}
+                    </span>
+                  ) : null}
+                </button>
+              </li>
+            ))}
+            {held ? (
+              <li>
+                <button
+                  type="button"
+                  className={`${styles.choice} ${styles.choiceNone}`}
+                  disabled={pending}
+                  onClick={() => pick(null)}
+                >
+                  No project
+                </button>
+              </li>
+            ) : null}
+          </ul>
+        ) : (
+          <p className={styles.meta}>No projects yet. Create one under Projects.</p>
+        )}
+        <div aria-live="polite" aria-atomic="true">
+          {pending ? <p className={styles.meta}>Saving…</p> : null}
+          {result?.state === "refused" ? (
+            <p className={styles.error} role="alert">
+              {result.code === "record_stale"
+                ? "This item changed since the page loaded. Reload, then pick again."
+                : refusalText(result.code, result.text)}
+              {result.code === "record_stale" && reloadHref ? (
+                <>
+                  {" "}
+                  <a href={reloadHref}>Reload</a>
+                </>
+              ) : null}
+            </p>
+          ) : null}
+          {result?.state === "unavailable" ? (
+            <p className={styles.error} role="alert">
+              We could not confirm the change. Reload to check the item.
+            </p>
+          ) : null}
+        </div>
+      </dialog>
+    </>
+  );
+}
+
 /** One button that submits a fixed input, for small reversible actions. */
 export function ActionButton({
   submit,
@@ -375,11 +609,14 @@ export function StatusActions({
   compact = false,
   reloadHref,
   zone,
+  extra,
 }: {
   submit: Submit;
   itemRef: string;
   revision: number;
   status: Status;
+  /** One more control at the end of the button row (the row's project icon). */
+  extra?: ReactNode;
   /** The item's title, for accessible names on repeated row controls. */
   subject: string;
   compact?: boolean;
@@ -465,6 +702,7 @@ export function StatusActions({
             </button>
           ),
         )}
+        {extra}
       </div>
       {pickerOpenedAt ? (
         <div
