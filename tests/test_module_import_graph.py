@@ -353,6 +353,8 @@ def test_core_contracts_and_apps_do_not_depend_on_current() -> None:
         "tests/postgres/test_current_module.py",
         # Current's approved external destination through core's real path.
         "tests/postgres/test_current_external.py",
+        # Current's lasting source link: lifecycle, read, event and restore.
+        "tests/postgres/test_current_source_link.py",
         # Planted foreign-storage imports exercise the existing module guard.
         "tests/postgres/test_module_storage_ownership.py",
         "tests/test_module_import_graph.py",

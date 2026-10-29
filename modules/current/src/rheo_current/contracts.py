@@ -28,7 +28,8 @@ SourceKind = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")]
 SourceRef = Annotated[str, Field(min_length=1, max_length=512)]
 HANDOFF_SOURCE_KIND: Final = "handoff"
 """Reserved for the approved external destination. Its source index converges on any
-item already holding a pair of this kind, so no ordinary create may make one."""
+item already holding a pair of this kind, so no ordinary create may make one.
+Provenance ``handoff`` stays open to ordinary create: it dedups nothing."""
 
 
 def _calendar_date(value: object) -> date:
@@ -254,6 +255,35 @@ class ExternalItemCreate(Strict):
 
 class ExternalItemCreated(Strict):
     item_ref: str
+
+
+ItemState = Literal["available", "deleted"]
+LinkProjectState = Literal["never_assigned", "linked", "cleared", "deleted"]
+
+
+class SourceItemLinkInput(Strict):
+    source_ref: SourceRef
+
+
+class SourceItemLink(Strict):
+    """One outside source's lasting link to its item and that item's project.
+
+    ``current.item.link_state`` returns it and ``current.source_item_link.changed``
+    carries it, field for field. ``revision`` is the link's own and is the one order
+    for every reader: it moves once per change and never on a no-op. ``item_ref`` is
+    fixed for the life of the link. ``project_ref`` is the live project, present
+    exactly when ``project_state`` is ``linked``; ``last_project_ref`` is the most
+    recent project the item left (by a move, a clear or that project's deletion).
+    """
+
+    source_ref: str
+    item_ref: str
+    project_ref: str | None
+    last_project_ref: str | None
+    item_state: ItemState
+    project_state: LinkProjectState
+    revision: int = Field(ge=1)
+    changed_at: AwareDatetime
 
 
 # --- projects --------------------------------------------------------------------

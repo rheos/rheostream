@@ -23,6 +23,7 @@ from sqlalchemy import (
 
 from rheo_current import common as h
 from rheo_current import contracts as c
+from rheo_current import links
 from rheo_current.references import ref
 from rheo_current.storage import tables as t
 
@@ -411,6 +412,16 @@ def edit(ctx: WorkspaceContext, uow: UnitOfWork, data: c.ItemUpdate) -> c.ItemDe
         changes["project_id" if name == "project_ref" else name] = None
     if changes:
         h.write(uow, t.item, record, **changes)
+    if "project_id" in changes:
+        # This is the one path that assigns, moves or clears a project, so an item
+        # with a source link keeps that link in step here, in the same transaction.
+        project = changes["project_id"]
+        links.item_project_set(
+            ctx,
+            uow,
+            ref("item", record["id"]),
+            None if project is None else ref("project", project),
+        )
     return detail(uow, data.ref.id)
 
 

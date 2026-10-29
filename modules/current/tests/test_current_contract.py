@@ -27,6 +27,8 @@ from rheo_current.contracts import (
     ItemInput,
     ItemStatusInput,
     ItemUpdate,
+    SourceItemLink,
+    SourceItemLinkInput,
 )
 from rheo_current.export import TABLES
 from rheo_current.operations import OPERATIONS, OWN_REFUSALS, REFUSALS, SPECS
@@ -81,12 +83,82 @@ def test_current_entry_point_and_independence() -> None:
     assert found.load() is MANIFEST
     assert MANIFEST.dependencies == ()
     assert MANIFEST.deletion_participants == ()
-    assert MANIFEST.export.format_version == 1
+    assert MANIFEST.export.format_version == 2
     assert {e.type for e in MANIFEST.events} == {
         "current.item.created",
         "current.item.completed",
         "current.item.reopened",
+        "current.source_item_link.changed",
     }
+
+
+def test_source_item_link_read_and_event_share_one_shape() -> None:
+    """The lifecycle read and the change event carry exactly the same fields: every
+    reference, both states, one revision and the change time. Nothing names a
+    module outside Current."""
+    fields = {
+        "source_ref",
+        "item_ref",
+        "project_ref",
+        "last_project_ref",
+        "item_state",
+        "project_state",
+        "revision",
+        "changed_at",
+    }
+    assert set(SourceItemLink.model_fields) == fields
+    [event] = [
+        e for e in MANIFEST.events if e.type == "current.source_item_link.changed"
+    ]
+    assert (event.schema_version, event.data) == (1, SourceItemLink)
+    [read] = [
+        (d, handler)
+        for d, handler in MANIFEST.operations
+        if d.name == "current.item.link_state"
+    ]
+    declaration = read[0]
+    assert declaration.safety_class is SafetyClass.READ
+    assert declaration.input_model is SourceItemLinkInput
+    assert declaration.output is SourceItemLink
+    # Every reader role, the service role included: a lifecycle read for whoever
+    # may run this one operation, separate from current.item.get.
+    assert declaration.roles == frozenset({Role.OWNER, Role.MEMBER, Role.SERVICE})
+    assert declaration.audit is None
+    assert declaration.name not in {t.operation for t in MANIFEST.tools}
+    assert set(SourceItemLinkInput.model_fields) == {"source_ref"}
+    for invalid in ({}, {"source_ref": ""}, {"source_ref": "x", "item_ref": ITEM}):
+        with pytest.raises(ValidationError):
+            SourceItemLinkInput.model_validate(invalid)
+    good = {
+        "source_ref": "synthetic:source",
+        "item_ref": ITEM,
+        "project_ref": None,
+        "last_project_ref": None,
+        "item_state": "available",
+        "project_state": "never_assigned",
+        "revision": 1,
+        "changed_at": "2030-01-01T00:00:00+00:00",
+    }
+    assert SourceItemLink.model_validate(good).revision == 1
+    for change in (
+        {"item_state": "gone"},
+        {"project_state": "lost"},
+        {"revision": 0},
+        {"changed_at": "2030-01-01T00:00:00"},
+    ):
+        with pytest.raises(ValidationError):
+            SourceItemLink.model_validate({**good, **change})
+
+
+def test_current_publishes_record_routes_for_items_and_projects() -> None:
+    web = MANIFEST.web
+    assert web is not None
+    assert [(r.record_type, r.route_id, r.ref_query) for r in web.record_routes] == [
+        ("item", "item", "ref"),
+        ("project", "project", "ref"),
+    ]
+    paths = {r.id: r.path for r in web.routes}
+    assert (paths["item"], paths["project"]) == ("/item", "/project")
 
 
 def test_current_web_surface_and_forms() -> None:
@@ -263,6 +335,16 @@ def test_source_item_link_migration_is_append_only_and_matches_metadata() -> Non
 def test_export_schema_matches_tables() -> None:
     shipped = json.loads((SOURCE / "export.schema.json").read_text(encoding="utf-8"))
     assert shipped == export_schema(TABLES)
+    # Format 2 adds the source link, last because nothing references it.
+    assert [table.name for table in TABLES] == [
+        "area",
+        "project",
+        "item",
+        "comment",
+        "signal",
+        "dependency",
+        "source_item_link",
+    ]
 
 
 def test_migration_seeds_the_default_areas() -> None:

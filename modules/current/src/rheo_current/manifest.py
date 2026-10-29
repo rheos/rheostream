@@ -10,6 +10,7 @@ from rheo_core.modules.manifest import (
     FormDeclaration,
     ModuleManifest,
     NavigationEntry,
+    RecordRoute,
     RecordType,
     StorageDeclaration,
     WebContribution,
@@ -17,10 +18,11 @@ from rheo_core.modules.manifest import (
     WebSurface,
 )
 
-from rheo_current.contracts import ItemEvent
+from rheo_current.contracts import ItemEvent, SourceItemLink
 from rheo_current.export import export_records, import_records
 from rheo_current.external import DESTINATION
 from rheo_current.lifecycle import authorize_delete, delete_owned
+from rheo_current.links import CHANGED, CHANGED_SCHEMA_VERSION
 from rheo_current.operations import OPERATIONS, TOOLS
 from rheo_current.references import MODULE_ID
 from rheo_current.resolvers import resolve_record
@@ -62,9 +64,16 @@ MANIFEST = ModuleManifest(
     operations=OPERATIONS,
     destinations=(DESTINATION,),
     tools=TOOLS,
-    events=tuple(
-        EventDeclaration(type=f"current.item.{verb}", schema_version=1, data=ItemEvent)
-        for verb in ("created", "completed", "reopened")
+    events=(
+        *(
+            EventDeclaration(
+                type=f"current.item.{verb}", schema_version=1, data=ItemEvent
+            )
+            for verb in ("created", "completed", "reopened")
+        ),
+        EventDeclaration(
+            type=CHANGED, schema_version=CHANGED_SCHEMA_VERSION, data=SourceItemLink
+        ),
     ),
     subscriptions=(),
     jobs=(),
@@ -72,7 +81,8 @@ MANIFEST = ModuleManifest(
     resolvers=(("item", resolve_record), ("project", resolve_record)),
     deletion_participants=(),
     export=ExportDeclaration(
-        format_version=1,
+        # 2 adds the source link table.
+        format_version=2,
         schema_path="export.schema.json",
         exporter=export_records,
         importer=import_records,
@@ -92,6 +102,12 @@ MANIFEST = ModuleManifest(
                 ("project", "/project", "project"),
                 ("areas", "/areas", "areas"),
             )
+        ),
+        # Where another module may link an item or project ref it holds: the shell
+        # builds the URL from these through its own routing, never a fixed path.
+        record_routes=tuple(
+            RecordRoute(record_type=name, route_id=name, ref_query="ref")
+            for name in ("item", "project")
         ),
         record_views=(),
         search_providers=(),

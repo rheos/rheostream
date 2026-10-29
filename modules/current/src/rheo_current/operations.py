@@ -14,7 +14,7 @@ from rheo_contracts import (
 )
 from rheo_core.operations.registry import Handler
 
-from rheo_current import areas, external, items, projects
+from rheo_current import areas, external, items, links, projects
 from rheo_current import contracts as c
 
 MEMBERS = frozenset({Role.OWNER, Role.MEMBER})
@@ -73,6 +73,20 @@ SPECS = (
         "passed, flagged woke. Filter by area, project_ref, priority, due_before "
         "(inclusive date), overdue, woke, blocked, or query (full-text over title, "
         "body and comments). Page with offset and next_offset.",
+    ),
+    (
+        # The lifecycle read of one source's link, authorized as its own operation:
+        # it answers for a deleted item and needs no item-content permission. No
+        # tool; a module or job that holds a source ref calls it by name.
+        "item.link_state",
+        c.SourceItemLinkInput,
+        c.SourceItemLink,
+        links.state,
+        READ,
+        READERS,
+        None,
+        None,
+        "",
     ),
     (
         "item.update",
