@@ -141,6 +141,22 @@ describe("recordHref", () => {
     expect(recordHref(shadowed, [PROVIDER], [PROVIDER.id], ITEM_REF)).toBeNull();
   });
 
+  it.each(["path", "subdomain"] as const)(
+    "rejects a named/module shell collision in %s mode",
+    (mode) => {
+      const base = fixture(mode);
+      const config: RoutingConfig = {
+        ...base,
+        surfaces: {
+          ...base.surfaces,
+          modules: { shell: { host: "archive", path: "/archive" } },
+        },
+      };
+      const provider = { ...PROVIDER, surface: "shell" };
+      expect(recordHref(config, [provider], [provider.id], ITEM_REF)).toBeNull();
+    },
+  );
+
   it("serves a root-path provider on its own subdomain host", () => {
     const config = withSurface(fixture("subdomain"), {
       host: "archive",

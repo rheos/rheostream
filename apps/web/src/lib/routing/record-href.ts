@@ -53,12 +53,8 @@ export function recordHref(
 
   try {
     const base = urlFor(config, provider.surface, route.path);
-    const surface = config.surfaces.modules[provider.surface];
-    const requestHost =
-      config.mode === "path"
-        ? config.base_host
-        : `${surface.host}.${config.base_host}`;
-    const resolved = resolveRequest(config, requestHost, new URL(base).pathname);
+    const candidate = new URL(base);
+    const resolved = resolveRequest(config, candidate.host, candidate.pathname);
     if (
       resolved.kind !== "module" ||
       resolved.surface !== provider.surface ||
