@@ -6,7 +6,7 @@ import type {
 } from "@rheo-stream/web-contract/screen";
 import { screens } from "./index";
 import { formInput } from "./action-form";
-import { pageOffset } from "./data";
+import { pageOffset, read } from "./data";
 import { assessmentStale, fieldLabel, fieldValue, phoneDisplay, value } from "./screens";
 
 const ok = (result: unknown): OperationOutcome => ({ state: "ok", result });
@@ -18,7 +18,11 @@ const opportunity = {
   pipeline_id: "pipeline",
   updated_at: "2026-01-01T00:00:00Z",
 };
-function shell(answers: Record<string, OperationOutcome>, role = "owner") {
+function shell(
+  answers: Record<string, OperationOutcome>,
+  role = "owner",
+  overrides: Partial<ShellApi> = {},
+) {
   const call = vi.fn(
     async (name: string) =>
       answers[name] ?? ({ state: "unavailable" } as OperationOutcome),
@@ -26,10 +30,11 @@ function shell(answers: Record<string, OperationOutcome>, role = "owner") {
   const submit = vi.fn(async () => ok({}));
   return {
     role,
-    call,
-    submit,
     href: (id: string, query?: Record<string, string | undefined>) =>
       `/leads/${id}?${new URLSearchParams(Object.entries(query ?? {}).filter((entry): entry is [string, string] => entry[1] !== undefined))}`,
+    ...overrides,
+    call,
+    submit,
   } satisfies ShellApi;
 }
 const catalogItems = [
@@ -549,6 +554,201 @@ describe("record fields as a person reads them", () => {
     expect(
       fieldValue("message", "<untrusted_participant_content>\nBuild a shop.\n</untrusted_participant_content>"),
     ).toBe("Build a shop.");
+  });
+});
+
+describe("Leads to Current detail integration", () => {
+  const qualification = {
+    id: "qualification-current",
+    objective: "Ready for delivery",
+    input_revision: 3,
+    evidence_digest: "digest-current",
+    fit: "low",
+    intent: "needs_information",
+    urgency: "medium",
+    evidence_completeness: "high",
+    uncertainty: "low",
+    explanation: "The evidence is sufficient for a human handoff decision.",
+  };
+  const currentHandoff = {
+    ref: "leads.handoff:019bf0b0-0000-7000-8000-000000000004",
+    opportunity_ref: opportunity.ref,
+    purpose: "internal_analysis",
+    state: "succeeded",
+    destination_ref: "current",
+    result_ref: "current.item:019bf0b0-0000-7000-8000-000000000005",
+    result_detail: null,
+    approval_id: "019bf0b0-0000-7000-8000-000000000007",
+    attempt_count: 1,
+    requested_at: "2026-10-25T12:00:00Z",
+    resolved_at: "2026-10-25T12:05:00Z",
+  };
+
+  it("qualified-current enables handoff regardless of qualification score", async () => {
+    const api = shell({
+      "leads.opportunity.get": ok({
+        ref: opportunity.ref,
+        revision: 3,
+        data: {
+          ...opportunity,
+          evidence_digest: "digest-current",
+          stage: { label: "Triage" },
+          qualification,
+        },
+      }),
+      "leads.qualification.list": ok({ items: [qualification] }),
+      "leads.handoff.list": ok({ items: [] }),
+    });
+    const html = renderToStaticMarkup(
+      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
+    );
+    expect(html).toContain("Hand off to Current");
+    expect(html).toContain("requires separate human approval");
+    expect(html).toContain("No Current handoffs yet.");
+  });
+
+  it("requires a current qualification and renders no disabled facsimile", async () => {
+    const api = shell({
+      "leads.opportunity.get": ok({
+        ref: opportunity.ref,
+        revision: 3,
+        data: { ...opportunity, stage: { label: "Triage" } },
+      }),
+      "leads.qualification.list": ok({ items: [] }),
+      "leads.handoff.list": ok({ items: [] }),
+    });
+    const html = renderToStaticMarkup(
+      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
+    );
+    expect(html).not.toContain("Hand off to Current");
+    expect(html).not.toContain("Qualification may be out of date");
+  });
+
+  it("qualified-stale warns conspicuously without disabling handoff", async () => {
+    const api = shell({
+      "leads.opportunity.get": ok({
+        ref: opportunity.ref,
+        revision: 4,
+        data: {
+          ...opportunity,
+          evidence_digest: "digest-new",
+          stage: { label: "Triage" },
+          qualification,
+        },
+      }),
+      "leads.qualification.list": ok({ items: [qualification] }),
+      "leads.handoff.list": ok({ items: [] }),
+    });
+    const html = renderToStaticMarkup(
+      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
+    );
+    expect(html).toContain("Qualification may be out of date");
+    expect(html).toContain(
+      "Evidence changed after this qualification. Review or reassess it before handing off if the changes matter.",
+    );
+    expect(html).toContain("Hand off to Current");
+    expect(html).not.toMatch(/<fieldset[^>]*disabled/);
+  });
+
+  it("adds the same entry to job-search detail and leaves history full-width after detail", async () => {
+    const job = {
+      ...opportunity,
+      preset_id: "019bf0b0-0000-7000-8000-000000000002",
+      revision: 3,
+      stage_label: "Triage",
+      stage_kind: "open",
+      assessment: { summary: "Qualified for review", mark: "B" },
+      fields: {},
+    };
+    const api = shell({
+      "leads.opportunity.get": ok({
+        ref: opportunity.ref,
+        revision: 3,
+        data: {
+          ...job,
+          evidence_digest: "digest-current",
+          stage: { label: "Triage" },
+          qualification,
+        },
+      }),
+      "leads.qualification.list": ok({ items: [qualification] }),
+      "leads.ui.queue": ok({ items: [job] }),
+      "leads.jobproposal.get": ok(null),
+      "leads.handoff.list": ok({ items: [] }),
+    });
+    const html = renderToStaticMarkup(
+      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
+    );
+    expect(html).toContain("Hand off to Current");
+    expect(html).toContain("Current handoffs");
+    expect(html.indexOf("Current handoffs")).toBeGreaterThan(
+      html.indexOf("Notes and follow-up"),
+    );
+  });
+
+  it("uses only the Leads aggregate for linked Current display", async () => {
+    const recordHref = vi.fn(() => null);
+    const api = shell(
+      {
+        "leads.opportunity.get": ok({
+          ref: opportunity.ref,
+          revision: 3,
+          data: {
+            ...opportunity,
+            evidence_digest: "digest-current",
+            stage: { label: "Triage" },
+            qualification,
+          },
+        }),
+        "leads.qualification.list": ok({ items: [qualification] }),
+        "leads.handoff.list": ok({ items: [currentHandoff] }),
+        "leads.handoff.current_view": ok({
+          history: currentHandoff,
+          item: {
+            state: "live",
+            ref: currentHandoff.result_ref,
+            content: {
+              title: "Prepare Northwind onboarding workshop",
+              body: "Confirm agenda and access requirements.",
+              status: "open",
+              priority: "normal",
+              area: "client_delivery",
+              due_on: null,
+            },
+          },
+          project: { state: "never_assigned", message: "raw" },
+        }),
+      },
+      "owner",
+      { recordHref },
+    );
+    const html = renderToStaticMarkup(
+      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
+    );
+    expect(api.call).toHaveBeenCalledWith("leads.handoff.current_view", {
+      handoff_ref: currentHandoff.ref,
+    });
+    expect(api.call.mock.calls.some(([name]) => name.startsWith("current."))).toBe(
+      false,
+    );
+    expect(html).toContain("Prepare Northwind onboarding workshop");
+    expect(html).toContain("Open in Current unavailable.");
+  });
+
+  it("keeps the closed read parser bounded to Leads-owned handoff operations", async () => {
+    const api = shell({
+      "leads.handoff.list": ok({ items: [] }),
+      "leads.handoff.current_view": ok({}),
+    });
+    await expect(
+      read(api, "leads.handoff.list", { ref: opportunity.ref }),
+    ).resolves.toEqual(ok({ items: [] }));
+    await expect(
+      read(api, "leads.handoff.current_view", { handoff_ref: currentHandoff.ref }),
+    ).resolves.toEqual(ok({}));
+    await expect(
+      read(api, "current.item.get" as never, { ref: currentHandoff.result_ref }),
+    ).resolves.toEqual({ state: "unavailable" });
   });
 });
 

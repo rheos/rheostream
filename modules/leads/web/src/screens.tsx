@@ -22,6 +22,10 @@ import { ProposalWorkflow } from "./proposal-workflow";
 import { ReviewQueue } from "./review-view";
 import { ScoringView } from "./scoring-view";
 import {
+  CurrentHandoffHistory,
+  QualificationHandoffEntry,
+} from "./handoff";
+import {
   data,
   date,
   zoneOf,
@@ -1097,6 +1101,35 @@ export async function detail({ shell, query }: ScreenProps) {
     result.state === "ok"
       ? await read(shell, "leads.qualification.list", { ref: envelope.ref })
       : null;
+  const handoffResult =
+    result.state === "ok"
+      ? await read(shell, "leads.handoff.list", {
+          ref: envelope.ref,
+          limit: 100,
+          offset: 0,
+        })
+      : null;
+  const handoffs = handoffResult?.state === "ok" ? items(handoffResult) : [];
+  const handoffViews = new Map<string, OperationOutcome>(
+    await Promise.all(
+      handoffs
+        .filter((handoff) => handoff.state === "succeeded")
+        .map(async (handoff) => [
+          str(handoff.ref),
+          await read(shell, "leads.handoff.current_view", {
+            handoff_ref: str(handoff.ref),
+          }),
+        ] as [string, OperationOutcome]),
+    ),
+  );
+  const mayRequestHandoff = Boolean(
+    record.qualification &&
+      handoffResult?.state === "ok" &&
+      handoffs.length === 0,
+  );
+  const qualificationIsStale = record.qualification
+    ? assessmentStale(qualification, record, envelope.revision)
+    : false;
   // A job-search opportunity gets the job header: its card projection, read once.
   const jobResult =
     result.state === "ok" && record.preset_id === JOBSEARCH_PRESET_ID
@@ -1157,17 +1190,32 @@ export async function detail({ shell, query }: ScreenProps) {
           paste={paste}
         />
       ) : null}
+      {result.state === "ok" &&
+      record.preset_id === JOBSEARCH_PRESET_ID &&
+      mayRequestHandoff ? (
+        <section className={styles.section}>
+          <h2>Qualification handoff</h2>
+          <QualificationHandoffEntry
+            shell={shell}
+            opportunityRef={str(envelope.ref)}
+            revision={envelope.revision}
+            title={str(record.title) || "Opportunity"}
+            stale={qualificationIsStale}
+          />
+        </section>
+      ) : null}
       {result.state !== "ok" ? (
         <Failure outcome={result} />
       ) : (
-        <RecordFor
-          job={record.preset_id === JOBSEARCH_PRESET_ID}
-          shell={shell}
-          record={record}
-          base={base}
-          paste={paste && !proposal ? paste : undefined}
-        >
-          <div className={styles.columns}>
+        <>
+          <RecordFor
+            job={record.preset_id === JOBSEARCH_PRESET_ID}
+            shell={shell}
+            record={record}
+            base={base}
+            paste={paste && !proposal ? paste : undefined}
+          >
+            <div className={styles.columns}>
             <div>
               <section className={styles.section}>
                 <h2>Source evidence</h2>
@@ -1433,10 +1481,19 @@ export async function detail({ shell, query }: ScreenProps) {
                     ) : null}
                     <p className={styles.meta}>
                       Assessed at revision {str(qualification.input_revision)} ·{" "}
-                      {assessmentStale(qualification, record, envelope.revision)
+                      {qualificationIsStale
                         ? "Evidence changed since · Reassess after changes"
                         : "Evidence unchanged"}
                     </p>
+                    {mayRequestHandoff ? (
+                      <QualificationHandoffEntry
+                        shell={shell}
+                        opportunityRef={str(envelope.ref)}
+                        revision={envelope.revision}
+                        title={str(record.title) || "Opportunity"}
+                        stale={qualificationIsStale}
+                      />
+                    ) : null}
                   </>
                 ) : (
                   <p>
@@ -1635,8 +1692,14 @@ export async function detail({ shell, query }: ScreenProps) {
                 </details>
               </section>
             </aside>
-          </div>
-        </RecordFor>
+            </div>
+          </RecordFor>
+          <CurrentHandoffHistory
+            shell={shell}
+            result={handoffResult}
+            views={handoffViews}
+          />
+        </>
       )}
     </Frame>
   );
