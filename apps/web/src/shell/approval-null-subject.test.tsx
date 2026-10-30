@@ -67,7 +67,8 @@ function preview(overrides: Partial<ApprovalPreview> = {}): ApprovalPreview {
       idempotency_key: "leads.handoff:4a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d#1",
     },
     payload_digest: DIGEST,
-    purpose: "internal_analysis",
+    // Real handoff approvals carry no purpose binding (see approval-unbound-purpose).
+    purpose: null,
     window_start: "2026-10-30T18:37:10Z",
     window_end: "2026-10-30T18:52:10Z",
     durable_state: "pending",

@@ -103,7 +103,7 @@ function hasCompleteSnapshot(
   destination_ref: string;
   payload: Record<string, components["schemas"]["JsonValue"]>;
   payload_digest: string;
-  purpose: string;
+  purpose: string | null;
   window_start: string;
   window_end: string;
   durable_state: string;
@@ -118,7 +118,10 @@ function hasCompleteSnapshot(
     preview.payload !== null &&
     typeof preview.payload_digest === "string" &&
     DIGEST.test(preview.payload_digest) &&
-    typeof preview.purpose === "string" &&
+    // The held caller's bound purpose. Core stores null for an unbound caller (a
+    // web session, an unbound token, an operator); `isApprovalPreview` already
+    // refused any other non-string value.
+    nullableString(preview.purpose) &&
     typeof preview.window_start === "string" &&
     typeof preview.window_end === "string" &&
     typeof preview.durable_state === "string"

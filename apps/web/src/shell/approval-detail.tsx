@@ -212,7 +212,11 @@ function Snapshot({
       <section aria-labelledby="approval-context">
         <h2 id="approval-context" className={styles.sectionHeading}>Request context</h2>
         <dl className={styles.facts}>
-          <Fact term="Purpose">{preview.purpose}</Fact>
+          <Fact term="Purpose">
+            {preview.purpose === null
+              ? "No purpose binding. The request was made without a bound purpose."
+              : preview.purpose}
+          </Fact>
           <Fact term="Original requester" mono>
             {preview.requester_kind}{preview.requester_id ? ` ${preview.requester_id}` : ""}
           </Fact>
