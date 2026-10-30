@@ -80,6 +80,18 @@ export function isRedactedPreview(preview: ApprovalPreview): boolean {
   return CONTENT_FIELDS.every((field) => preview[field] === null);
 }
 
+/**
+ * Core publishes `subject_ref: null` for an external action that creates a new
+ * record (a Current handoff) rather than acting on an existing one. Only that
+ * case may lack a subject; every other field stays required.
+ */
+function hasHeldSubject(preview: ApprovalPreview): boolean {
+  return (
+    typeof preview.subject_ref === "string" ||
+    (preview.subject_ref === null && typeof preview.external_action_id === "string")
+  );
+}
+
 function hasCompleteSnapshot(
   preview: ApprovalPreview,
 ): preview is ApprovalPreview & {
@@ -87,11 +99,11 @@ function hasCompleteSnapshot(
   operation_id: string;
   operation_name: string;
   requester_kind: string;
-  subject_ref: string;
+  subject_ref: string | null;
   destination_ref: string;
   payload: Record<string, components["schemas"]["JsonValue"]>;
   payload_digest: string;
-  purpose: string;
+  purpose: string | null;
   window_start: string;
   window_end: string;
   durable_state: string;
@@ -101,12 +113,15 @@ function hasCompleteSnapshot(
     typeof preview.operation_id === "string" &&
     typeof preview.operation_name === "string" &&
     typeof preview.requester_kind === "string" &&
-    typeof preview.subject_ref === "string" &&
+    hasHeldSubject(preview) &&
     typeof preview.destination_ref === "string" &&
     preview.payload !== null &&
     typeof preview.payload_digest === "string" &&
     DIGEST.test(preview.payload_digest) &&
-    typeof preview.purpose === "string" &&
+    // The held caller's bound purpose. Core stores null for an unbound caller (a
+    // web session, an unbound token, an operator); `isApprovalPreview` already
+    // refused any other non-string value.
+    nullableString(preview.purpose) &&
     typeof preview.window_start === "string" &&
     typeof preview.window_end === "string" &&
     typeof preview.durable_state === "string"

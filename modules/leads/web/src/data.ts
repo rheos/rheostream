@@ -101,6 +101,8 @@ const READS = [
   "leads.intake.receipt",
   "leads.connection.health",
   "leads.jobproposal.get",
+  "leads.handoff.list",
+  "leads.handoff.current_view",
 ] as const;
 export function read(
   shell: ShellApi,

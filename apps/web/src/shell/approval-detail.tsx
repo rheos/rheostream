@@ -212,11 +212,21 @@ function Snapshot({
       <section aria-labelledby="approval-context">
         <h2 id="approval-context" className={styles.sectionHeading}>Request context</h2>
         <dl className={styles.facts}>
-          <Fact term="Purpose">{preview.purpose}</Fact>
+          <Fact term="Purpose">
+            {preview.purpose === null
+              ? "No purpose binding. The request was made without a bound purpose."
+              : preview.purpose}
+          </Fact>
           <Fact term="Original requester" mono>
             {preview.requester_kind}{preview.requester_id ? ` ${preview.requester_id}` : ""}
           </Fact>
-          <Fact term="Held subject" mono>{preview.subject_ref}</Fact>
+          {preview.subject_ref === null ? (
+            <Fact term="Held subject">
+              No held subject. This request creates a new record rather than acting on an existing one.
+            </Fact>
+          ) : (
+            <Fact term="Held subject" mono>{preview.subject_ref}</Fact>
+          )}
           <Fact term="Approval state" mono>{preview.durable_state}</Fact>
           <Fact term={restored ? "Historical source window start" : "Approval window start"}>
             {moment(preview.window_start!, timeZone)}

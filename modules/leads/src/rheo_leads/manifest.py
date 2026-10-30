@@ -304,6 +304,8 @@ MANIFEST = ModuleManifest(
                 "followup.draft",
                 "followup.schedule",
                 "followup.resolve",
+                "handoff.request",
+                "handoff.restage",
                 "jobfeed.connect",
                 "jobfeed.reconnect",
                 "jobfeed.complete_pasted",

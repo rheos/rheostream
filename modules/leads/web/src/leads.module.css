@@ -291,6 +291,116 @@
   gap: var(--rs-space-3);
   margin-top: var(--rs-space-4);
 }
+.handoffEntry {
+  display: grid;
+  gap: var(--rs-space-4);
+  margin-top: var(--rs-space-5);
+  padding-top: var(--rs-space-5);
+  border-top: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+.handoffHelp {
+  max-width: 65ch;
+  margin: 0;
+  color: var(--rs-color-ink-dim);
+}
+.handoffWarning {
+  padding: var(--rs-space-4);
+  border: var(--rs-size-hairline) solid var(--rs-color-warning);
+  border-radius: var(--rs-radius-md);
+  background: var(--rs-color-surface-2);
+}
+.handoffWarning h3,
+.handoffWarning p {
+  margin: 0;
+}
+.handoffWarning h3 {
+  color: var(--rs-color-warning);
+  font-size: var(--rs-font-size-md);
+  margin-bottom: var(--rs-space-2);
+}
+.handoffHistory {
+  margin-top: var(--rs-space-6);
+}
+.handoffSummary {
+  display: grid;
+  gap: var(--rs-space-3);
+  padding-top: var(--rs-space-4);
+  border-top: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+.handoffSummary > * {
+  margin: 0;
+}
+.handoffList {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.handoffRow {
+  padding-block: var(--rs-space-5);
+  border-top: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+.handoffStatus h3,
+.handoffStatus p {
+  margin: 0;
+}
+.handoffStatus h3 {
+  font-size: var(--rs-font-size-md);
+  margin-bottom: var(--rs-space-2);
+}
+.handoffMeta,
+.handoffFacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-3) var(--rs-space-5);
+  margin-block: var(--rs-space-4);
+}
+.handoffMeta > div,
+.handoffFacts > div {
+  min-width: calc(var(--rs-space-6) * 4);
+}
+.handoffMeta dt,
+.handoffFacts dt {
+  color: var(--rs-color-ink-dim);
+  font-size: var(--rs-font-size-sm);
+}
+.handoffMeta dd,
+.handoffFacts dd {
+  margin: var(--rs-space-1) 0 0;
+  overflow-wrap: anywhere;
+}
+.linkedRecords {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--rs-space-5);
+  margin-block: var(--rs-space-5);
+}
+.linkedRecord {
+  min-width: 0;
+  padding-top: var(--rs-space-4);
+  border-top: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+.linkedRecord h3 {
+  margin: 0 0 var(--rs-space-3);
+  color: var(--rs-color-ink-dim);
+  font-size: var(--rs-font-size-sm);
+  font-weight: 600;
+}
+.linkedRecord h4 {
+  margin: 0 0 var(--rs-space-3);
+  font-size: var(--rs-font-size-md);
+}
+.projectRecord {
+  padding: var(--rs-space-4);
+  border-radius: var(--rs-radius-md);
+  background: var(--rs-color-surface-1);
+}
+.handoffRetry {
+  max-width: 65ch;
+  margin-top: var(--rs-space-4);
+}
+.handoffAction {
+  margin-top: var(--rs-space-4);
+}
 @media (max-width: 48rem) {
   /* One row that scrolls sideways, not three wrapped rows above the page. */
   .nav {
@@ -317,6 +427,24 @@
   .facts {
     grid-template-columns: 1fr;
     gap: var(--rs-space-2);
+  }
+  .linkedRecords,
+  .handoffMeta,
+  .handoffFacts {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .handoffEntry .fieldset button,
+  .handoffRetry .fieldset button,
+  .handoffAction .primary {
+    width: 100%;
+  }
+  .handoffHistory .pagination {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .handoffHistory .pagination .secondary {
+    width: 100%;
   }
   .facts dd {
     margin-bottom: var(--rs-space-3);
