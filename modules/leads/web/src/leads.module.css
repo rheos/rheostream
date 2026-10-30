@@ -439,6 +439,13 @@
   .handoffAction .primary {
     width: 100%;
   }
+  .handoffHistory .pagination {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .handoffHistory .pagination .secondary {
+    width: 100%;
+  }
   .facts dd {
     margin-bottom: var(--rs-space-3);
   }

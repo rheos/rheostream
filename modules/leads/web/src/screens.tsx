@@ -1088,6 +1088,11 @@ interface HandoffSnapshot {
   views: ReadonlyMap<string, OperationOutcome>;
 }
 
+function handoffPageOffset(value: string | undefined): number {
+  const parsed = Number(value ?? 0);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
 async function loadHandoffSnapshot(
   shell: ShellApi,
   opportunityRef: string | null,
@@ -1211,7 +1216,7 @@ export async function detail({ shell, query }: ScreenProps) {
       ? await read(shell, "leads.qualification.list", { ref: envelope.ref })
       : null;
   const opportunityRef = result.state === "ok" ? str(envelope.ref) : null;
-  const handoffOffset = pageOffset(query.handoff_offset);
+  const handoffOffset = handoffPageOffset(query.handoff_offset);
   const handoffHistoryResource = loadHandoffSnapshot(
     shell,
     opportunityRef,

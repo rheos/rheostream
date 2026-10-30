@@ -878,7 +878,7 @@ describe("Leads to Current detail integration", () => {
       "owner",
       { href, approvalHref: () => "/shell-owned/review" },
     );
-    api.call.mockImplementation(async (name: string, input?: unknown) => {
+    const answer = async (name: string, input?: unknown) => {
       if (name === "leads.handoff.list") {
         const request = input as { offset?: number; limit?: number };
         const offset = request.offset ?? 0;
@@ -905,8 +905,9 @@ describe("Leads to Current detail integration", () => {
           "leads.qualification.list": ok({ items: [qualification] }),
         }[name] ?? { state: "unavailable" }
       ) as OperationOutcome;
-    });
-    return { api, href };
+    };
+    api.call.mockImplementation(answer);
+    return { api, href, answer };
   }
 
   it("reuses the offset-zero page for newest summary and first 100 history rows", async () => {
@@ -959,10 +960,13 @@ describe("Leads to Current detail integration", () => {
     expect(html).toContain("Awaiting approval");
     expect(html.includes(">Previous<")).toBe(previous);
     expect(html).not.toContain(">Next<");
-    if (offset === "300") expect(html).toContain("No Current handoffs yet.");
+    if (offset === "300") {
+      expect(html).toContain("No Current handoffs on this page.");
+      expect(html).not.toContain("No Current handoffs yet.");
+    }
   });
 
-  it.each(["-1", "invalid", "1.5"])(
+  it.each(["-1", "invalid", "1.5", "9007199254740992"])(
     "treats invalid handoff offset %s as offset zero",
     async (offset) => {
       const { api } = pagedDetailShell();
@@ -974,6 +978,41 @@ describe("Leads to Current detail integration", () => {
       expect(html).not.toContain(">Previous<");
     },
   );
+
+  it("accepts a large safe selected offset while keeping the newest summary", async () => {
+    const { api, href, answer } = pagedDetailShell();
+    api.call.mockImplementation(async (name: string, input?: unknown) => {
+      if (name === "leads.handoff.list") {
+        const request = input as { offset?: number; limit?: number };
+        if (request.offset === 100001)
+          return ok({ items: [], next_offset: 100101 });
+      }
+      return answer(name, input);
+    });
+    const html = await renderDetail(api, { handoff_offset: "100001" });
+    const listCalls = api.call.mock.calls.filter(
+      ([name]) => name === "leads.handoff.list",
+    );
+    expect(listCalls).toEqual(
+      expect.arrayContaining([
+        ["leads.handoff.list", { ref: opportunity.ref, limit: 1, offset: 0 }],
+        [
+          "leads.handoff.list",
+          { ref: opportunity.ref, limit: 100, offset: 100001 },
+        ],
+      ]),
+    );
+    expect(html).toContain("Awaiting approval");
+    expect(html).toContain("No Current handoffs on this page.");
+    expect(href).toHaveBeenCalledWith("detail", {
+      ref: opportunity.ref,
+      handoff_offset: "99901",
+    });
+    expect(href).toHaveBeenCalledWith("detail", {
+      ref: opportunity.ref,
+      handoff_offset: "100101",
+    });
+  });
 
   it("uses only the Leads aggregate for linked Current display", async () => {
     const recordHref = vi.fn(() => null);

@@ -413,10 +413,98 @@ describe("handoff history states and actions", () => {
     expect(unavailable).not.toContain("Current details are still updating.");
   });
 
+  it("distinguishes an empty older page from no handoff history", () => {
+    const first = renderToStaticMarkup(
+      <CurrentHandoffHistory
+        shell={shell()}
+        result={ok({ items: [], next_offset: null })}
+        views={new Map()}
+        opportunityRef={history.opportunity_ref}
+        offset={0}
+      />,
+    );
+    const older = renderToStaticMarkup(
+      <CurrentHandoffHistory
+        shell={shell()}
+        result={ok({ items: [], next_offset: null })}
+        views={new Map()}
+        opportunityRef={history.opportunity_ref}
+        offset={100}
+      />,
+    );
+    expect(first).toContain("No Current handoffs yet.");
+    expect(first).not.toContain("on this page");
+    expect(older).toContain("No Current handoffs on this page.");
+    expect(older).not.toContain("No Current handoffs yet.");
+  });
+
+  it.each([
+    ["same", 100],
+    ["backward", 99],
+    ["zero", 0],
+    ["negative", -1],
+    ["fractional", 100.5],
+    ["unsafe", Number.MAX_SAFE_INTEGER + 1],
+  ])("rejects a %s next_offset that is not a safe forward page", (_fixture, nextOffset) => {
+    const href = vi.fn(() => "/generated");
+    const html = renderToStaticMarkup(
+      <CurrentHandoffHistory
+        shell={shell({ href })}
+        result={ok({ items: [], next_offset: nextOffset })}
+        views={new Map()}
+        opportunityRef={history.opportunity_ref}
+        offset={100}
+      />,
+    );
+    expect(html).toContain(">Previous<");
+    expect(html).not.toContain(">Next<");
+    expect(href).toHaveBeenCalledTimes(1);
+    expect(href).toHaveBeenCalledWith("detail", {
+      ref: history.opportunity_ref,
+      handoff_offset: "0",
+    });
+  });
+
+  it("uses shell routes for safe large forward and lower paging offsets", () => {
+    const href = vi.fn(
+      (route: string, query?: Record<string, string | undefined>) =>
+        `/${route}?${new URLSearchParams(
+          Object.entries(query ?? {}).filter(
+            (entry): entry is [string, string] => entry[1] !== undefined,
+          ),
+        )}`,
+    );
+    const html = renderToStaticMarkup(
+      <CurrentHandoffHistory
+        shell={shell({ href })}
+        result={ok({ items: [], next_offset: 100100 })}
+        views={new Map()}
+        opportunityRef={history.opportunity_ref}
+        offset={100000}
+      />,
+    );
+    expect(html).toContain(">Previous<");
+    expect(html).toContain(">Next<");
+    expect(href).toHaveBeenCalledWith("detail", {
+      ref: history.opportunity_ref,
+      handoff_offset: "99900",
+    });
+    expect(href).toHaveBeenCalledWith("detail", {
+      ref: history.opportunity_ref,
+      handoff_offset: "100100",
+    });
+  });
+
   it("scopes full-width mobile controls to handoff actions", () => {
     const css = readFileSync(join(__dirname, "leads.module.css"), "utf8");
     expect(css).toMatch(
       /@media \(max-width: 48rem\)[\s\S]*\.handoffEntry \.fieldset button[\s\S]*\.handoffRetry \.fieldset button[\s\S]*\.handoffAction \.primary[\s\S]*width:\s*100%/,
+    );
+    expect(css).toMatch(
+      /@media \(max-width: 48rem\)[\s\S]*\.handoffHistory \.pagination[\s\S]*flex-direction:\s*column[\s\S]*align-items:\s*stretch[\s\S]*\.handoffHistory \.pagination \.secondary[\s\S]*width:\s*100%/,
+    );
+    expect(css).toMatch(
+      /\.secondary\s*\{[\s\S]*min-height:\s*var\(--rs-size-control\)/,
     );
   });
 });

@@ -397,6 +397,8 @@ export function CurrentHandoffHistory({
   opportunityRef?: string;
   offset?: number;
 }) {
+  const currentOffset =
+    Number.isSafeInteger(offset) && offset >= 0 ? offset : 0;
   let content: ReactNode;
   if (result === null) {
     content = <p role="status">Loading Current handoffs…</p>;
@@ -419,15 +421,19 @@ export function CurrentHandoffHistory({
         ))}
       </ol>
     ) : (
-      <p>No Current handoffs yet.</p>
+      <p>
+        {currentOffset === 0
+          ? "No Current handoffs yet."
+          : "No Current handoffs on this page."}
+      </p>
     );
   }
   const page = result?.state === "ok" ? row(result.result) : {};
   const suppliedNext = page.next_offset;
   const nextOffset =
     typeof suppliedNext === "number" &&
-    Number.isInteger(suppliedNext) &&
-    suppliedNext >= 0
+    Number.isSafeInteger(suppliedNext) &&
+    suppliedNext > currentOffset
       ? suppliedNext
       : null;
   const pageHref = (pageOffset: number) =>
@@ -437,7 +443,8 @@ export function CurrentHandoffHistory({
           handoff_offset: String(pageOffset),
         })
       : null;
-  const previousHref = offset > 0 ? pageHref(Math.max(0, offset - 100)) : null;
+  const previousHref =
+    currentOffset > 0 ? pageHref(Math.max(0, currentOffset - 100)) : null;
   const nextHref = nextOffset === null ? null : pageHref(nextOffset);
   return (
     <section className={`${styles.section} ${styles.handoffHistory}`}>
