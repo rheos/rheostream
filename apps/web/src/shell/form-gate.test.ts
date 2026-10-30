@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ComposedModule } from "@rheo-stream/web-contract/screen";
+import { MODULES } from "../modules.generated";
 import { formAllowed } from "./form-gate";
 const contribution: ComposedModule = {
   id: "probe",
@@ -51,4 +52,26 @@ describe("form grants", () => {
         { probe: {} },
       ),
     ).toBe(false));
+});
+
+describe("generated Leads handoff form grants", () => {
+  const routedSurfaces = { leads: {} };
+
+  it.each(["leads.handoff.request", "leads.handoff.restage"])(
+    "allows %s through the generated provider contract",
+    (operation) =>
+      expect(
+        formAllowed(MODULES, "leads", operation, ["leads"], routedSurfaces),
+      ).toBe(true),
+  );
+
+  it.each([
+    "leads.handoff.get",
+    "leads.handoff.list",
+    "leads.handoff.current_view",
+  ])("keeps read operation %s out of the form gate", (operation) =>
+    expect(
+      formAllowed(MODULES, "leads", operation, ["leads"], routedSurfaces),
+    ).toBe(false),
+  );
 });
