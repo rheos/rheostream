@@ -13,28 +13,17 @@ export function QualificationHandoffEntry({
   opportunityRef,
   revision,
   title,
-  stale,
 }: {
   shell: ShellApi;
   opportunityRef: string;
   revision: unknown;
   title: string;
-  stale: boolean;
 }) {
   if (!shell.submit) {
     return <p className={styles.meta}>Handoff is unavailable in this view.</p>;
   }
   return (
     <div className={styles.handoffEntry}>
-      {stale ? (
-        <div className={styles.handoffWarning}>
-          <h3>Qualification may be out of date</h3>
-          <p>
-            Evidence changed after this qualification. Review or reassess it
-            before handing off if the changes matter.
-          </p>
-        </div>
-      ) : null}
       <p className={styles.handoffHelp}>
         This requests one standalone Current item and requires separate human
         approval. It creates no project and does not change this opportunity&apos;s
@@ -46,6 +35,18 @@ export function QualificationHandoffEntry({
         revision={revision}
         title={title}
       />
+    </div>
+  );
+}
+
+export function QualificationStaleWarning() {
+  return (
+    <div className={styles.handoffWarning}>
+      <h3>Qualification may be out of date</h3>
+      <p>
+        Evidence changed after this qualification. Review or reassess it before
+        handing off if the changes matter.
+      </p>
     </div>
   );
 }
@@ -289,20 +290,14 @@ function CurrentProjection({
   view,
 }: {
   shell: ShellApi;
-  view: OperationOutcome | undefined;
+  view: OperationOutcome;
 }) {
-  if (view === undefined)
-    return (
-      <p className={styles.meta} role="status">
-        Current details are still updating.
-      </p>
-    );
   if (view.state === "refused")
-    return <p className={styles.meta}>Current handoff details unavailable.</p>;
+    return <p className={styles.meta}>Current details unavailable.</p>;
   if (view.state === "unavailable")
     return (
       <p className={styles.meta}>
-        Current handoff details are temporarily unavailable.
+        Current details are temporarily unavailable.
       </p>
     );
   const current = row(view.result);
@@ -339,22 +334,18 @@ function CurrentHandoffRow({
           <dt>Requested</dt>
           <dd>{moment(record.requested_at, "Not yet", shell.timeZone)}</dd>
         </div>
-        <div>
-          <dt>Last updated</dt>
-          <dd>
-            {moment(
-              record.resolved_at ?? record.requested_at,
-              "Not yet",
-              shell.timeZone,
-            )}
-          </dd>
-        </div>
+        {record.resolved_at ? (
+          <div>
+            <dt>Resolved</dt>
+            <dd>{moment(record.resolved_at, "Not yet", shell.timeZone)}</dd>
+          </div>
+        ) : null}
         <div>
           <dt>Purpose</dt>
           <dd>{label(record.purpose) || "Handoff to Current"}</dd>
         </div>
       </dl>
-      {record.state === "succeeded" ? (
+      {record.state === "succeeded" && view ? (
         <CurrentProjection shell={shell} view={view} />
       ) : null}
       {reviewHref ? (
@@ -397,10 +388,14 @@ export function CurrentHandoffHistory({
   shell,
   result,
   views,
+  opportunityRef,
+  offset = 0,
 }: {
   shell: ShellApi;
   result: OperationOutcome | null;
   views: ReadonlyMap<string, OperationOutcome>;
+  opportunityRef?: string;
+  offset?: number;
 }) {
   let content: ReactNode;
   if (result === null) {
@@ -427,10 +422,39 @@ export function CurrentHandoffHistory({
       <p>No Current handoffs yet.</p>
     );
   }
+  const page = result?.state === "ok" ? row(result.result) : {};
+  const suppliedNext = page.next_offset;
+  const nextOffset =
+    typeof suppliedNext === "number" &&
+    Number.isInteger(suppliedNext) &&
+    suppliedNext >= 0
+      ? suppliedNext
+      : null;
+  const pageHref = (pageOffset: number) =>
+    opportunityRef
+      ? shell.href("detail", {
+          ref: opportunityRef,
+          handoff_offset: String(pageOffset),
+        })
+      : null;
+  const previousHref = offset > 0 ? pageHref(Math.max(0, offset - 100)) : null;
+  const nextHref = nextOffset === null ? null : pageHref(nextOffset);
   return (
     <section className={`${styles.section} ${styles.handoffHistory}`}>
       <h2>Current handoffs</h2>
       {content}
+      {previousHref || nextHref ? (
+        <nav className={styles.pagination} aria-label="Current handoff history pages">
+          {previousHref ? (
+            <a className={styles.secondary} href={previousHref}>Previous</a>
+          ) : (
+            <span />
+          )}
+          {nextHref ? (
+            <a className={styles.secondary} href={nextHref}>Next</a>
+          ) : null}
+        </nav>
+      ) : null}
     </section>
   );
 }

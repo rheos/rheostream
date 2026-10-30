@@ -63,9 +63,15 @@ function renderSettled(node: ReactNode): Promise<string> {
   });
 }
 
-async function renderDetail(api: ShellApi): Promise<string> {
+async function renderDetail(
+  api: ShellApi,
+  extraQuery: Record<string, string> = {},
+): Promise<string> {
   return renderSettled(
-    await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
+    await screens.detail({
+      shell: api,
+      query: { ref: opportunity.ref, ...extraQuery },
+    }),
   );
 }
 const catalogItems = [
@@ -675,6 +681,36 @@ describe("Leads to Current detail integration", () => {
     expect(html).not.toMatch(/<fieldset[^>]*disabled/);
   });
 
+  it("keeps the generic stale warning immediately before a staged durable summary", async () => {
+    const api = shell(
+      {
+        "leads.opportunity.get": ok({
+          ref: opportunity.ref,
+          revision: 4,
+          data: {
+            ...opportunity,
+            evidence_digest: "digest-new",
+            stage: { label: "Triage" },
+            qualification,
+          },
+        }),
+        "leads.qualification.list": ok({ items: [qualification] }),
+        "leads.handoff.list": ok({ items: [pendingHandoff] }),
+      },
+      "owner",
+      { approvalHref: () => "/shell-owned/review" },
+    );
+    const html = await renderDetail(api);
+    const warning = html.indexOf("Qualification may be out of date");
+    const summary = html.indexOf('aria-label="Current handoff status"');
+    expect(warning).toBeGreaterThanOrEqual(0);
+    expect(summary).toBeGreaterThan(warning);
+    expect(html.slice(warning, summary)).toContain(
+      "Evidence changed after this qualification. Review or reassess it before handing off if the changes matter.",
+    );
+    expect(html).not.toContain("Hand off to Current");
+  });
+
   it("places job handoff after the verdict and before a loaded proposal workflow", async () => {
     const job = {
       ...opportunity,
@@ -746,7 +782,7 @@ describe("Leads to Current detail integration", () => {
     );
   });
 
-  it("keeps a durable job handoff summary beside the verdict before a loaded proposal", async () => {
+  it("keeps the stale warning and durable job summary beside the verdict before a loaded proposal", async () => {
     const job = {
       ...opportunity,
       preset_id: "019bf0b0-0000-7000-8000-000000000002",
@@ -779,10 +815,10 @@ describe("Leads to Current detail integration", () => {
       {
         "leads.opportunity.get": ok({
           ref: opportunity.ref,
-          revision: 3,
+          revision: 4,
           data: {
             ...job,
-            evidence_digest: "digest-current",
+            evidence_digest: "digest-new",
             stage: { label: "Triage" },
             qualification,
           },
@@ -797,15 +833,147 @@ describe("Leads to Current detail integration", () => {
     );
     const html = await renderDetail(api);
     const verdict = html.indexOf("Qualified for review");
+    const warning = html.indexOf("Qualification may be out of date");
     const summary = html.indexOf('aria-label="Current handoff status"');
     const workflow = html.indexOf('aria-label="Proposal workflow"');
-    expect(summary).toBeGreaterThan(verdict);
+    expect(warning).toBeGreaterThan(verdict);
+    expect(summary).toBeGreaterThan(warning);
     expect(workflow).toBeGreaterThan(summary);
     expect(html).toContain("Awaiting approval");
     expect(html).toContain('href="/shell-owned/review"');
     expect(api.call.mock.calls.filter(([name]) => name === "leads.handoff.list"))
       .toHaveLength(1);
   });
+
+  const pagedHandoffs = Array.from({ length: 205 }, (_, index) => ({
+    ...pendingHandoff,
+    ref: `leads.handoff:019bf0b0-0000-7000-8000-${index.toString(16).padStart(12, "0")}`,
+    action_phase: index === 0 ? "awaiting_approval" : index < 100 ? "approved_queued" : "executing",
+    requested_at: new Date(Date.UTC(2026, 9, 30, 12, 0, 0) - index * 60_000).toISOString(),
+  }));
+
+  function pagedDetailShell() {
+    const href = vi.fn(
+      (id: string, query?: Record<string, string | undefined>) =>
+        `/leads/${id}?${new URLSearchParams(
+          Object.entries(query ?? {}).filter(
+            (entry): entry is [string, string] => entry[1] !== undefined,
+          ),
+        )}`,
+    );
+    const api = shell(
+      {
+        "leads.opportunity.get": ok({
+          ref: opportunity.ref,
+          revision: 3,
+          data: {
+            ...opportunity,
+            evidence_digest: "digest-current",
+            stage: { label: "Triage" },
+            qualification,
+          },
+        }),
+        "leads.qualification.list": ok({ items: [qualification] }),
+      },
+      "owner",
+      { href, approvalHref: () => "/shell-owned/review" },
+    );
+    api.call.mockImplementation(async (name: string, input?: unknown) => {
+      if (name === "leads.handoff.list") {
+        const request = input as { offset?: number; limit?: number };
+        const offset = request.offset ?? 0;
+        const limit = request.limit ?? 100;
+        const page = pagedHandoffs.slice(offset, offset + limit);
+        return ok({
+          items: page,
+          next_offset:
+            offset + limit < pagedHandoffs.length ? offset + limit : null,
+        });
+      }
+      return (
+        {
+          "leads.opportunity.get": ok({
+            ref: opportunity.ref,
+            revision: 3,
+            data: {
+              ...opportunity,
+              evidence_digest: "digest-current",
+              stage: { label: "Triage" },
+              qualification,
+            },
+          }),
+          "leads.qualification.list": ok({ items: [qualification] }),
+        }[name] ?? { state: "unavailable" }
+      ) as OperationOutcome;
+    });
+    return { api, href };
+  }
+
+  it("reuses the offset-zero page for newest summary and first 100 history rows", async () => {
+    const { api } = pagedDetailShell();
+    const html = await renderDetail(api);
+    const listCalls = api.call.mock.calls.filter(
+      ([name]) => name === "leads.handoff.list",
+    );
+    expect(listCalls).toEqual([
+      ["leads.handoff.list", { ref: opportunity.ref, limit: 100, offset: 0 }],
+    ]);
+    expect(html).toContain("Awaiting approval");
+    expect(html).toContain("Next");
+    expect(html).not.toContain(">Previous<");
+  });
+
+  it("pages the middle while keeping the newest offset-zero summary", async () => {
+    const { api, href } = pagedDetailShell();
+    const html = await renderDetail(api, { handoff_offset: "100" });
+    const listCalls = api.call.mock.calls.filter(
+      ([name]) => name === "leads.handoff.list",
+    );
+    expect(listCalls).toHaveLength(2);
+    expect(listCalls).toEqual(
+      expect.arrayContaining([
+        ["leads.handoff.list", { ref: opportunity.ref, limit: 1, offset: 0 }],
+        ["leads.handoff.list", { ref: opportunity.ref, limit: 100, offset: 100 }],
+      ]),
+    );
+    expect(html).toContain("Awaiting approval");
+    expect(html).toContain("Handoff in progress");
+    expect(href).toHaveBeenCalledWith("detail", {
+      ref: opportunity.ref,
+      handoff_offset: "0",
+    });
+    expect(href).toHaveBeenCalledWith("detail", {
+      ref: opportunity.ref,
+      handoff_offset: "200",
+    });
+    expect(html).toContain("Previous");
+    expect(html).toContain("Next");
+  });
+
+  it.each([
+    ["final", "200", true],
+    ["empty", "300", true],
+  ])("renders the %s older page without fabricating Next", async (_fixture, offset, previous) => {
+    const { api } = pagedDetailShell();
+    const html = await renderDetail(api, { handoff_offset: offset });
+    expect(html).toContain("Awaiting approval");
+    expect(html.includes(">Previous<")).toBe(previous);
+    expect(html).not.toContain(">Next<");
+    if (offset === "300") expect(html).toContain("No Current handoffs yet.");
+  });
+
+  it.each(["-1", "invalid", "1.5"])(
+    "treats invalid handoff offset %s as offset zero",
+    async (offset) => {
+      const { api } = pagedDetailShell();
+      const html = await renderDetail(api, { handoff_offset: offset });
+      expect(api.call.mock.calls).toContainEqual([
+        "leads.handoff.list",
+        { ref: opportunity.ref, limit: 100, offset: 0 },
+      ]);
+      expect(html).not.toContain(">Previous<");
+    },
+  );
 
   it("uses only the Leads aggregate for linked Current display", async () => {
     const recordHref = vi.fn(() => null);
@@ -857,6 +1025,100 @@ describe("Leads to Current detail integration", () => {
     expect(html).toContain("Open in Current unavailable.");
     expect(api.call.mock.calls.filter(([name]) => name === "leads.handoff.list"))
       .toHaveLength(1);
+  });
+
+  it("keeps a live project beside a denied item through the real detail read seam", async () => {
+    const projectRef =
+      "current.project:019bf0b0-0000-7000-8000-000000000006";
+    const recordHref = vi.fn((ref: string) => `/configured/${ref}`);
+    const api = shell(
+      {
+        "leads.opportunity.get": ok({
+          ref: opportunity.ref,
+          revision: 3,
+          data: {
+            ...opportunity,
+            evidence_digest: "digest-current",
+            stage: { label: "Triage" },
+            qualification,
+          },
+        }),
+        "leads.qualification.list": ok({ items: [qualification] }),
+        "leads.handoff.list": ok({ items: [currentHandoff] }),
+        "leads.handoff.current_view": ok({
+          history: currentHandoff,
+          item: {
+            state: "denied",
+            ref: currentHandoff.result_ref,
+            title: "must not leak",
+          },
+          project: {
+            state: "live",
+            ref: projectRef,
+            content: {
+              title: "Northwind launch",
+              description: "Lasting delivery context.",
+              status: "active",
+              area: "client_delivery",
+              due_on: null,
+            },
+          },
+        }),
+      },
+      "owner",
+      { recordHref },
+    );
+    const html = await renderDetail(api);
+    expect(html).toContain("You do not have access to this Current item.");
+    expect(html).toContain("Northwind launch");
+    expect(html).not.toContain("must not leak");
+    expect(html).not.toContain(currentHandoff.result_ref);
+    expect(recordHref).toHaveBeenCalledTimes(1);
+    expect(recordHref).toHaveBeenCalledWith(projectRef);
+  });
+
+  it.each([
+    [
+      "refused",
+      {
+        state: "refused",
+        code: "role_not_permitted",
+        text: `raw ${currentHandoff.result_ref} must not leak`,
+      } as OperationOutcome,
+      "Current details unavailable.",
+    ],
+    [
+      "unavailable",
+      { state: "unavailable" } as OperationOutcome,
+      "Current details are temporarily unavailable.",
+    ],
+  ])("renders the real %s current_view outcome fail-closed", async (_state, view, copy) => {
+    const recordHref = vi.fn(() => "/must-not-be-used");
+    const api = shell(
+      {
+        "leads.opportunity.get": ok({
+          ref: opportunity.ref,
+          revision: 3,
+          data: {
+            ...opportunity,
+            evidence_digest: "digest-current",
+            stage: { label: "Triage" },
+            qualification,
+          },
+        }),
+        "leads.qualification.list": ok({ items: [qualification] }),
+        "leads.handoff.list": ok({ items: [currentHandoff] }),
+        "leads.handoff.current_view": view,
+      },
+      "owner",
+      { recordHref },
+    );
+    const html = await renderDetail(api);
+    expect(html).toContain(copy);
+    expect(html).not.toContain("must not leak");
+    expect(html).not.toContain(currentHandoff.result_ref);
+    expect(html).not.toContain("Current details are still updating.");
+    expect(recordHref).not.toHaveBeenCalled();
   });
 
   it("renders the real detail loading fallback before handoff history settles", async () => {

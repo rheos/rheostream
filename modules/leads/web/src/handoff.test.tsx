@@ -302,37 +302,54 @@ describe("handoff history states and actions", () => {
   it.each([
     [
       "refused",
-      "Current handoff details unavailable.",
+      "Current details unavailable.",
     ],
     [
       "unavailable",
-      "Current handoff details are temporarily unavailable.",
+      "Current details are temporarily unavailable.",
     ],
   ])(
-    "distinguishes a whole %s aggregate from projection repair lag",
+    "renders the actual %s aggregate fail-closed without a static live region",
     (state, copy) => {
+      const recordHref = vi.fn(() => "/must-not-be-used");
       const outcome: OperationOutcome =
         state === "refused"
           ? {
               state: "refused",
               code: "role_not_permitted",
-              text: `raw ${itemRef}`,
+              text: `raw ${itemRef} must not leak`,
             }
           : { state: "unavailable" };
       const html = render(
         [history],
         new Map([[handoffRef, outcome]]),
+        shell({ recordHref }),
       );
       expect(html).toContain(copy);
-      expect(html).not.toContain("Current details are still updating.");
       expect(html).not.toContain(itemRef);
+      expect(html).not.toContain("must not leak");
+      expect(html).not.toContain('role="status"');
+      expect(html).not.toContain('role="alert"');
+      expect(html).not.toContain("Open in Current");
+      expect(recordHref).not.toHaveBeenCalled();
     },
   );
 
-  it("reserves the updating copy for an actually missing projection snapshot", () => {
-    const html = render([history], new Map());
-    expect(html).toContain("Current details are still updating.");
-    expect(html).not.toContain("temporarily unavailable");
+  it("labels requested and resolved timestamps truthfully", () => {
+    const html = render([history], new Map([[handoffRef, ok({ history, item, project })]]));
+    expect(html).toContain("Requested");
+    expect(html).toContain("Resolved");
+    expect(html).not.toContain("Last updated");
+  });
+
+  it.each([
+    ["open", pending("executing")],
+    ["unresolved", { ...history, state: "unresolved", resolved_at: null }],
+  ])("%s history never invents a second timestamp", (_fixture, record) => {
+    const html = render([record]);
+    expect(html).toContain("Requested");
+    expect(html).not.toContain("Resolved");
+    expect(html).not.toContain("Last updated");
   });
 
   it("handoff-unresolved forbids blind retry", () => {

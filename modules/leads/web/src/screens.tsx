@@ -25,6 +25,7 @@ import {
   CurrentHandoffHistory,
   HandoffStatusSummary,
   QualificationHandoffEntry,
+  QualificationStaleWarning,
 } from "./handoff";
 import {
   data,
@@ -1090,18 +1091,21 @@ interface HandoffSnapshot {
 async function loadHandoffSnapshot(
   shell: ShellApi,
   opportunityRef: string | null,
+  offset: number,
+  limit: number,
+  includeViews: boolean,
 ): Promise<HandoffSnapshot> {
   if (!opportunityRef)
     return { result: null, handoffs: [], views: new Map() };
   const result = await read(shell, "leads.handoff.list", {
     ref: opportunityRef,
-    limit: 100,
-    offset: 0,
+    limit,
+    offset,
   });
   const handoffs = result.state === "ok" ? items(result) : [];
   const views = new Map<string, OperationOutcome>(
     await Promise.all(
-      handoffs
+      (includeViews ? handoffs : [])
         .filter((handoff) => handoff.state === "succeeded")
         .map(async (handoff) => [
           str(handoff.ref),
@@ -1144,25 +1148,34 @@ function QualificationHandoffSlot({
       opportunityRef={opportunityRef}
       revision={revision}
       title={title}
-      stale={stale}
     />
+  );
+  const body = (
+    <>
+      {stale ? <QualificationStaleWarning /> : null}
+      {content}
+    </>
   );
   return section ? (
     <section className={styles.section}>
       <h2>Qualification handoff</h2>
-      {content}
+      {body}
     </section>
   ) : (
-    content
+    body
   );
 }
 
 function HandoffHistorySlot({
   shell,
   resource,
+  opportunityRef,
+  offset,
 }: {
   shell: ShellApi;
   resource: Promise<HandoffSnapshot>;
+  opportunityRef: string;
+  offset: number;
 }) {
   const snapshot = use(resource);
   return (
@@ -1170,6 +1183,8 @@ function HandoffHistorySlot({
       shell={shell}
       result={snapshot.result}
       views={snapshot.views}
+      opportunityRef={opportunityRef}
+      offset={offset}
     />
   );
 }
@@ -1195,10 +1210,25 @@ export async function detail({ shell, query }: ScreenProps) {
     result.state === "ok"
       ? await read(shell, "leads.qualification.list", { ref: envelope.ref })
       : null;
-  const handoffResource = loadHandoffSnapshot(
+  const opportunityRef = result.state === "ok" ? str(envelope.ref) : null;
+  const handoffOffset = pageOffset(query.handoff_offset);
+  const handoffHistoryResource = loadHandoffSnapshot(
     shell,
-    result.state === "ok" ? str(envelope.ref) : null,
+    opportunityRef,
+    handoffOffset,
+    100,
+    true,
   );
+  const handoffSummaryResource =
+    handoffOffset === 0
+      ? handoffHistoryResource
+      : loadHandoffSnapshot(
+          shell,
+          opportunityRef,
+          0,
+          1,
+          false,
+        );
   const qualificationIsStale = record.qualification
     ? assessmentStale(qualification, record, envelope.revision)
     : false;
@@ -1256,7 +1286,7 @@ export async function detail({ shell, query }: ScreenProps) {
         <Suspense fallback={null}>
           <QualificationHandoffSlot
             shell={shell}
-            resource={handoffResource}
+            resource={handoffSummaryResource}
             qualified={Boolean(record.qualification)}
             section
             opportunityRef={str(envelope.ref)}
@@ -1560,7 +1590,7 @@ export async function detail({ shell, query }: ScreenProps) {
                     <Suspense fallback={null}>
                       <QualificationHandoffSlot
                         shell={shell}
-                        resource={handoffResource}
+                        resource={handoffSummaryResource}
                         qualified
                         section={false}
                         opportunityRef={str(envelope.ref)}
@@ -1775,10 +1805,17 @@ export async function detail({ shell, query }: ScreenProps) {
                 shell={shell}
                 result={null}
                 views={new Map()}
+                opportunityRef={str(envelope.ref)}
+                offset={handoffOffset}
               />
             }
           >
-            <HandoffHistorySlot shell={shell} resource={handoffResource} />
+            <HandoffHistorySlot
+              shell={shell}
+              resource={handoffHistoryResource}
+              opportunityRef={str(envelope.ref)}
+              offset={handoffOffset}
+            />
           </Suspense>
         </>
       )}
