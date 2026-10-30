@@ -2,6 +2,7 @@
 owner's Promote override, and what the override survives: rescoring, a moved
 posting, a new profile, and an export and restore. Synthetic postings and answers."""
 
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
@@ -18,7 +19,13 @@ from rheo_leads.scoring.job import PROMOTED_LINE
 from rheo_leads.storage import scoring as s
 from sqlalchemy import select
 
-from postgres.test_job_scoring import FULL, Scoring, final, queued_sweeps
+from postgres.test_job_scoring import (
+    FULL,
+    Scoring,
+    backdate,
+    final,
+    queued_sweeps,
+)
 from postgres.test_job_scoring import scored as scored
 from postgres.test_jobfeed_delivery import rows, the_opportunity
 from postgres.test_leads_intake import intake as intake
@@ -194,3 +201,24 @@ def test_a_promotion_is_exported_and_restored(
     scored.i.ctx = context_for_harness(scored.i.workspace, owner_account_id, Role.OWNER)
     assert isinstance(scored.i.ctx, WorkspaceContext)
     assert rows(scored.i, select(s.job_promotion)) == [before]
+
+
+def test_a_promoted_job_is_scored_however_old(scored: Scoring) -> None:
+    held(scored)
+    backdate(scored, "~02200", timedelta(days=3))
+    promote(scored, "~02200")
+    scored.sweep()
+    assert scored.state("~02200")["state"] == "scored"
+    assert scored.assessments("~02200")[-1]["score"] is not None
+
+
+def test_an_old_held_job_set_aside_still_reads_held(scored: Scoring) -> None:
+    held(scored)
+    backdate(scored, "~02200", timedelta(hours=30))
+    scored.set_profile(goals=["A changed goal."])
+    scored.sweep()
+    assert scored.state("~02200")["failure_kind"] == scoring.TOO_OLD
+    data = call(scored.i, scored.c.owner, "leads.ui.scoring").data
+    stages = {j["title"]: j["stage"] for b in data["batches"] for j in b["jobs"]}
+    assert stages["Crowded job"] == "held"
+    assert [r["title"] for r in review(scored)] == ["Crowded job"]

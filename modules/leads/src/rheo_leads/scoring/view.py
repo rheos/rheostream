@@ -7,8 +7,10 @@
   job and start), ``paused`` (the account's usage limit, or another account-side
   failure, holds every waiting job until a time), or ``idle`` with the last call.
 - the queue's totals: claimable jobs (``queued_total``), jobs waiting out a backoff,
-  failed jobs, and an upper bound on the time to clear (the median of recent scoring
-  calls for every queued job, though tier 1 holds some without a call).
+  failed jobs, jobs set aside as too old to score (``too_old_total``, against the
+  ``max_age_hours`` cutoff, 0 when off), and an upper
+  bound on the time to clear (the median of recent scoring calls for every queued
+  job, though tier 1 holds some without a call).
 - ``batches``: Job search jobs created in the last :data:`WINDOW`, grouped into
   imports by the gaps between them, each with its stage (:func:`stage_of`).
 - ``calls``: the newest model calls, and ``summary``: calls, tokens, median time,
@@ -22,6 +24,7 @@ run on a subscription login, not a metered API.
 
 ``leads.jobscoring.retry_failed`` is the owner's re-queue: open jobs whose scoring
 failed go back in line with a fresh attempt count, as setting the profile again does.
+A job set aside as too old is not a failure and stays aside.
 """
 
 from collections.abc import Mapping, Sequence
@@ -42,7 +45,9 @@ from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import Handler
 from rheo_core.redaction.tiers import SensitivityTier, Tiered
 from rheo_core.refs.resolver import UnitOfWork
-from sqlalchemy import and_, extract, func, select, true, update
+from rheo_core.settings import resolve
+from rheo_core.settings.storage_source import TransactionBoundOverrideSource
+from sqlalchemy import and_, case, extract, func, select, true, update
 
 from rheo_leads import model_calls
 from rheo_leads import pipeline_common as h
@@ -74,6 +79,7 @@ STAGES: Final = (
     "needs_posting",
     "failed",
     "held",
+    "too_old",
     "closed",
     "untracked",
 )
@@ -102,7 +108,17 @@ def stage_of(
     if state is None:
         return "untracked" if job["open"] else "closed"
     if state == "failed":
-        return "failed"
+        if job["failure_kind"] != scoring.TOO_OLD:
+            return "failed"
+        if job["explanation"] is None:
+            return "too_old"
+        # Set aside unrescored: an earlier score, hold or wait for the posting stands
+        # and reads as the job queue and the review queue read it; an earlier failure
+        # is not retried, so the job reads too old.
+        earlier = stage_of(
+            {**job, "state": "scored"}, running=False, claimable=False, now=now
+        )
+        return "too_old" if earlier == "failed" else earlier
     if state == "pending":
         if not job["open"]:
             return "closed"
@@ -476,11 +492,16 @@ def view(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> ViewOutput:
     }
     state, o = s.job_score_state, p.opportunity
     open_ids = scoring._open_jobs().with_only_columns(o.c.id)
+    # A job set aside as too old is counted apart from the ones that failed.
+    bucket = case(
+        (state.c.failure_kind == scoring.TOO_OLD, scoring.TOO_OLD),
+        else_=state.c.state,
+    )
     totals: dict[str, int] = dict(
         uow.connection.execute(
-            select(state.c.state, func.count())
+            select(bucket, func.count())
             .where(state.c.opportunity_id.in_(open_ids))
-            .group_by(state.c.state)
+            .group_by(bucket)
         ).all()
     )
     batches = _batches(jobs, running=scoring_now, position=position, now=now)
@@ -499,6 +520,13 @@ def view(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> ViewOutput:
             "queued_total": queued,
             "waiting_total": max(totals.get("pending", 0) - claimable, 0),
             "failed_total": totals.get("failed", 0),
+            "too_old_total": totals.get(scoring.TOO_OLD, 0),
+            "max_age_hours": resolve(
+                workspace_id=ctx.workspace_id,
+                source=TransactionBoundOverrideSource(
+                    uow, workspace_id=ctx.workspace_id
+                ),
+            ).get_int(scoring.MAX_AGE_KEY),
             "median_call_seconds": per_call,
             "eta_seconds": round(per_call * queued)
             if per_call is not None and queued
@@ -520,7 +548,11 @@ def retry_failed(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> RetryOutpu
     now = datetime.now(UTC)
     count = uow.connection.execute(
         update(state)
-        .where(state.c.state == "failed", state.c.opportunity_id.in_(open_ids))
+        .where(
+            state.c.state == "failed",
+            state.c.failure_kind.is_distinct_from(scoring.TOO_OLD),
+            state.c.opportunity_id.in_(open_ids),
+        )
         .values(
             state="pending",
             attempts=0,

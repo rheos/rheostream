@@ -9,10 +9,15 @@ minute). A sweep with nothing to do reads two small tables and ends.
 **What it does.** First a refresh: each open Job search opportunity's scoring inputs
 are digested (:func:`input_digest`), and an opportunity seen for the first time, or
 whose description, competition band or client metrics moved, becomes ``pending``
-with a fresh attempt count. Then up to ``leads.scoring.max_per_run`` pending jobs,
-newest first, one at a time: claim it (count the attempt, hold it for the claim
-window) in a short unit that commits at once; decide tier 1; ask the model when tier
-1 lets it through and the description is there; record the result as a
+with a fresh attempt count. Then the age cutoff (:func:`age_out`): a pending job
+imported more than ``leads.scoring.max_age_hours`` ago is set aside as ``failed``
+with the word :data:`TOO_OLD`, with no model call and no attempt counted, so a sweep
+that resumes after a long pause scores the recent jobs and not the whole backlog. A
+job the owner promoted or the client invited the owner to is never too old, and a
+job that already had a score keeps it. Then up to ``leads.scoring.max_per_run``
+pending jobs, newest first, one at a time: claim it (count the attempt, hold it for
+the claim window) in a short unit that commits at once; decide tier 1; ask the model
+when tier 1 lets it through and the description is there; record the result as a
 qualification in another short unit. No unit is open while the model runs, and the
 cancellation token's heartbeat keeps the lease.
 
@@ -23,7 +28,8 @@ timed-out run) gives the attempt back and makes every waiting job wait
 the job or the answer (:data:`JOB_FAILURES`) counts: it waits the job substrate's
 backoff, and the fifth attempt records a ``needs_information`` assessment that says
 scoring failed. Setting the profile again puts failed and unscored jobs back in line
-(:func:`repend_unscored`). A job never simply disappears from the queue.
+(:func:`repend_unscored`), except the ones set aside as too old. A job never simply
+disappears from the queue.
 
 **Promoted jobs.** A job the owner promoted from the review queue
 (``job_promotion``) is not held by tier 1: it goes to the model like a job that
@@ -72,7 +78,7 @@ from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.work.backoff import backoff_for
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
-from sqlalchemy import and_, func, insert, select, update
+from sqlalchemy import and_, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import StatementError
 
@@ -93,6 +99,10 @@ SCORE_JOB_MAX_ATTEMPTS: Final = 8
 SCORE_INTERVAL_SECONDS: Final = 1800
 MODEL_ID_KEY: Final = "leads.scoring.model_id"
 MAX_PER_RUN_KEY: Final = "leads.scoring.max_per_run"
+MAX_AGE_KEY: Final = "leads.scoring.max_age_hours"
+TOO_OLD: Final = "too_old"
+"""The failure word of a job set aside unscored because it was imported before the
+age cutoff."""
 SCRATCH_SUBDIR: Final = "jobscore"
 SCORE_ATTEMPTS: Final = 5
 """The attempt that records a failed assessment instead of backing off again."""
@@ -376,6 +386,68 @@ def refresh(uow: UnitOfWork, *, cap: int, now: datetime) -> int:
         )
         changed += 1
     return changed
+
+
+def age_out(uow: UnitOfWork, *, now: datetime, max_age: timedelta | None) -> int:
+    """Set aside every pending open job imported before ``now - max_age``; the count.
+
+    No model call and no attempt: the job is ``failed`` with :data:`TOO_OLD`, and an
+    earlier assessment, if any, stays its current one. Exempt: a promoted job, an
+    invited one, and one whose current assessment waited for the full posting (its
+    description arrived late, often pasted by the owner, and nothing else could get
+    it scored). A job a sweep holds a claim on is left to that sweep. ``None`` turns
+    the cutoff off."""
+    if max_age is None:
+        return 0
+    state, o, field = s.job_score_state, p.opportunity, p.opportunity_field_state
+    qual = p.qualification
+    old_ids = (
+        _open_jobs().with_only_columns(o.c.id).where(o.c.created_at < now - max_age)
+    )
+    invited = select(field.c.opportunity_id).where(
+        field.c.target == EXTENSION + "invited",
+        field.c.value_kind == "value",
+        field.c.value_text == "true",
+        field.c.orphaned.is_(False),
+    )
+    # The current assessment's explanation, picked as the queue picks it.
+    latest_explanation = (
+        select(qual.c.explanation)
+        .where(qual.c.opportunity_id == state.c.opportunity_id)
+        .order_by(
+            qual.c.input_revision.desc(), qual.c.created_at.desc(), qual.c.id.desc()
+        )
+        .limit(1)
+        .scalar_subquery()
+    )
+    # A claim leaves the row pending with no failure word and a future retry_after;
+    # a usage deferral sets a word, so a paused job still ages out.
+    unclaimed = or_(
+        state.c.retry_after.is_(None),
+        state.c.retry_after <= now,
+        state.c.failure_kind.is_not(None),
+    )
+    count: int = uow.connection.execute(
+        update(state)
+        .where(
+            state.c.state == "pending",
+            unclaimed,
+            state.c.opportunity_id.in_(old_ids),
+            state.c.opportunity_id.not_in(select(s.job_promotion.c.opportunity_id)),
+            state.c.opportunity_id.not_in(invited),
+            func.coalesce(
+                func.starts_with(latest_explanation, UNDESCRIBED_LINE), False
+            ).is_(False),
+        )
+        .values(
+            state="failed",
+            attempts=0,
+            retry_after=None,
+            failure_kind=TOO_OLD,
+            updated_at=now,
+        )
+    ).rowcount
+    return count
 
 
 def _claimable(now: datetime) -> Any:
@@ -720,7 +792,7 @@ def repend_unscored(uow: UnitOfWork, *, now: datetime) -> None:
     has no model score (held by the filters, or waiting for its description), goes
     back to
     pending, so the new thresholds and evidence apply. Scored jobs keep their score
-    until their posting changes."""
+    until their posting changes, and a job set aside as too old stays aside."""
     state, qual = s.job_score_state, p.qualification
     # The current assessment's score, ordered as the queue picks the latest; an
     # older score does not count once a later assessment held the job back.
@@ -735,7 +807,10 @@ def repend_unscored(uow: UnitOfWork, *, now: datetime) -> None:
     )
     uow.connection.execute(
         update(state)
-        .where((state.c.state == "failed") | latest_score.is_(None))
+        .where(
+            (state.c.state == "failed") | latest_score.is_(None),
+            state.c.failure_kind.is_distinct_from(TOO_OLD),
+        )
         .values(
             state="pending",
             attempts=0,
@@ -808,12 +883,14 @@ def _sweep(
             # Its text would quote the policy; the owner sets the profile again.
             profile = None
             _log.warning(PROFILE_INVALID_LOG)
-        if profile is not None:
-            refresh(short, cap=profile.policy.tier1.max_proposals, now=now)
         settings = resolve(
             workspace_id=ctx.workspace_id,
             source=TransactionBoundOverrideSource(short, workspace_id=ctx.workspace_id),
         )
+        if profile is not None:
+            refresh(short, cap=profile.policy.tier1.max_proposals, now=now)
+            hours = settings.get_int(MAX_AGE_KEY)
+            age_out(short, now=now, max_age=timedelta(hours=hours) if hours else None)
         budget = settings.get_int(MAX_PER_RUN_KEY)
         window = (
             timedelta(
