@@ -19,14 +19,37 @@ const history = {
     "leads.opportunity:019bf0b0-0000-7000-8000-000000000003",
   purpose: "internal_analysis",
   state: "succeeded",
+  action_phase: null,
   destination_ref: "current",
   result_ref: itemRef,
   result_detail: null,
   approval_id: "019bf0b0-0000-7000-8000-000000000007",
+  external_action_id: "019bf0b0-0000-7000-8000-000000000008",
   attempt_count: 1,
+  qualification_ref:
+    "leads.qualification:019bf0b0-0000-7000-8000-000000000009",
+  qualification_stale: false,
+  current_project_ref: projectRef,
+  last_current_project_ref: null,
+  current_project_state: "linked",
+  current_link_revision: 2,
   requested_at: "2026-10-25T12:00:00Z",
   resolved_at: "2026-10-25T12:05:00Z",
 };
+
+function pending(actionPhase: string | null) {
+  return {
+    ...history,
+    state: "pending",
+    action_phase: actionPhase,
+    result_ref: null,
+    result_detail: null,
+    current_project_ref: null,
+    current_project_state: "never_assigned",
+    current_link_revision: null,
+    resolved_at: null,
+  };
+}
 const item = {
   state: "live",
   ref: itemRef,
@@ -189,7 +212,7 @@ describe("handoff history states and actions", () => {
   it("handoff-awaiting-approval uses only the shell approval URL", () => {
     const approvalHref = vi.fn(() => "/shell-owned/review");
     const html = render(
-      [{ ...history, state: "pending" }],
+      [pending("awaiting_approval")],
       new Map(),
       shell({ approvalHref }),
     );
@@ -203,15 +226,34 @@ describe("handoff history states and actions", () => {
   it.each([
     ["handoff-approved-queued", "approved_queued", "Approved and queued", "Creation is not yet confirmed."],
     ["handoff-executing", "executing", "Handoff in progress", ""],
-  ])("%s renders its durable pending state", (_fixture, detail, heading, body) => {
-    const html = render([
-      { ...history, state: "pending", result_detail: detail },
-    ]);
+  ])("%s renders its accepted action phase", (_fixture, phase, heading, body) => {
+    const html = render([pending(phase)]);
     expect(html).toContain(heading);
     if (body) expect(html).toContain(body);
     expect(html).not.toContain("Review approval");
     expect(html).not.toContain("Current item created");
   });
+
+  it.each(["unknown", null])(
+    "pending %s fails closed without inferring approval or exposing an action",
+    (phase) => {
+      const approvalHref = vi.fn(() => "/must-not-be-used");
+      const html = render(
+        [pending(phase)],
+        new Map(),
+        shell({ approvalHref }),
+      );
+      expect(html).toContain("Handoff status unavailable");
+      expect(html).toContain(
+        "Rheo cannot confirm whether approval or creation is in progress. Reload to check again.",
+      );
+      expect(html).not.toContain("Awaiting approval");
+      expect(html).not.toContain("Review approval");
+      expect(html).not.toContain(history.approval_id);
+      expect(html).not.toContain(history.external_action_id);
+      expect(approvalHref).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["handoff-succeeded-live-item-no-project", "never_assigned", "No Current project assigned yet."],
@@ -271,6 +313,19 @@ describe("handoff history states and actions", () => {
     expect(html).toContain("No Current item was created by this attempt.");
     expect(html).toContain("Retry handoff");
     expect(html).toContain("requires new approval");
+  });
+
+  it.each([
+    ["failed", "retryable_no_effect"],
+    ["refused", "destination_unavailable_no_effect"],
+    ["cancelled", null],
+    ["unresolved", "outcome_unknown"],
+  ])("renders historical %s state without an assertive live region", (state, detail) => {
+    const html = render([
+      { ...history, state, action_phase: null, result_detail: detail },
+    ]);
+    expect(html).not.toContain('role="alert"');
+    expect(html).not.toContain('role="status"');
   });
 
   it("renders loading, empty, denied and temporary history states", () => {

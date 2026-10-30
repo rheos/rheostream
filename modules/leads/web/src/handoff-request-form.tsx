@@ -12,8 +12,7 @@ const PRIORITIES = [
 ];
 
 function requestKey(): string {
-  return globalThis.crypto?.randomUUID?.() ??
-    `request-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return crypto.randomUUID();
 }
 
 /** One client-owned request identity survives an unavailable response and retry. */

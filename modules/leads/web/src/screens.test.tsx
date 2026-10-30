@@ -650,7 +650,7 @@ describe("Leads to Current detail integration", () => {
     expect(html).not.toMatch(/<fieldset[^>]*disabled/);
   });
 
-  it("adds the same entry to job-search detail and leaves history full-width after detail", async () => {
+  it("places job handoff after the verdict and before a loaded proposal workflow", async () => {
     const job = {
       ...opportunity,
       preset_id: "019bf0b0-0000-7000-8000-000000000002",
@@ -659,6 +659,35 @@ describe("Leads to Current detail integration", () => {
       stage_kind: "open",
       assessment: { summary: "Qualified for review", mark: "B" },
       fields: {},
+    };
+    const proposal = {
+      opportunity_ref: opportunity.ref,
+      state: "ready",
+      questions: "What is your delivery approach?",
+      sections: [
+        {
+          id: "section-cover",
+          position: 0,
+          kind: "cover_letter",
+          question: null,
+          body: "A deliberately long proposal body follows the qualification verdict without displacing the handoff decision.",
+          library_answer_id: null,
+          library_match_id: null,
+          edited: false,
+        },
+      ],
+      draft:
+        "A deliberately long proposal body follows the qualification verdict without displacing the handoff decision.\n\nIt continues with enough material to represent the real loaded workflow.",
+      findings: {
+        accuracy: [],
+        accuracy_checked: true,
+        flagged_pre_retry: [],
+        retried: false,
+        style: [],
+        style_pre_repair: [],
+        style_repaired: false,
+        analysis: null,
+      },
     };
     const api = shell({
       "leads.opportunity.get": ok({
@@ -673,7 +702,7 @@ describe("Leads to Current detail integration", () => {
       }),
       "leads.qualification.list": ok({ items: [qualification] }),
       "leads.ui.queue": ok({ items: [job] }),
-      "leads.jobproposal.get": ok(null),
+      "leads.jobproposal.get": ok(proposal),
       "leads.handoff.list": ok({ items: [] }),
     });
     const html = renderToStaticMarkup(
@@ -681,8 +710,16 @@ describe("Leads to Current detail integration", () => {
     );
     expect(html).toContain("Hand off to Current");
     expect(html).toContain("Current handoffs");
+    const verdict = html.indexOf("Qualified for review");
+    const handoff = html.indexOf("Qualification handoff");
+    const workflow = html.indexOf('aria-label="Proposal workflow"');
+    const notes = html.indexOf('aria-label="Notes and follow-up"');
+    expect(verdict).toBeGreaterThanOrEqual(0);
+    expect(handoff).toBeGreaterThan(verdict);
+    expect(workflow).toBeGreaterThan(handoff);
+    expect(notes).toBeGreaterThan(workflow);
     expect(html.indexOf("Current handoffs")).toBeGreaterThan(
-      html.indexOf("Notes and follow-up"),
+      notes,
     );
   });
 

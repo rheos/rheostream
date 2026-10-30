@@ -77,12 +77,18 @@ describe("qualified Current handoff request", () => {
     if (!form) throw new Error("handoff form missing");
 
     await act(async () => form.requestSubmit());
+    // A shell refresh may render this client boundary again after an unavailable
+    // response. The mounted request still represents the same person's action.
+    mount(submit);
     await act(async () => form.requestSubmit());
 
     expect(submit).toHaveBeenCalledTimes(2);
     const first = submit.mock.calls[0]?.[1] as Record<string, unknown>;
     const second = submit.mock.calls[1]?.[1] as Record<string, unknown>;
     expect(first.idempotency_key).toEqual(expect.any(String));
+    expect(first.idempotency_key).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
     expect(first.idempotency_key).toBe(second.idempotency_key);
     expect(first).not.toHaveProperty("source_ref");
     expect(first).toMatchObject({
@@ -93,5 +99,8 @@ describe("qualified Current handoff request", () => {
         priority: "normal",
       },
     });
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+      "We could not confirm the save",
+    );
   });
 });

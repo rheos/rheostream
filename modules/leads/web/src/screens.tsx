@@ -1180,16 +1180,6 @@ export async function detail({ shell, query }: ScreenProps) {
           back={shell.href("queue")}
         />
       ) : null}
-      {job && proposal ? (
-        <ProposalWorkflow
-          submit={shell.submit}
-          refresh={shell.refresh}
-          opportunityRef={str(envelope.ref)}
-          proposal={proposal}
-          posting={unwrapped(str(job.description))}
-          paste={paste}
-        />
-      ) : null}
       {result.state === "ok" &&
       record.preset_id === JOBSEARCH_PRESET_ID &&
       mayRequestHandoff ? (
@@ -1203,6 +1193,16 @@ export async function detail({ shell, query }: ScreenProps) {
             stale={qualificationIsStale}
           />
         </section>
+      ) : null}
+      {job && proposal ? (
+        <ProposalWorkflow
+          submit={shell.submit}
+          refresh={shell.refresh}
+          opportunityRef={str(envelope.ref)}
+          proposal={proposal}
+          posting={unwrapped(str(job.description))}
+          paste={paste}
+        />
       ) : null}
       {result.state !== "ok" ? (
         <Failure outcome={result} />

@@ -53,28 +53,33 @@ export function QualificationHandoffEntry({
 function stateSummary(record: Row): {
   heading: string;
   body?: string;
-  urgent?: boolean;
 } {
   const state = str(record.state);
   const detail = str(record.result_detail);
-  if (state === "pending" && detail === "approved_queued")
+  if (state === "pending") {
+    const phase = str(record.action_phase);
+    if (phase === "awaiting_approval")
+      return {
+        heading: "Awaiting approval",
+        body: "No Current item has been created by this request yet.",
+      };
+    if (phase === "approved_queued")
+      return {
+        heading: "Approved and queued",
+        body: "Creation is not yet confirmed.",
+      };
+    if (phase === "executing") return { heading: "Handoff in progress" };
     return {
-      heading: "Approved and queued",
-      body: "Creation is not yet confirmed.",
+      heading: "Handoff status unavailable",
+      body:
+        "Rheo cannot confirm whether approval or creation is in progress. Reload to check again.",
     };
-  if (state === "pending" && detail === "executing")
-    return { heading: "Handoff in progress" };
-  if (state === "pending")
-    return {
-      heading: "Awaiting approval",
-      body: "No Current item has been created by this request yet.",
-    };
+  }
   if (state === "succeeded") return { heading: "Current item created" };
   if (state === "failed")
     return {
       heading: "Handoff failed",
       body: "No Current item was created by this attempt.",
-      urgent: true,
     };
   if (state === "refused")
     return {
@@ -83,16 +88,14 @@ function stateSummary(record: Row): {
         detail === "destination_unavailable_no_effect"
           ? "No Current item was created by this attempt."
           : undefined,
-      urgent: true,
     };
   if (state === "cancelled")
-    return { heading: "Handoff cancelled", urgent: true };
+    return { heading: "Handoff cancelled" };
   if (state === "unresolved")
     return {
       heading: "Outcome unknown",
       body:
         "Rheo cannot confirm whether the Current effect occurred. A person must reconcile this outcome before any retry.",
-      urgent: true,
     };
   return {
     heading: "Current unavailable",
@@ -259,8 +262,7 @@ function CurrentHandoffRow({
   const summary = stateSummary(record);
   const pendingReview =
     record.state === "pending" &&
-    record.result_detail !== "approved_queued" &&
-    record.result_detail !== "executing";
+    record.action_phase === "awaiting_approval";
   const approval = str(record.approval_id);
   const reviewHref =
     pendingReview && approval && shell.approvalHref
@@ -271,10 +273,7 @@ function CurrentHandoffRow({
   const current = view?.state === "ok" ? row(view.result) : null;
   return (
     <article className={styles.handoffRow}>
-      <div
-        className={styles.handoffStatus}
-        role={summary.urgent ? "alert" : "status"}
-      >
+      <div className={styles.handoffStatus}>
         <h3>{summary.heading}</h3>
         {summary.body ? <p>{summary.body}</p> : null}
       </div>
