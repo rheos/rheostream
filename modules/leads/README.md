@@ -225,8 +225,9 @@ into another bracket; a profile change does not rescore jobs that already have a
 after it was imported is set aside without a model call: its scoring state is
 `failed` with the word `too_old`, and no assessment is written. This keeps a sweep
 that resumes after a long pause, such as the usage limit, on the recent jobs instead
-of the whole backlog. A job that already had a score keeps it, and a job the owner
-promoted or the client invited the owner to is never too old. Setting the profile and
+of the whole backlog. A job that already had a score keeps it. A job the owner
+promoted, one the client invited the owner to, and one that was waiting for its full
+posting (so a posting pasted days later still gets it scored) are never too old. Setting the profile and
 re-queueing failed jobs both leave these jobs aside. `0` turns the cutoff off.
 
 **Failures.** A failure of the model login or the deployment (a usage limit, an
