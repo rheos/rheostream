@@ -321,6 +321,15 @@
 .handoffHistory {
   margin-top: var(--rs-space-6);
 }
+.handoffSummary {
+  display: grid;
+  gap: var(--rs-space-3);
+  padding-top: var(--rs-space-4);
+  border-top: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+.handoffSummary > * {
+  margin: 0;
+}
 .handoffList {
   padding: 0;
   margin: 0;
@@ -389,6 +398,9 @@
   max-width: 65ch;
   margin-top: var(--rs-space-4);
 }
+.handoffAction {
+  margin-top: var(--rs-space-4);
+}
 @media (max-width: 48rem) {
   /* One row that scrolls sideways, not three wrapped rows above the page. */
   .nav {
@@ -421,6 +433,11 @@
   .handoffFacts {
     display: grid;
     grid-template-columns: 1fr;
+  }
+  .handoffEntry .fieldset button,
+  .handoffRetry .fieldset button,
+  .handoffAction .primary {
+    width: 100%;
   }
   .facts dd {
     margin-bottom: var(--rs-space-3);

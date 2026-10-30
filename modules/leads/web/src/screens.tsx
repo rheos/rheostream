@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Suspense, use, type ReactNode } from "react";
 import type {
   OperationOutcome,
   ScreenProps,
@@ -23,6 +23,7 @@ import { ReviewQueue } from "./review-view";
 import { ScoringView } from "./scoring-view";
 import {
   CurrentHandoffHistory,
+  HandoffStatusSummary,
   QualificationHandoffEntry,
 } from "./handoff";
 import {
@@ -1080,6 +1081,99 @@ function RecordFor({
   return job ? <JobRecord {...props} /> : <>{children}</>;
 }
 
+interface HandoffSnapshot {
+  result: OperationOutcome | null;
+  handoffs: Row[];
+  views: ReadonlyMap<string, OperationOutcome>;
+}
+
+async function loadHandoffSnapshot(
+  shell: ShellApi,
+  opportunityRef: string | null,
+): Promise<HandoffSnapshot> {
+  if (!opportunityRef)
+    return { result: null, handoffs: [], views: new Map() };
+  const result = await read(shell, "leads.handoff.list", {
+    ref: opportunityRef,
+    limit: 100,
+    offset: 0,
+  });
+  const handoffs = result.state === "ok" ? items(result) : [];
+  const views = new Map<string, OperationOutcome>(
+    await Promise.all(
+      handoffs
+        .filter((handoff) => handoff.state === "succeeded")
+        .map(async (handoff) => [
+          str(handoff.ref),
+          await read(shell, "leads.handoff.current_view", {
+            handoff_ref: str(handoff.ref),
+          }),
+        ] as [string, OperationOutcome]),
+    ),
+  );
+  return { result, handoffs, views };
+}
+
+function QualificationHandoffSlot({
+  shell,
+  resource,
+  qualified,
+  section,
+  opportunityRef,
+  revision,
+  title,
+  stale,
+}: {
+  shell: ShellApi;
+  resource: Promise<HandoffSnapshot>;
+  qualified: boolean;
+  section: boolean;
+  opportunityRef: string;
+  revision: unknown;
+  title: string;
+  stale: boolean;
+}) {
+  const snapshot = use(resource);
+  if (!qualified || snapshot.result?.state !== "ok") return null;
+  const latest = snapshot.handoffs[0];
+  const content = latest ? (
+    <HandoffStatusSummary shell={shell} record={latest} />
+  ) : (
+    <QualificationHandoffEntry
+      shell={shell}
+      opportunityRef={opportunityRef}
+      revision={revision}
+      title={title}
+      stale={stale}
+    />
+  );
+  return section ? (
+    <section className={styles.section}>
+      <h2>Qualification handoff</h2>
+      {content}
+    </section>
+  ) : (
+    content
+  );
+}
+
+function HandoffHistorySlot({
+  shell,
+  resource,
+}: {
+  shell: ShellApi;
+  resource: Promise<HandoffSnapshot>;
+}) {
+  const snapshot = use(resource);
+  return (
+    <CurrentHandoffHistory
+      shell={shell}
+      result={snapshot.result}
+      views={snapshot.views}
+    />
+  );
+}
+
 export async function detail({ shell, query }: ScreenProps) {
   const result = await read(shell, "leads.opportunity.get", {
     ref: query.ref ?? "",
@@ -1101,31 +1195,9 @@ export async function detail({ shell, query }: ScreenProps) {
     result.state === "ok"
       ? await read(shell, "leads.qualification.list", { ref: envelope.ref })
       : null;
-  const handoffResult =
-    result.state === "ok"
-      ? await read(shell, "leads.handoff.list", {
-          ref: envelope.ref,
-          limit: 100,
-          offset: 0,
-        })
-      : null;
-  const handoffs = handoffResult?.state === "ok" ? items(handoffResult) : [];
-  const handoffViews = new Map<string, OperationOutcome>(
-    await Promise.all(
-      handoffs
-        .filter((handoff) => handoff.state === "succeeded")
-        .map(async (handoff) => [
-          str(handoff.ref),
-          await read(shell, "leads.handoff.current_view", {
-            handoff_ref: str(handoff.ref),
-          }),
-        ] as [string, OperationOutcome]),
-    ),
-  );
-  const mayRequestHandoff = Boolean(
-    record.qualification &&
-      handoffResult?.state === "ok" &&
-      handoffs.length === 0,
+  const handoffResource = loadHandoffSnapshot(
+    shell,
+    result.state === "ok" ? str(envelope.ref) : null,
   );
   const qualificationIsStale = record.qualification
     ? assessmentStale(qualification, record, envelope.revision)
@@ -1180,19 +1252,19 @@ export async function detail({ shell, query }: ScreenProps) {
           back={shell.href("queue")}
         />
       ) : null}
-      {result.state === "ok" &&
-      record.preset_id === JOBSEARCH_PRESET_ID &&
-      mayRequestHandoff ? (
-        <section className={styles.section}>
-          <h2>Qualification handoff</h2>
-          <QualificationHandoffEntry
+      {result.state === "ok" && record.preset_id === JOBSEARCH_PRESET_ID ? (
+        <Suspense fallback={null}>
+          <QualificationHandoffSlot
             shell={shell}
+            resource={handoffResource}
+            qualified={Boolean(record.qualification)}
+            section
             opportunityRef={str(envelope.ref)}
             revision={envelope.revision}
             title={str(record.title) || "Opportunity"}
             stale={qualificationIsStale}
           />
-        </section>
+        </Suspense>
       ) : null}
       {job && proposal ? (
         <ProposalWorkflow
@@ -1485,15 +1557,18 @@ export async function detail({ shell, query }: ScreenProps) {
                         ? "Evidence changed since · Reassess after changes"
                         : "Evidence unchanged"}
                     </p>
-                    {mayRequestHandoff ? (
-                      <QualificationHandoffEntry
+                    <Suspense fallback={null}>
+                      <QualificationHandoffSlot
                         shell={shell}
+                        resource={handoffResource}
+                        qualified
+                        section={false}
                         opportunityRef={str(envelope.ref)}
                         revision={envelope.revision}
                         title={str(record.title) || "Opportunity"}
                         stale={qualificationIsStale}
                       />
-                    ) : null}
+                    </Suspense>
                   </>
                 ) : (
                   <p>
@@ -1694,11 +1769,17 @@ export async function detail({ shell, query }: ScreenProps) {
             </aside>
             </div>
           </RecordFor>
-          <CurrentHandoffHistory
-            shell={shell}
-            result={handoffResult}
-            views={handoffViews}
-          />
+          <Suspense
+            fallback={
+              <CurrentHandoffHistory
+                shell={shell}
+                result={null}
+                views={new Map()}
+              />
+            }
+          >
+            <HandoffHistorySlot shell={shell} resource={handoffResource} />
+          </Suspense>
         </>
       )}
     </Frame>

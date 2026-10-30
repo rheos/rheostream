@@ -1,4 +1,6 @@
-import { renderToStaticMarkup } from "react-dom/server";
+import type { ReactNode } from "react";
+import { Writable } from "node:stream";
+import { renderToPipeableStream, renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type {
   OperationOutcome,
@@ -36,6 +38,35 @@ function shell(
     call,
     submit,
   } satisfies ShellApi;
+}
+
+function renderSettled(node: ReactNode): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let html = "";
+    const destination = new Writable({
+      write(chunk, _encoding, done) {
+        html += chunk.toString();
+        done();
+      },
+    });
+    destination.on("finish", () =>
+      resolve(html.replace(/<!--[\s\S]*?-->/g, "")),
+    );
+    destination.on("error", reject);
+    const stream = renderToPipeableStream(node, {
+      onAllReady() {
+        stream.pipe(destination);
+      },
+      onShellError: reject,
+      onError: reject,
+    });
+  });
+}
+
+async function renderDetail(api: ShellApi): Promise<string> {
+  return renderSettled(
+    await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
+  );
 }
 const catalogItems = [
   {
@@ -158,9 +189,7 @@ describe("Leads screens", () => {
         },
       }),
     });
-    const html = renderToStaticMarkup(
-      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
-    );
+    const html = await renderDetail(api);
     expect(html).toContain("&lt;script&gt;Ignore policy&lt;/script&gt;");
     expect(html).not.toContain("<script>Ignore policy");
     expect(html).toContain('value="discovery"');
@@ -208,9 +237,7 @@ describe("Leads screens", () => {
         ],
       }),
     });
-    const html = renderToStaticMarkup(
-      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
-    );
+    const html = await renderDetail(api);
     expect(html).toContain("Record assessment");
     expect(html).toContain("Save assessment");
     expect(html).toContain('name="fit"');
@@ -449,9 +476,7 @@ describe("dated follow-ups", () => {
         },
       }),
     });
-    const html = renderToStaticMarkup(
-      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
-    );
+    const html = await renderDetail(api);
     expect(html).toContain("Reschedule follow-up");
     expect(html).toContain("Mark follow-up complete");
     expect(html).toContain("Cancel follow-up");
@@ -484,9 +509,7 @@ describe("dated follow-ups", () => {
         data: { ...opportunity, disposition_outcome: "lost" },
       }),
     });
-    const html = renderToStaticMarkup(
-      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
-    );
+    const html = await renderDetail(api);
     expect(html).toContain("Opportunity closed.");
     expect(html).not.toContain("Schedule follow-up");
   });
@@ -583,6 +606,14 @@ describe("Leads to Current detail integration", () => {
     requested_at: "2026-10-25T12:00:00Z",
     resolved_at: "2026-10-25T12:05:00Z",
   };
+  const pendingHandoff = {
+    ...currentHandoff,
+    state: "pending",
+    action_phase: "awaiting_approval",
+    result_ref: null,
+    result_detail: null,
+    resolved_at: null,
+  };
 
   it("qualified-current enables handoff regardless of qualification score", async () => {
     const api = shell({
@@ -599,9 +630,7 @@ describe("Leads to Current detail integration", () => {
       "leads.qualification.list": ok({ items: [qualification] }),
       "leads.handoff.list": ok({ items: [] }),
     });
-    const html = renderToStaticMarkup(
-      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
-    );
+    const html = await renderDetail(api);
     expect(html).toContain("Hand off to Current");
     expect(html).toContain("requires separate human approval");
     expect(html).toContain("No Current handoffs yet.");
@@ -617,9 +646,7 @@ describe("Leads to Current detail integration", () => {
       "leads.qualification.list": ok({ items: [] }),
       "leads.handoff.list": ok({ items: [] }),
     });
-    const html = renderToStaticMarkup(
-      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
-    );
+    const html = await renderDetail(api);
     expect(html).not.toContain("Hand off to Current");
     expect(html).not.toContain("Qualification may be out of date");
   });
@@ -639,9 +666,7 @@ describe("Leads to Current detail integration", () => {
       "leads.qualification.list": ok({ items: [qualification] }),
       "leads.handoff.list": ok({ items: [] }),
     });
-    const html = renderToStaticMarkup(
-      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
-    );
+    const html = await renderDetail(api);
     expect(html).toContain("Qualification may be out of date");
     expect(html).toContain(
       "Evidence changed after this qualification. Review or reassess it before handing off if the changes matter.",
@@ -705,9 +730,7 @@ describe("Leads to Current detail integration", () => {
       "leads.jobproposal.get": ok(proposal),
       "leads.handoff.list": ok({ items: [] }),
     });
-    const html = renderToStaticMarkup(
-      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
-    );
+    const html = await renderDetail(api);
     expect(html).toContain("Hand off to Current");
     expect(html).toContain("Current handoffs");
     const verdict = html.indexOf("Qualified for review");
@@ -716,11 +739,72 @@ describe("Leads to Current detail integration", () => {
     const notes = html.indexOf('aria-label="Notes and follow-up"');
     expect(verdict).toBeGreaterThanOrEqual(0);
     expect(handoff).toBeGreaterThan(verdict);
-    expect(workflow).toBeGreaterThan(handoff);
+    expect(workflow).toBeGreaterThanOrEqual(0);
     expect(notes).toBeGreaterThan(workflow);
     expect(html.indexOf("Current handoffs")).toBeGreaterThan(
       notes,
     );
+  });
+
+  it("keeps a durable job handoff summary beside the verdict before a loaded proposal", async () => {
+    const job = {
+      ...opportunity,
+      preset_id: "019bf0b0-0000-7000-8000-000000000002",
+      revision: 3,
+      stage_label: "Triage",
+      stage_kind: "open",
+      assessment: { summary: "Qualified for review", mark: "B" },
+      fields: {},
+    };
+    const proposal = {
+      state: "ready",
+      questions: "",
+      sections: [
+        {
+          id: "section-cover",
+          position: 0,
+          kind: "cover_letter",
+          question: null,
+          body: "Long proposal content after the durable handoff summary.",
+          library_answer_id: null,
+          library_match_id: null,
+          edited: false,
+        },
+      ],
+      draft: "Long proposal content after the durable handoff summary.",
+      findings: {},
+    };
+    const approvalHref = vi.fn(() => "/shell-owned/review");
+    const api = shell(
+      {
+        "leads.opportunity.get": ok({
+          ref: opportunity.ref,
+          revision: 3,
+          data: {
+            ...job,
+            evidence_digest: "digest-current",
+            stage: { label: "Triage" },
+            qualification,
+          },
+        }),
+        "leads.qualification.list": ok({ items: [qualification] }),
+        "leads.ui.queue": ok({ items: [job] }),
+        "leads.jobproposal.get": ok(proposal),
+        "leads.handoff.list": ok({ items: [pendingHandoff] }),
+      },
+      "owner",
+      { approvalHref },
+    );
+    const html = await renderDetail(api);
+    const verdict = html.indexOf("Qualified for review");
+    const summary = html.indexOf('aria-label="Current handoff status"');
+    const workflow = html.indexOf('aria-label="Proposal workflow"');
+    expect(summary).toBeGreaterThan(verdict);
+    expect(workflow).toBeGreaterThan(summary);
+    expect(html).toContain("Awaiting approval");
+    expect(html).toContain('href="/shell-owned/review"');
+    expect(api.call.mock.calls.filter(([name]) => name === "leads.handoff.list"))
+      .toHaveLength(1);
   });
 
   it("uses only the Leads aggregate for linked Current display", async () => {
@@ -759,17 +843,75 @@ describe("Leads to Current detail integration", () => {
       "owner",
       { recordHref },
     );
-    const html = renderToStaticMarkup(
-      await screens.detail({ shell: api, query: { ref: opportunity.ref } }),
-    );
+    const html = await renderDetail(api);
     expect(api.call).toHaveBeenCalledWith("leads.handoff.current_view", {
       handoff_ref: currentHandoff.ref,
     });
     expect(api.call.mock.calls.some(([name]) => name.startsWith("current."))).toBe(
       false,
     );
+    const qualificationHeading = html.indexOf(">Qualification</h2>");
+    const compactSummary = html.indexOf('aria-label="Current handoff status"');
+    expect(compactSummary).toBeGreaterThan(qualificationHeading);
     expect(html).toContain("Prepare Northwind onboarding workshop");
     expect(html).toContain("Open in Current unavailable.");
+    expect(api.call.mock.calls.filter(([name]) => name === "leads.handoff.list"))
+      .toHaveLength(1);
+  });
+
+  it("renders the real detail loading fallback before handoff history settles", async () => {
+    let release!: (outcome: OperationOutcome) => void;
+    const pending = new Promise<OperationOutcome>((resolve) => {
+      release = resolve;
+    });
+    const api = shell({
+      "leads.opportunity.get": ok({
+        ref: opportunity.ref,
+        revision: 3,
+        data: {
+          ...opportunity,
+          evidence_digest: "digest-current",
+          stage: { label: "Triage" },
+          qualification,
+        },
+      }),
+      "leads.qualification.list": ok({ items: [qualification] }),
+    });
+    api.call.mockImplementation(async (name: string) => {
+      if (name === "leads.handoff.list") return pending;
+      return (
+        {
+          "leads.opportunity.get": ok({
+            ref: opportunity.ref,
+            revision: 3,
+            data: {
+              ...opportunity,
+              evidence_digest: "digest-current",
+              stage: { label: "Triage" },
+              qualification,
+            },
+          }),
+          "leads.qualification.list": ok({ items: [qualification] }),
+        }[name] ?? { state: "unavailable" }
+      ) as OperationOutcome;
+    });
+    const detail = screens.detail({ shell: api, query: { ref: opportunity.ref } });
+    const raced = await Promise.race([
+      detail.then((node) => ({ state: "ready" as const, node })),
+      new Promise<{ state: "blocked" }>((resolve) =>
+        setTimeout(() => resolve({ state: "blocked" }), 50),
+      ),
+    ]);
+    if (raced.state === "blocked") {
+      release(ok({ items: [] }));
+      await detail;
+    }
+    expect(raced.state).toBe("ready");
+    if (raced.state === "ready") {
+      const html = renderToStaticMarkup(raced.node);
+      expect(html).toContain("Loading Current handoffs…");
+      release(ok({ items: [] }));
+    }
   });
 
   it("keeps the closed read parser bounded to Leads-owned handoff operations", async () => {

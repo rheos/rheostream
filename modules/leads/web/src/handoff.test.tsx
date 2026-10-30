@@ -1,4 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type {
   OperationOutcome,
@@ -297,6 +299,42 @@ describe("handoff history states and actions", () => {
     expect(html).not.toContain(projectRef);
   });
 
+  it.each([
+    [
+      "refused",
+      "Current handoff details unavailable.",
+    ],
+    [
+      "unavailable",
+      "Current handoff details are temporarily unavailable.",
+    ],
+  ])(
+    "distinguishes a whole %s aggregate from projection repair lag",
+    (state, copy) => {
+      const outcome: OperationOutcome =
+        state === "refused"
+          ? {
+              state: "refused",
+              code: "role_not_permitted",
+              text: `raw ${itemRef}`,
+            }
+          : { state: "unavailable" };
+      const html = render(
+        [history],
+        new Map([[handoffRef, outcome]]),
+      );
+      expect(html).toContain(copy);
+      expect(html).not.toContain("Current details are still updating.");
+      expect(html).not.toContain(itemRef);
+    },
+  );
+
+  it("reserves the updating copy for an actually missing projection snapshot", () => {
+    const html = render([history], new Map());
+    expect(html).toContain("Current details are still updating.");
+    expect(html).not.toContain("temporarily unavailable");
+  });
+
   it("handoff-unresolved forbids blind retry", () => {
     const html = render([
       { ...history, state: "unresolved", result_detail: "outcome_unknown" },
@@ -353,6 +391,15 @@ describe("handoff history states and actions", () => {
     );
     expect(unavailable).toContain(
       "Current handoff history is temporarily unavailable.",
+    );
+    expect(denied).not.toContain("Current details are still updating.");
+    expect(unavailable).not.toContain("Current details are still updating.");
+  });
+
+  it("scopes full-width mobile controls to handoff actions", () => {
+    const css = readFileSync(join(__dirname, "leads.module.css"), "utf8");
+    expect(css).toMatch(
+      /@media \(max-width: 48rem\)[\s\S]*\.handoffEntry \.fieldset button[\s\S]*\.handoffRetry \.fieldset button[\s\S]*\.handoffAction \.primary[\s\S]*width:\s*100%/,
     );
   });
 });

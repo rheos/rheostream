@@ -250,6 +250,71 @@ function retryable(record: Row): boolean {
   );
 }
 
+function approvalReviewHref(shell: ShellApi, record: Row): string | null {
+  if (record.state !== "pending" || record.action_phase !== "awaiting_approval")
+    return null;
+  const approval = str(record.approval_id);
+  return approval && shell.approvalHref ? shell.approvalHref(approval) : null;
+}
+
+export function HandoffStatusSummary({
+  shell,
+  record,
+}: {
+  shell: ShellApi;
+  record: Row;
+}) {
+  const summary = stateSummary(record);
+  const reviewHref = approvalReviewHref(shell, record);
+  return (
+    <aside className={styles.handoffSummary} aria-label="Current handoff status">
+      <p className={styles.meta}>Latest Current handoff</p>
+      <div className={styles.handoffStatus}>
+        <h3>{summary.heading}</h3>
+        {summary.body ? <p>{summary.body}</p> : null}
+      </div>
+      {reviewHref ? (
+        <p className={styles.handoffAction}>
+          <a className={styles.primary} href={reviewHref}>
+            Review approval
+          </a>
+        </p>
+      ) : null}
+    </aside>
+  );
+}
+
+function CurrentProjection({
+  shell,
+  view,
+}: {
+  shell: ShellApi;
+  view: OperationOutcome | undefined;
+}) {
+  if (view === undefined)
+    return (
+      <p className={styles.meta} role="status">
+        Current details are still updating.
+      </p>
+    );
+  if (view.state === "refused")
+    return <p className={styles.meta}>Current handoff details unavailable.</p>;
+  if (view.state === "unavailable")
+    return (
+      <p className={styles.meta}>
+        Current handoff details are temporarily unavailable.
+      </p>
+    );
+  const current = row(view.result);
+  return (
+    <IndependentRecordStatus
+      shell={shell}
+      item={row(current.item)}
+      project={row(current.project)}
+    />
+  );
+}
+
 function CurrentHandoffRow({
   shell,
   record,
@@ -260,17 +325,9 @@ function CurrentHandoffRow({
   view: OperationOutcome | undefined;
 }) {
   const summary = stateSummary(record);
-  const pendingReview =
-    record.state === "pending" &&
-    record.action_phase === "awaiting_approval";
-  const approval = str(record.approval_id);
-  const reviewHref =
-    pendingReview && approval && shell.approvalHref
-      ? shell.approvalHref(approval)
-      : null;
+  const reviewHref = approvalReviewHref(shell, record);
   const reference = handoffId(record.ref);
   const allowRetry = retryable(record) && reference && shell.submit;
-  const current = view?.state === "ok" ? row(view.result) : null;
   return (
     <article className={styles.handoffRow}>
       <div className={styles.handoffStatus}>
@@ -298,20 +355,10 @@ function CurrentHandoffRow({
         </div>
       </dl>
       {record.state === "succeeded" ? (
-        current ? (
-          <IndependentRecordStatus
-            shell={shell}
-            item={row(current.item)}
-            project={row(current.project)}
-          />
-        ) : (
-          <p className={styles.meta} role="status">
-            Current details are still updating.
-          </p>
-        )
+        <CurrentProjection shell={shell} view={view} />
       ) : null}
       {reviewHref ? (
-        <p>
+        <p className={styles.handoffAction}>
           <a className={styles.primary} href={reviewHref}>
             Review approval
           </a>
