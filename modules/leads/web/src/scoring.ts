@@ -254,7 +254,8 @@ export function stageChip(
     case "too_old":
       return {
         mark: "old",
-        title: "Not scored: it was still waiting a day after it arrived.",
+        title:
+          "Not scored: it was past the age cutoff when scoring reached it.",
         tone: "dim",
       };
     case "closed":

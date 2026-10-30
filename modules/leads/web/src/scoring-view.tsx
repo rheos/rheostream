@@ -581,6 +581,8 @@ export function ScoringView(props: ScoringProps) {
   const failed = typeof view.failed_total === "number" ? view.failed_total : 0;
   const tooOld =
     typeof view.too_old_total === "number" ? view.too_old_total : 0;
+  const maxAge =
+    typeof view.max_age_hours === "number" ? view.max_age_hours : 0;
   const eta = typeof view.eta_seconds === "number" ? view.eta_seconds : null;
   const perJob =
     typeof view.median_call_seconds === "number"
@@ -608,11 +610,14 @@ export function ScoringView(props: ScoringProps) {
             marked failed until its posting changes, or until an owner puts it
             back in line here.
           </p>
-          <p>
-            A job still waiting a day after it arrived is set aside unscored, so
-            scoring that resumes after a pause starts with the recent jobs.
-            Promoted and invited jobs are always scored.
-          </p>
+          {maxAge > 0 ? (
+            <p>
+              A job still waiting {maxAge} {maxAge === 1 ? "hour" : "hours"}{" "}
+              after it arrived is set aside unscored, so scoring that resumes
+              after a pause starts with the recent jobs. Promoted and invited
+              jobs are always scored.
+            </p>
+          ) : null}
         </InfoTip>
       </div>
       <Status status={row(view.status)} now={now} zone={zone} />

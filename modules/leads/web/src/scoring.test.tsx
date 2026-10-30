@@ -58,6 +58,7 @@ const VIEW: Row = {
   waiting_total: 0,
   failed_total: 2,
   too_old_total: 3,
+  max_age_hours: 24,
   median_call_seconds: 40,
   eta_seconds: 40,
   batches: [
@@ -237,6 +238,7 @@ describe("the Scoring view", () => {
     expect(html).toContain('href="/leads/review"');
     expect(html).toContain('aria-label="Put 2 failed jobs back in line"');
     expect(html).toContain("3 too old to score");
+    expect(html).toMatch(/still waiting 24 hours/);
     expect(html).toContain('aria-current="page"');
     // No posting text and no money anywhere on the page.
     expect(html).not.toContain("$");

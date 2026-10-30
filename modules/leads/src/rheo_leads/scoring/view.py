@@ -7,7 +7,8 @@
   job and start), ``paused`` (the account's usage limit, or another account-side
   failure, holds every waiting job until a time), or ``idle`` with the last call.
 - the queue's totals: claimable jobs (``queued_total``), jobs waiting out a backoff,
-  failed jobs, jobs set aside as too old to score (``too_old_total``), and an upper
+  failed jobs, jobs set aside as too old to score (``too_old_total``, against the
+  ``max_age_hours`` cutoff, 0 when off), and an upper
   bound on the time to clear (the median of recent scoring calls for every queued
   job, though tier 1 holds some without a call).
 - ``batches``: Job search jobs created in the last :data:`WINDOW`, grouped into
@@ -44,6 +45,8 @@ from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import Handler
 from rheo_core.redaction.tiers import SensitivityTier, Tiered
 from rheo_core.refs.resolver import UnitOfWork
+from rheo_core.settings import resolve
+from rheo_core.settings.storage_source import TransactionBoundOverrideSource
 from sqlalchemy import and_, case, extract, func, select, true, update
 
 from rheo_leads import model_calls
@@ -109,8 +112,13 @@ def stage_of(
             return "failed"
         if job["explanation"] is None:
             return "too_old"
-        # Set aside unrescored: the assessment from before its inputs moved stands,
-        # and reads as the job queue and the review queue read it.
+        # Set aside unrescored: an earlier score, hold or wait for the posting stands
+        # and reads as the job queue and the review queue read it; an earlier failure
+        # is not retried, so the job reads too old.
+        earlier = stage_of(
+            {**job, "state": "scored"}, running=False, claimable=False, now=now
+        )
+        return "too_old" if earlier == "failed" else earlier
     if state == "pending":
         if not job["open"]:
             return "closed"
@@ -513,6 +521,12 @@ def view(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> ViewOutput:
             "waiting_total": max(totals.get("pending", 0) - claimable, 0),
             "failed_total": totals.get("failed", 0),
             "too_old_total": totals.get(scoring.TOO_OLD, 0),
+            "max_age_hours": resolve(
+                workspace_id=ctx.workspace_id,
+                source=TransactionBoundOverrideSource(
+                    uow, workspace_id=ctx.workspace_id
+                ),
+            ).get_int(scoring.MAX_AGE_KEY),
             "median_call_seconds": per_call,
             "eta_seconds": round(per_call * queued)
             if per_call is not None and queued

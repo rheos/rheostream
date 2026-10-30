@@ -27,7 +27,14 @@ from rheo_leads.scoring import job as scoring
 from rheo_leads.storage import scoring as s
 from sqlalchemy import select
 
-from postgres.test_job_scoring import FULL, Scoring, answer, failure, final
+from postgres.test_job_scoring import (
+    FULL,
+    Scoring,
+    answer,
+    backdate,
+    failure,
+    final,
+)
 from postgres.test_job_scoring import scored as scored
 from postgres.test_jobfeed_delivery import rows, the_opportunity
 from postgres.test_leads_intake import intake as intake
@@ -347,3 +354,23 @@ def test_a_job_set_aside_as_too_old_reads_too_old_and_is_not_retried(
     assert batch["counts"]["too_old"] == 1
     assert call(scored.i, scored.c.owner, "leads.jobscoring.retry_failed").count == 0
     assert scored.state("~02100")["state"] == "failed"
+
+
+def test_an_old_job_that_failed_before_its_posting_moved_reads_too_old(
+    scored: Scoring,
+) -> None:
+    scored.paste("~02100", GOOD)
+    scored.model(*[failure(FailureKind.OUTPUT_INVALID)] * scoring.SCORE_ATTEMPTS)
+    scored.set_profile()
+    at = datetime.now(UTC)
+    for _ in range(scoring.SCORE_ATTEMPTS):
+        scored.sweep(at)
+        at = (scored.state("~02100")["retry_after"] or at) + timedelta(seconds=1)
+    assert scored.state("~02100")["state"] == "failed"
+    backdate(scored, "~02100", timedelta(hours=30))
+    scored.paste("~02100", GOOD + "\n\nWe also need an admin page.")
+    scored.sweep()
+    assert scored.state("~02100")["failure_kind"] == scoring.TOO_OLD
+    data = view(scored)
+    assert jobs(data)["Good job"]["stage"] == "too_old"
+    assert data["max_age_hours"] == 24
