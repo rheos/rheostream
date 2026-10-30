@@ -105,10 +105,12 @@ def stage_of(
     if state is None:
         return "untracked" if job["open"] else "closed"
     if state == "failed":
-        if job["failure_kind"] == scoring.TOO_OLD:
-            # Set aside unscored; a score from before its posting moved still counts.
-            return "scored" if job["score"] is not None else "too_old"
-        return "failed"
+        if job["failure_kind"] != scoring.TOO_OLD:
+            return "failed"
+        if job["explanation"] is None:
+            return "too_old"
+        # Set aside unrescored: the assessment from before its inputs moved stands,
+        # and reads as the job queue and the review queue read it.
     if state == "pending":
         if not job["open"]:
             return "closed"

@@ -78,7 +78,7 @@ from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.work.backoff import backoff_for
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
-from sqlalchemy import and_, func, insert, select, update
+from sqlalchemy import and_, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import StatementError
 
@@ -392,11 +392,15 @@ def age_out(uow: UnitOfWork, *, now: datetime, max_age: timedelta | None) -> int
     """Set aside every pending open job imported before ``now - max_age``; the count.
 
     No model call and no attempt: the job is ``failed`` with :data:`TOO_OLD`, and an
-    earlier assessment, if any, stays its current one. A promoted job and an invited
-    one are exempt. ``None`` turns the cutoff off."""
+    earlier assessment, if any, stays its current one. Exempt: a promoted job, an
+    invited one, and one whose current assessment waited for the full posting (its
+    description arrived late, often pasted by the owner, and nothing else could get
+    it scored). A job a sweep holds a claim on is left to that sweep. ``None`` turns
+    the cutoff off."""
     if max_age is None:
         return 0
     state, o, field = s.job_score_state, p.opportunity, p.opportunity_field_state
+    qual = p.qualification
     old_ids = (
         _open_jobs().with_only_columns(o.c.id).where(o.c.created_at < now - max_age)
     )
@@ -406,13 +410,34 @@ def age_out(uow: UnitOfWork, *, now: datetime, max_age: timedelta | None) -> int
         field.c.value_text == "true",
         field.c.orphaned.is_(False),
     )
+    # The current assessment's explanation, picked as the queue picks it.
+    latest_explanation = (
+        select(qual.c.explanation)
+        .where(qual.c.opportunity_id == state.c.opportunity_id)
+        .order_by(
+            qual.c.input_revision.desc(), qual.c.created_at.desc(), qual.c.id.desc()
+        )
+        .limit(1)
+        .scalar_subquery()
+    )
+    # A claim leaves the row pending with no failure word and a future retry_after;
+    # a usage deferral sets a word, so a paused job still ages out.
+    unclaimed = or_(
+        state.c.retry_after.is_(None),
+        state.c.retry_after <= now,
+        state.c.failure_kind.is_not(None),
+    )
     count: int = uow.connection.execute(
         update(state)
         .where(
             state.c.state == "pending",
+            unclaimed,
             state.c.opportunity_id.in_(old_ids),
             state.c.opportunity_id.not_in(select(s.job_promotion.c.opportunity_id)),
             state.c.opportunity_id.not_in(invited),
+            func.coalesce(
+                func.starts_with(latest_explanation, UNDESCRIBED_LINE), False
+            ).is_(False),
         )
         .values(
             state="failed",

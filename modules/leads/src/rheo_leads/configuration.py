@@ -113,6 +113,7 @@ SCORING_SETTINGS: Final = (
         explicit_per_workspace=False,
         default=24,
         minimum=0,
+        maximum=24 * 365,
     ),
 )
 # Proposal drafting: the model for the letter and its repair, and the one for the

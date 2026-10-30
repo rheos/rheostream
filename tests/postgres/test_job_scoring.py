@@ -679,3 +679,47 @@ def test_a_max_age_of_zero_scores_every_waiting_job(
     scored.set_profile()
     scored.sweep()
     assert [a["score"] for a in scored.assessments("~02100")] == [50]
+
+
+def test_a_posting_pasted_onto_an_old_job_still_gets_it_scored(
+    scored: Scoring,
+) -> None:
+    call(
+        scored.i,
+        scored.c.owner,
+        "leads.jobfeed.paste",
+        pipeline_ref=ref("pipeline", scored.c.pipeline_id),
+        kind="search_page",
+        content=SEARCH_TILE,
+    )
+    scored.drain()
+    scored.model(final(8))
+    scored.set_profile()
+    scored.sweep()
+    (waiting,) = scored.assessments("~02300")
+    assert waiting["explanation"].startswith(scoring.UNDESCRIBED_LINE)
+    # The owner pastes the full posting two days later.
+    backdate(scored, "~02300", timedelta(days=2))
+    scored.paste("~02300", FULL.format(title="Example tile", what="app", activity=""))
+    adapter = scored.model(final(7))
+    scored.sweep()
+    assert scored.assessments("~02300")[-1]["score"] == 70
+    assert len(adapter.starts) == 1
+
+
+def test_a_job_a_sweep_has_claimed_is_left_to_that_sweep(scored: Scoring) -> None:
+    scored.paste("~02100", FULL.format(title="Job", what="pipeline", activity=""))
+    scored.model(final(8))
+    scored.set_profile()
+    now = datetime.now(UTC)
+    with open_unit_of_work(scored.c.owner) as uow:
+        scoring.refresh(uow, cap=50, now=now)
+        claimed = scoring.claim(uow, now=now, window=timedelta(hours=1))
+        uow.commit()
+    assert claimed is not None
+    backdate(scored, "~02100", timedelta(days=2))
+    with open_unit_of_work(scored.c.owner) as uow:
+        aged = scoring.age_out(uow, now=now, max_age=timedelta(hours=24))
+        uow.commit()
+    assert aged == 0
+    assert scored.state("~02100")["state"] == "pending"
