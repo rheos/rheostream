@@ -34,6 +34,13 @@ OpportunityRef = Annotated[
         "UI shows it) or its full reference, leads.opportunity:<uuid>."
     ),
 ]
+HandoffRef = Annotated[
+    RecordRef,
+    BeforeValidator(
+        lambda v, info: _parse(v, info, "handoff"), json_schema_input_type=str
+    ),
+    PlainSerializer(lambda r: r.format(), return_type=str),
+]
 ObservationRef = Annotated[
     RecordRef,
     BeforeValidator(
@@ -336,6 +343,86 @@ class HandoffSummary(Strict):
 class HandoffPage(Strict):
     items: list[HandoffSummary]
     next_offset: int | None
+
+
+class CurrentViewInput(Strict):
+    """The Leads-owned viewer bridge accepts no Current-selected input."""
+
+    handoff_ref: HandoffRef
+
+
+class CurrentViewHistory(Strict):
+    """Leads-owned handoff history, without stored Current refs or errors."""
+
+    ref: str
+    opportunity_ref: str
+    purpose: str
+    state: HandoffState
+    attempt_count: int
+    requested_at: AwareDatetime
+    resolved_at: AwareDatetime | None
+
+
+class CurrentItemContent(Strict):
+    """Display fields allowlisted from a successful ``current.item.get``."""
+
+    title: str
+    body: str
+    status: str
+    priority: str
+    area: str | None
+    due_on: date | None
+    snoozed_until: AwareDatetime | None
+    woke: bool
+    overdue: bool
+    blocked: bool
+    event_count: int
+    revision: int
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    closed_at: AwareDatetime | None
+
+
+class CurrentProjectContent(Strict):
+    """Display fields allowlisted from a successful ``current.project.get``."""
+
+    title: str
+    description: str
+    status: str
+    area: str | None
+    due_on: date | None
+    revision: int
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    item_counts: dict[str, int]
+
+
+class CurrentItemLive(Strict):
+    state: Literal["live"] = "live"
+    ref: str
+    content: CurrentItemContent
+
+
+class CurrentItemState(Strict):
+    state: Literal["deleted", "denied", "unavailable"]
+    message: str
+
+
+class CurrentProjectLive(Strict):
+    state: Literal["live"] = "live"
+    ref: str
+    content: CurrentProjectContent
+
+
+class CurrentProjectState(Strict):
+    state: Literal["never_assigned", "cleared", "deleted", "denied", "unavailable"]
+    message: str
+
+
+class CurrentView(Strict):
+    history: CurrentViewHistory
+    item: CurrentItemLive | CurrentItemState
+    project: CurrentProjectLive | CurrentProjectState
 
 
 class DraftInput(RevisionInput):

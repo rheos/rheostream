@@ -112,6 +112,7 @@ export const MODULES = [
       "leads.answerlibrary.match",
       "leads.connection.health",
       "leads.contact_permission.check",
+      "leads.handoff.current_view",
       "leads.handoff.get",
       "leads.handoff.list",
       "leads.intake.receipt",

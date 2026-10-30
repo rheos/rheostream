@@ -234,15 +234,17 @@ def outcome_values(
         else:
             succeeded = state == "succeeded"
             failure = record["failure_class"]
-            if state == "failed" and failure == OUTCOME_UNKNOWN:
-                # A person resolved an unknown outcome to failed on the destination's
-                # proof of no effect. Core keeps the class it first recorded and
-                # names the resolution in its error code, the fact Leads records.
+            error_code = record["error_code"]
+            if isinstance(error_code, str) and error_code.startswith("resolved_"):
+                # A person's resolution is the latest fact. Core deliberately keeps
+                # the first failure class as history, including ``outcome_unknown``;
+                # Leads records the resolved error code for every resolved terminal
+                # state instead of presenting the obsolete first classification.
                 failure = None
             values = dict(
                 state=state,
                 result_ref=record["result_ref"] if succeeded else None,
-                result_detail=None if succeeded else failure or record["error_code"],
+                result_detail=None if succeeded else failure or error_code,
                 resolved_at=record["terminal_at"],
             )
     return {key: value for key, value in values.items() if handoff[key] != value}

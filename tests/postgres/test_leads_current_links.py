@@ -258,6 +258,32 @@ def test_a_resolution_to_failed_reaches_leads_and_restages_on_a_new_approval(
     assert item["source_ref"] == result.ref
 
 
+def test_a_resolution_to_cancelled_is_recorded_and_never_restages_but_a_new_key_does(
+    routing: Routing, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (result,) = many(routing, 1, approve=False)
+    routing.unresolve(monkeypatch, result)
+    reconcile(routing, page_size=10)
+    assert routing.row(result)["state"] == "unresolved"
+
+    resolved = routing.resolve(result, "cancelled")
+    assert resolved.ok, resolved
+    routing.swap_destination(monkeypatch)
+    reconcile(routing, page_size=10)
+    row = routing.row(result)
+    assert (row["state"], row["result_detail"]) == (
+        "cancelled",
+        "resolved_cancelled",
+    )
+    refused = routing.restage(result)
+    assert refused.state == "handoff_not_restageable", refused
+
+    opportunity = routing.get(f"leads.opportunity:{row['opportunity_id']}")
+    fresh = routing.handoff(opportunity, "fresh-after-cancel")
+    assert routing.row(fresh)["state"] == "pending"
+    assert routing.row(fresh)["attempt_count"] == 1
+
+
 def test_a_settled_absence_leaves_the_nonterminal_scan(routing: Routing) -> None:
     """An unresolved handoff whose core action is gone is read once, then left."""
     (result,) = many(routing, 1, approve=False)
@@ -283,7 +309,7 @@ def test_a_settled_absence_leaves_the_nonterminal_scan(routing: Routing) -> None
     assert reconcile(routing, page_size=10).nonterminal.examined == 0
 
 
-def test_an_out_of_contract_link_is_skipped_without_pinning_the_cursor(
+def test_an_invalid_link_combination_is_skipped_without_pinning_the_cursor(
     routing: Routing, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bad, good = many(routing, 2)
@@ -295,7 +321,11 @@ def test_an_out_of_contract_link_is_skipped_without_pinning_the_cursor(
     def spy(ctx: WorkspaceContext, uow: Any, name: str, payload: Any, **kw: Any) -> Any:
         answer = call_in_transaction(ctx, uow, name, payload, **kw)
         if name == cl.LINK_STATE and payload["source_ref"] == bad.ref:
-            dumped = {**answer.model_dump(mode="json"), "project_state": "archived"}
+            dumped = {
+                **answer.model_dump(mode="json"),
+                "project_state": "linked",
+                "project_ref": None,
+            }
             return SimpleNamespace(model_dump=lambda mode: dumped)
         return answer
 

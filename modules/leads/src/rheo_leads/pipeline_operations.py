@@ -10,7 +10,7 @@ from rheo_contracts import (
 )
 from rheo_core.operations.registry import Handler
 
-from rheo_leads import followups, permissions
+from rheo_leads import followups, handoff_views, permissions
 from rheo_leads import pipeline_actions as a
 from rheo_leads import pipeline_configuration as config
 from rheo_leads import pipeline_contracts as c
@@ -209,6 +209,16 @@ SPECS = (
         MEMBERS,
         None,
         "leads_get_handoff",
+    ),
+    (
+        "handoff.current_view",
+        c.CurrentViewInput,
+        c.CurrentView,
+        handoff_views.current_view,
+        SafetyClass.READ,
+        MEMBERS,
+        None,
+        None,
     ),
     (
         "handoff.list",

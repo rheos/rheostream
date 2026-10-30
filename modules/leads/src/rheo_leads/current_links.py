@@ -31,7 +31,14 @@ from datetime import datetime
 from typing import Any, Final, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 from rheo_contracts import (
     EventEnvelope,
     RecordRef,
@@ -97,6 +104,22 @@ class CurrentLink(BaseModel):
     project_state: ProjectState
     revision: int = Field(ge=1)
     changed_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def project_shape(self) -> "CurrentLink":
+        """Mirror Current's linked/history rules before any projection write."""
+        if self.project_state == "linked":
+            if self.project_ref is None:
+                raise ValueError("a linked project requires project_ref")
+        elif self.project_ref is not None:
+            raise ValueError("only a linked project may carry project_ref")
+        if self.project_state == "never_assigned":
+            if self.last_project_ref is not None:
+                raise ValueError("a never-assigned link has no project history")
+        elif self.project_state in {"cleared", "deleted"}:
+            if self.last_project_ref is None:
+                raise ValueError("cleared and deleted links require project history")
+        return self
 
 
 def is_newer(stored: int | None, incoming: int) -> bool:

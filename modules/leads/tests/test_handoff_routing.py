@@ -141,6 +141,29 @@ def test_current_links_refuse_a_state_outside_currents_contract(
         links.CurrentLink.model_validate(_link(2, **change))
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"project_state": "linked", "project_ref": None},
+        {
+            "project_state": "never_assigned",
+            "project_ref": "current.project:00000000-0000-7000-8000-0000000000e1",
+        },
+        {
+            "project_state": "never_assigned",
+            "last_project_ref": "current.project:00000000-0000-7000-8000-0000000000e1",
+        },
+        {"project_state": "cleared", "last_project_ref": None},
+        {"project_state": "deleted", "last_project_ref": None},
+    ],
+)
+def test_current_links_refuse_cross_field_shapes_current_cannot_publish(
+    change: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        links.CurrentLink.model_validate(_link(2, **change))
+
+
 def test_current_links_unresolved_rows_known_to_have_no_action_leave_the_scan() -> None:
     from rheo_leads.storage import pipeline
 
