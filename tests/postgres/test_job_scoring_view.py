@@ -330,3 +330,20 @@ def test_the_job_feed_tab_reads_the_latest_runs_and_old_ones_are_dropped(
     assert [r["finished_at"] for r in runs] == sorted(
         (r["finished_at"] for r in runs), reverse=True
     )
+
+
+def test_a_job_set_aside_as_too_old_reads_too_old_and_is_not_retried(
+    scored: Scoring,
+) -> None:
+    scored.paste("~02100", GOOD)
+    scored.model(final(8))
+    scored.set_profile()
+    scored.sweep(datetime.now(UTC) + timedelta(hours=25))
+    assert scored.state("~02100")["failure_kind"] == scoring.TOO_OLD
+    data = view(scored)
+    assert (data["failed_total"], data["too_old_total"]) == (0, 1)
+    assert jobs(data)["Good job"]["stage"] == "too_old"
+    (batch,) = data["batches"]
+    assert batch["counts"]["too_old"] == 1
+    assert call(scored.i, scored.c.owner, "leads.jobscoring.retry_failed").count == 0
+    assert scored.state("~02100")["state"] == "failed"

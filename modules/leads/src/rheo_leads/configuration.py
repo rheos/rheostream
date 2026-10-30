@@ -103,6 +103,17 @@ SCORING_SETTINGS: Final = (
         default=10,
         minimum=1,
     ),
+    # A pending job imported more than this many hours ago is set aside unscored, so
+    # a sweep resuming after a long pause scores recent jobs only. 0 turns it off.
+    KeySpec(
+        key="leads.scoring.max_age_hours",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=None,
+        explicit_per_workspace=False,
+        default=24,
+        minimum=0,
+    ),
 )
 # Proposal drafting: the model for the letter and its repair, and the one for the
 # posting analysis and the accuracy extraction (empty leaves the CLI's default).

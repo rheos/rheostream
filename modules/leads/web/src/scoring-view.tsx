@@ -146,6 +146,7 @@ function Batch({
       ["paused", "paused"],
       ["needs_posting", "need the posting"],
       ["failed", "failed"],
+      ["too_old", "too old"],
     ] as const
   )
     .filter(([key]) => typeof counts[key] === "number" && counts[key] > 0)
@@ -578,6 +579,8 @@ export function ScoringView(props: ScoringProps) {
   const waiting =
     typeof view.waiting_total === "number" ? view.waiting_total : 0;
   const failed = typeof view.failed_total === "number" ? view.failed_total : 0;
+  const tooOld =
+    typeof view.too_old_total === "number" ? view.too_old_total : 0;
   const eta = typeof view.eta_seconds === "number" ? view.eta_seconds : null;
   const perJob =
     typeof view.median_call_seconds === "number"
@@ -604,6 +607,11 @@ export function ScoringView(props: ScoringProps) {
             scoring tries again on its own. A job that fails five times is
             marked failed until its posting changes, or until an owner puts it
             back in line here.
+          </p>
+          <p>
+            A job still waiting a day after it arrived is set aside unscored, so
+            scoring that resumes after a pause starts with the recent jobs.
+            Promoted and invited jobs are always scored.
           </p>
         </InfoTip>
       </div>
@@ -632,6 +640,7 @@ export function ScoringView(props: ScoringProps) {
             ) : null}
           </span>
         ) : null}
+        {tooOld > 0 ? <span>{tooOld} too old to score</span> : null}
       </p>
       {error ? (
         <p className={styles.error} role="alert">
