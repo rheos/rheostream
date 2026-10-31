@@ -65,6 +65,9 @@ REQUIRED_FIXTURES = {
     "approval-denied-or-missing",
     "approval-temporarily-unavailable",
 }
+#: Seeded states the manifest's capture rows and criteria need beyond its 27 labels:
+#: an opportunity with no qualification, and a pending approval with a long payload.
+SUPPLEMENTARY_FIXTURES = {"unqualified", "approval-pending-long-payload"}
 
 
 def _authority() -> dict[str, object]:
@@ -140,7 +143,7 @@ def _names_label(reference: str, label: str) -> bool:
 
 def test_acceptance_authority_names_every_manifest_fixture_and_criterion() -> None:
     authority = _authority()
-    assert set(authority["fixtures"]) == REQUIRED_FIXTURES
+    assert set(authority["fixtures"]) == REQUIRED_FIXTURES | SUPPLEMENTARY_FIXTURES
     criteria = authority["criteria"]
     assert isinstance(criteria, list)
     assert [row["criterion"] for row in criteria] == list(range(1, 19))
@@ -460,7 +463,13 @@ def test_every_consuming_row_has_its_own_seeded_pending_approval() -> None:
 
 def test_criterion_manual_states_outside_the_labels_are_classified() -> None:
     criteria = {row["criterion"]: row for row in _authority()["criteria"]}
-    expected = {9: {"unqualified"}, 12: {"route absence"}, 14: {"moved"}}
+    expected = {
+        6: {"changed binding", "restored requires_reapproval"},
+        12: {"route absence"},
+        14: {"moved"},
+    }
+    covered = {n for n, row in criteria.items() if "manual_coverage" in row}
+    assert covered == set(expected)
     for criterion, states in expected.items():
         coverage = criteria[criterion]["manual_coverage"]
         assert {entry["state"] for entry in coverage} == states, criterion
@@ -471,6 +480,55 @@ def test_criterion_manual_states_outside_the_labels_are_classified() -> None:
                 _assert_reference_resolves(reference)
             if entry["mode"] == "normal-interaction":
                 assert entry["steps"], entry
+            else:
+                # An automated-only state says why no reviewer can reach it.
+                assert entry["note"], entry
+
+    # The restored page has its own render test, apart from the stale-tab recipe.
+    (restored,) = [
+        entry
+        for entry in criteria[6]["manual_coverage"]
+        if entry["state"] == "restored requires_reapproval"
+    ]
+    assert (
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > labels restored dates "
+        "as historical and still requires a fresh explicit decision"
+    ) in restored["automated"]
+
+
+def test_unqualified_is_a_seeded_state_not_an_automated_only_contradiction() -> None:
+    authority = _authority()
+    criterion = {row["criterion"]: row for row in authority["criteria"]}[9]
+    assert "manual_coverage" not in criterion
+    assert any("unqualified" in line for line in criterion["prompt15_manual"])
+    fixture = authority["fixtures"]["unqualified"]
+    assert fixture["surface"] == "leads"
+    assert fixture["evidence_mode"] == "seeded-durable-url"
+
+
+def test_stale_binding_recipe_says_what_it_proves() -> None:
+    recipe = _authority()["interaction_recipes"]["approval-stale-binding"]
+    proves = recipe["proves"]
+    assert "concurrent" in proves
+    assert "requires_reapproval" in proves and "changed binding" in proves
+
+
+def test_long_payload_fixture_carries_its_capture_recipe() -> None:
+    authority = _authority()
+    long = authority["long_payload"]
+    assert len(long["item_title"]) >= 400
+    assert len(long["item_body"]) >= 1500 and "\n\n" in long["item_body"]
+    assert len(long["request_key"]) == 256
+    fixture = authority["fixtures"]["approval-pending-long-payload"]
+    assert fixture["surface"] == "shell"
+    assert fixture["evidence_mode"] == "seeded-durable-url"
+    capture = fixture["capture"]
+    assert capture["manifest_row"] == "pending with complete long payload"
+    assert capture["viewports"] == ["1440x1024", "390x844"]
+    checks = " ".join(capture["wrap_checks"])
+    for field in ("title", "body", "digest", "idempotency key", "horizontal"):
+        assert field in checks, field
+    assert capture["steps"], capture
 
 
 # --- the audit browser session ----------------------------------------------------

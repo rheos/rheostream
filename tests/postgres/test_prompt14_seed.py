@@ -73,6 +73,7 @@ APPROVALS = {
     "approval-failed-no-effect": ("resolved", "executed", "failed"),
     "approval-unresolved": ("resolved", "executed", "unresolved"),
     "approval-refused": ("resolved", "refused", "refused"),
+    "approval-pending-long-payload": ("pending", "pending", "pending"),
 }
 
 
@@ -97,6 +98,7 @@ def _assert_seeded(routing: Routing, result: Seeded, workspace_b: UUID) -> None:
         if fixture["evidence_mode"] == "seeded-durable-url"
     }
     assert set(result.fixtures) == durable == set(LEADS_LABELS) | set(APPROVAL_LABELS)
+    assert {"unqualified", "approval-pending-long-payload"} <= durable
 
     for label in LEADS_LABELS:
         assert set(result.fixtures[label]) == set(VARIANTS), label
@@ -122,6 +124,29 @@ def _assert_seeded(routing: Routing, result: Seeded, workspace_b: UUID) -> None:
 
     stale = routing.get(result.opportunities["qualified-stale"]["generic"].ref)
     assert str(stale.data["value_amount"]) == "1200.00"
+
+    # Unqualified in both variants: no qualification, so no handoff can be asked for.
+    assert "unqualified" in LEADS_LABELS
+    for variant in VARIANTS:
+        unqualified = result.opportunities["unqualified"][variant]
+        listed = routing.call("leads.qualification.list", ref=unqualified.ref)
+        assert listed.ok and listed.result.items == [], variant
+
+    # The long-payload approval: every long field reaches the stored payload whole.
+    long = authority["long_payload"]
+    long_row = result.approvals["approval-pending-long-payload"]
+    assert long_row["idempotency_key"] == long["request_key"]
+    long_preview = routing.call(
+        "core.approval.preview", approval_id=str(long_row["approval_id"])
+    )
+    assert long_preview.ok, long_preview
+    payload = long_preview.result.payload
+    assert payload["title"] == long["item_title"]
+    assert payload["body"] == long["item_body"]
+    assert payload["due_on"] == long["due_on"]
+    assert payload["idempotency_key"].startswith("leads.handoff:")
+    assert len(long_preview.result.payload_digest) == 64
+    assert long_preview.result.actionable is True
 
     approvals = {}
     for label in APPROVAL_LABELS:

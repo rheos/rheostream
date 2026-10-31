@@ -45,6 +45,7 @@ VARIANTS = ("generic", "job_search")
 
 #: Labels whose Leads detail URL the seed writes, once per variant.
 LEADS_LABELS = (
+    "unqualified",
     "qualified-current",
     "qualified-stale",
     "handoff-awaiting-approval",
@@ -67,6 +68,7 @@ APPROVAL_LABELS = (
     "approval-failed-no-effect",
     "approval-unresolved",
     "approval-refused",
+    "approval-pending-long-payload",
 )
 #: Rows that consume a pending approval, each given its own spare (seeded last,
 #: so every spare's 900 s window starts at the end of the seed).
@@ -333,6 +335,10 @@ def _seed_settled(seeder: _Seeder, seeded: Seeded, variant: str) -> None:
     base = seeder.scenario["opportunity"]
     key = f"prompt14-{variant}"
 
+    # A new opportunity nobody has qualified yet: Leads offers no handoff form.
+    unqualified = routing.opportunity(_title(base, variant, "unqualified"))
+    seeded.leads("unqualified", variant, unqualified)
+
     current = seeder.qualified(_title(base, variant, ""))
     seeded.leads("qualified-current", variant, current)
 
@@ -505,6 +511,26 @@ def seeded(
             result.handoffs.setdefault("handoff-approved-queued", {})[variant] = handoff
             if variant == "generic":
                 result.approval("approval-approved-queued", row)
+
+        # The long-payload capture: the same normal Leads handoff path, with the
+        # authority's long synthetic title and body and a 256-character request key.
+        # Created with the spares so its window starts late too; never decided.
+        long = authority["long_payload"]
+        long_opportunity = seeder.qualified(
+            _title(scenario["opportunity"], "job_search", "long payload")
+        )
+        long_handoff = routing.handoff(
+            long_opportunity,
+            long["request_key"],
+            payload={
+                **seeder.payload,
+                "title": long["item_title"],
+                "body": long["item_body"],
+                "priority": long["priority"],
+                "due_on": long["due_on"],
+            },
+        )
+        result.approval("approval-pending-long-payload", routing.row(long_handoff))
 
         # One undecided approval per consuming audit row, created last so each
         # window starts as late as possible. Nothing approves or refuses them.

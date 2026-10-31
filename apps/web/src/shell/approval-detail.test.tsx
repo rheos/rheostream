@@ -204,6 +204,38 @@ describe("ApprovalDetail", () => {
     expect(seams.calls.map((call) => call.name)).toEqual(["core.approval.preview"]);
   });
 
+  it("approval-pending-long-payload renders every long field in full before the decision forms", async () => {
+    // Synthetic long content, shaped like the seeded long-payload approval.
+    const title = `Prepare the Northwind onboarding workshop ${"for every regional facilitation team ".repeat(10)}`.trim();
+    const body = [
+      `Agenda: ${"walk through the onboarding checklist section by section, ".repeat(8)}`.trim(),
+      `Access requirements: ${"step-free routes, captioning and large-print agendas, ".repeat(8)}`.trim(),
+    ].join("\n\n");
+    const key = `leads.handoff:${"0".repeat(8)}-0000-7000-8000-${"0".repeat(12)}#1`;
+    const digest = "0123456789abcdef".repeat(4);
+    seams.preview = preview({
+      payload: {
+        destination_ref: "current",
+        source_ref: "leads.handoff:synthetic",
+        title,
+        body,
+        priority: "high",
+        area: "client_delivery",
+        due_on: "2027-03-15",
+        idempotency_key: key,
+      },
+      payload_digest: digest,
+    });
+    const html = await render();
+    for (const value of [title, body, key, digest, "2027-03-15"]) {
+      expect(html).toContain(value);
+    }
+    expect(html).not.toContain("…");
+    expect(html.indexOf(body)).toBeLessThan(html.indexOf("Decision"));
+    expect(html.indexOf(digest)).toBeLessThan(html.indexOf("Decision"));
+    expect((html.match(/<form/g) ?? [])).toHaveLength(2);
+  });
+
   it("labels restored dates as historical and still requires a fresh explicit decision", async () => {
     seams.preview = preview({
       status: "restored",

@@ -7,9 +7,14 @@ manual browser review. It is not evidence that the review has passed.
 ## The authority
 
 [`tests/fixtures/leads-current-handoff.json`](../../tests/fixtures/leads-current-handoff.json)
-lists all 27 named states. Each state names its own automated tests and how a reviewer
-reaches it: a seeded URL (generic and job-search Leads variants), a normal
-interaction, or a scripted step on the disposable stack. Two asymmetric item/project
+lists all 27 named states, plus two seeded states the review needs: `unqualified` (an
+opportunity nobody has qualified, in both Leads variants) and
+`approval-pending-long-payload` (a pending approval with a long title, body and request
+key, for the long-content wrap checks). Each state names its own automated tests and how
+a reviewer reaches it: a seeded URL (generic and job-search Leads variants), a normal
+interaction, or a scripted step on the disposable stack. States no reviewer can reach
+without faking data, such as a restored approval that needs a fresh decision, are listed
+as automated-only with the reason. Two asymmetric item/project
 denial states use restricted-token authorization tests plus render tests instead of a
 browser row, because an ordinary owner or member can always read both siblings.
 `tests/test_prompt14_acceptance.py` keeps that file honest, and

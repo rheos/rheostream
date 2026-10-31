@@ -13,6 +13,14 @@
     "due_date": null,
     "project": "Northwind launch"
   },
+  "long_payload": {
+    "note": "Synthetic long content for the approval-pending-long-payload capture. The approval shows the payload Leads builds: this title, body, priority, area and due date, plus Leads' own attempt key (leads.handoff:<id>#1). The 256-character request key is the Leads request key stored on the handoff.",
+    "item_title": "Prepare the Northwind onboarding workshop for every regional facilitation team, including the agenda review, facilitator briefings, accessibility and room access requirements, the shared materials library, the follow-up survey, and the handover notes the Northwind launch coordinators asked for after the qualified opportunity review with Avery Chen and the synthetic review panel, so each later reviewer can check the whole request in one place before deciding",
+    "item_body": "Synthetic long-payload review fixture for the Northwind onboarding workshop. Confirm the agenda, facilitators, and access requirements from the qualified opportunity before anything is scheduled, and keep every note below attached to the one Current item this handoff creates.\n\nAgenda: open with the Northwind launch goals, walk through the onboarding checklist section by section, reserve a long working session for the regional teams to rehearse their own introductions, and close with a question period that the facilitators record for the follow-up survey.\n\nFacilitators: Avery Chen leads the opening and the closing review; two synthetic co-facilitators cover the regional breakout rooms; each facilitator receives the briefing pack, the attendance list, and the escalation contact at the Northwind launch desk (launch-desk@example.com) one week before the workshop.\n\nAccess requirements: step-free routes to every room, captioning for the opening and closing sessions, quiet space near the breakout rooms, printed and large-print copies of the agenda, and a recorded walkthrough of the venue for attendees who cannot visit beforehand.\n\nMaterials: keep everything in the shared library under northwind-onboarding-workshop-materials-library-reference-index so the coordinators, facilitators, and later reviewers read the same versions without copying files between teams.\n\nFollow-up: send the survey within two working days, collect the facilitator notes the same week, and add the handover summary to this item so the Northwind launch project can pick it up later through Current's own edit form.",
+    "priority": "high",
+    "due_on": "2027-03-15",
+    "request_key": "prompt14-long-payload-northwind-onboarding-workshop-review-request-key-northwind-onboarding-workshop-review-request-key-northwind-onboarding-workshop-review-request-key-northwind-onboarding-workshop-review-request-key-northwind-onboarding-workshop-review-r"
+  },
   "fixtures": {
     "qualified-current": {
       "surface": "leads",
@@ -30,6 +38,17 @@
       "automated": [
         "vitest:modules/leads/web/src/screens.test.tsx > qualified-stale warns conspicuously without disabling handoff",
         "pytest:tests/postgres/test_leads_current_handoff.py::test_handoff_snapshots_the_latest_qualification_and_stale_only_warns",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "unqualified": {
+      "surface": "leads",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "generic": "/leads/detail?ref=<seeded-opportunity-ref>", "job_search": "/leads/detail?ref=<seeded-opportunity-ref>" },
+      "note": "A new opportunity with no qualification: the handoff request form is absent, not disabled.",
+      "automated": [
+        "vitest:modules/leads/web/src/screens.test.tsx > unqualified requires a current qualification and renders no disabled facsimile",
+        "pytest:tests/postgres/test_leads_current_handoff.py::test_handoff_without_a_qualification_refuses_and_writes_nothing",
         "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
       ]
     },
@@ -177,6 +196,33 @@
         "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
       ]
     },
+    "approval-pending-long-payload": {
+      "surface": "shell",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "shell": "/approvals/detail?approval_id=<seeded-approval-uuid>" },
+      "lifetime": "Pending only within its window (default 900 seconds after seeding); never decided, so its read-only capture matrix never consumes it. Reset and reseed after it lapses.",
+      "capture": {
+        "manifest_row": "pending with complete long payload",
+        "viewports": ["1440x1024", "390x844"],
+        "steps": [
+          "Open the seeded approval-pending-long-payload URL from urls as the seeded owner in workspace A.",
+          "Read the Verified stored payload section: the long title, every paragraph of the long body, priority, area, due date and the idempotency key appear in full, before the Decision section.",
+          "Read the Review binding section: the full 64-character payload digest appears.",
+          "Repeat at each viewport and theme in the manifest matrix and at 200% zoom. Do not approve or refuse it."
+        ],
+        "wrap_checks": [
+          "The long title wraps onto further lines with no truncation, ellipsis or clipping.",
+          "The long body keeps its paragraph breaks and wraps with no truncation or clipping.",
+          "The 64-character payload digest wraps inside the panel with no clipping.",
+          "The idempotency key (Leads' attempt key, one unbroken token) wraps inside the panel with no clipping.",
+          "No horizontal page scroll: document.documentElement.scrollWidth does not exceed clientWidth."
+        ]
+      },
+      "automated": [
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > approval-pending-long-payload renders every long field in full before the decision forms",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
     "approval-submitting": {
       "surface": "shell",
       "evidence_mode": "normal-interaction",
@@ -280,7 +326,7 @@
   "seed_gaps": {},
   "pending_spares": {
     "rows": ["approval-submitting", "approval-stale-binding", "approval-expired", "decision-approve", "decision-refuse"],
-    "note": "Each consuming row has its own undecided approval, printed by urls as spare:<row>. The approval-pending fixture itself is never decided, so its read-only review matrix (themes, viewports, zoom, keyboard) never consumes it.",
+    "note": "Each consuming row has its own undecided approval, printed by urls as spare:<row>. The approval-pending and approval-pending-long-payload fixtures are never decided, so their read-only review matrix (themes, viewports, zoom, keyboard) never consumes them.",
     "reseed": "Every pending approval, spares included, stays pending for 900 seconds after seeding. When a pending row's window lapses before its check is done, run reset, up and seed again (about three minutes) and continue with the new URLs from urls; nothing else changes."
   },
   "criteria": [
@@ -312,7 +358,25 @@
     {
       "criterion": 6,
       "automated": ["pytest:tests/postgres/test_external_continuation.py::test_effect_time_recheck_refuses_a_changed_payload_snapshot"],
-      "prompt15_manual": ["Confirm stale binding exposes no executable decision controls."]
+      "prompt15_manual": ["Confirm stale binding exposes no executable decision controls."],
+      "manual_coverage": [
+        {
+          "state": "changed binding",
+          "mode": "automated-only",
+          "automated": ["pytest:tests/postgres/test_external_continuation.py::test_effect_time_recheck_refuses_a_changed_payload_snapshot"],
+          "note": "A stored payload snapshot changes after approval only by a direct database write; no person, page or operation can change it, so no reviewer can reach it without faking state. The PostgreSQL test pins the effect-time refusal."
+        },
+        {
+          "state": "restored requires_reapproval",
+          "mode": "automated-only",
+          "automated": [
+            "vitest:apps/web/src/shell/approval-detail.test.tsx > labels restored dates as historical and still requires a fresh explicit decision",
+            "pytest:tests/postgres/test_approvals.py::test_a_restored_approval_previews_as_restored_and_actionable",
+            "pytest:tests/postgres/test_export_restore.py::test_approved_action_restore_requires_fresh_approval_and_executes_nothing"
+          ],
+          "note": "Core writes requires_reapproval only when an operator restores a workspace export (rheo workspace restore provisions the export's recorded workspace id, so the source workspace must be gone first). No owner or member web interaction reaches it, and the acceptance stack would have to destroy and restore its seeded workspace through the operator CLI. The render test pins the restored page; the PostgreSQL tests pin how restore produces it."
+        }
+      ]
     },
     {
       "criterion": 7,
@@ -327,15 +391,7 @@
     {
       "criterion": 9,
       "automated": ["vitest:modules/leads/web/src/screens.test.tsx > qualified-current enables handoff regardless of qualification score", "vitest:modules/leads/web/src/screens.test.tsx > qualified-stale warns conspicuously without disabling handoff"],
-      "prompt15_manual": ["Inspect qualified current, unqualified, and stale variants in Leads."],
-      "manual_coverage": [
-        {
-          "state": "unqualified",
-          "mode": "automated-only",
-          "automated": ["vitest:modules/leads/web/src/screens.test.tsx > requires a current qualification and renders no disabled facsimile", "pytest:tests/postgres/test_leads_current_handoff.py::test_handoff_without_a_qualification_refuses_and_writes_nothing"],
-          "note": "No unqualified fixture is seeded; the request form is absent rather than disabled, which the render test pins."
-        }
-      ]
+      "prompt15_manual": ["Inspect the seeded qualified-current, unqualified and qualified-stale fixtures in both Leads variants."]
     },
     {
       "criterion": 10,
@@ -418,6 +474,7 @@
     "approval-stale-binding": {
       "kind": "normal-interaction",
       "route": "the spare:approval-stale-binding URL in two ordinary tabs",
+      "proves": "The concurrent-race refusal only: a decision taken in another tab leaves the stale tab's form refused, with no mutation and no resubmission. It does not change the stored binding (a changed binding) and does not reach the restored requires_reapproval page; criterion 6's manual_coverage classifies both.",
       "steps": [
         "Open the same pending approval in two ordinary tabs.",
         "Decide it in the first tab.",

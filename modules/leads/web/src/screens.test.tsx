@@ -642,7 +642,7 @@ describe("Leads to Current detail integration", () => {
     expect(html).toContain("No Current handoffs yet.");
   });
 
-  it("requires a current qualification and renders no disabled facsimile", async () => {
+  it("unqualified requires a current qualification and renders no disabled facsimile", async () => {
     const api = shell({
       "leads.opportunity.get": ok({
         ref: opportunity.ref,
