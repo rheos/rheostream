@@ -9,7 +9,7 @@
 //   node audit_browser.mjs open PORT URL [PHRASE ...]
 //   node audit_browser.mjs switch-workspace PORT WORKSPACE_ID
 
-import { readFileSync } from "node:fs";
+import { Buffer } from "node:buffer";
 import process from "node:process";
 
 const BASE_URL = "http://localhost:3000/";
@@ -108,8 +108,15 @@ const SNAPSHOT = `(() => ({
   text: document.body.innerText,
 }))()`;
 
+async function readStdin() {
+  // A pipe can be non-blocking, so read it as a stream rather than readFileSync(0).
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 async function setCookie(port) {
-  const secret = readFileSync(0, "utf8").trim();
+  const secret = (await readStdin()).trim();
   if (!/^[0-9a-f]{32,}$/.test(secret)) fail("no session secret arrived on stdin");
   const session = await browserSession(port);
   // The same attributes core sets: HttpOnly, SameSite=Lax, Path=/, host-only, and

@@ -98,6 +98,22 @@ save_config() {
 # DevTools cookie setter: it is never printed, logged, written to disk, put in a
 # URL or command line, or kept in a long-lived environment. The profile lives until
 # browser-stop (or until browser-start fails, when the trap removes it).
+# Chrome keeps writing its profile until it exits, so wait for it (then force it)
+# before the profile is removed.
+stop_browser_process() {
+  kill "$1" 2>/dev/null || true
+  tries=0
+  while kill -0 "$1" 2>/dev/null; do
+    tries=$((tries + 1))
+    if [ "$tries" -gt 50 ]; then
+      kill -9 "$1" 2>/dev/null || true
+      sleep 1
+      break
+    fi
+    sleep 0.2
+  done
+}
+
 browser_start() {
   state_dir=${1:?usage: prompt14.sh browser-start ENV STATE_DIR [--headless]}
   case "$state_dir" in
@@ -123,7 +139,7 @@ browser_start() {
   chrome_pid=""
   cleanup() {
     if [ -n "$chrome_pid" ]; then
-      kill "$chrome_pid" 2>/dev/null || true
+      stop_browser_process "$chrome_pid"
     fi
     rm -rf "$profile"
     rm -f "$state_dir/browser.env"
@@ -166,16 +182,7 @@ browser_stop() {
     */rheo-audit-profile.*) ;;
     *) echo "refusing to remove an unexpected profile path" >&2; exit 2 ;;
   esac
-  kill "$AUDIT_BROWSER_PID" 2>/dev/null || true
-  tries=0
-  while kill -0 "$AUDIT_BROWSER_PID" 2>/dev/null; do
-    tries=$((tries + 1))
-    if [ "$tries" -gt 50 ]; then
-      kill -9 "$AUDIT_BROWSER_PID" 2>/dev/null || true
-      break
-    fi
-    sleep 0.2
-  done
+  stop_browser_process "$AUDIT_BROWSER_PID"
   rm -rf "$AUDIT_BROWSER_PROFILE"
   rm -f "$state_dir/browser.env"
   test ! -e "$AUDIT_BROWSER_PROFILE"
@@ -206,7 +213,7 @@ case "${1:-}" in
     # approved-queued and executing fixtures stay durable for the audit.
     load_env "${2:-}"
     save_config "$env_file" "${3:-}" >/dev/null
-    compose up -d --wait --no-build postgres core web
+    compose up -d --wait --no-build postgres core web front
     ;;
   current-omitted)
     # Runtime recipe for handoff-unavailable-item-unavailable-project: recreate

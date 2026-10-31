@@ -279,7 +279,7 @@ def test_prompt14_helper_has_a_read_only_static_contract() -> None:
     )
     assert text.count(modules) == 2
     helper = HELPER.read_text(encoding="utf-8")
-    assert "compose up -d --wait --no-build postgres core web" in helper
+    assert "compose up -d --wait --no-build postgres core web front" in helper
     assert "compose up -d --wait --no-build worker" not in helper
     assert {"current-omitted", "current-restored", "core-stop", "core-start"} <= (
         _helper_commands()
@@ -312,9 +312,15 @@ def _guarded_config() -> dict[str, object]:
                 "environment": dict(modules),
                 "volumes": [dict(data), dict(tests_bind)],
             },
-            "web": {
+            "front": {
                 "image": image.format("web"),
                 "ports": [{"published": "3000", "target": 3000}],
+                "volumes": [
+                    {"type": "bind", "source": "/x/harness", "read_only": True}
+                ],
+            },
+            "web": {
+                "image": image.format("web"),
                 "environment": {
                     "RHEO_CORE_INTERNAL_API_URL": "http://core:8100",
                     "RHEO_CORE_INTERNAL_URL": "http://core:8000",
@@ -361,7 +367,14 @@ def test_compose_guard_accepts_only_the_unique_project(
 
 @pytest.mark.parametrize(
     "breach",
-    ["foreign-volume", "published-8100", "writable-bind", "wrong-tag", "worker-port"],
+    [
+        "foreign-volume",
+        "published-8100",
+        "writable-bind",
+        "wrong-tag",
+        "worker-port",
+        "web-bypasses-front",
+    ],
 )
 def test_compose_guard_refuses_every_breach(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, breach: str
@@ -384,6 +397,8 @@ def test_compose_guard_refuses_every_breach(
         ]
     elif breach == "wrong-tag":
         services["core"]["image"] = "rheo-stream-core"
+    elif breach == "web-bypasses-front":
+        services["web"]["ports"] = [{"published": "3001", "target": 3000}]
     else:
         services["worker"]["ports"] = [{"published": "9000", "target": 9000}]
     with pytest.raises(SystemExit):

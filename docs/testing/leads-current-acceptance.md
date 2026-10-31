@@ -37,9 +37,14 @@ tests/harness/prompt14.sh reset /ABSOLUTE/PRIVATE/stack.env /ABSOLUTE/PROOF_DIR
   never misstates what it contains.
 - Every command first saves the fully resolved Compose configuration and refuses to
   go on unless every writable volume belongs to this project, only host ports 8000
-  (Core) and 3000 (web) are published, and Core's internal 8100 stays private.
-- `up` starts Postgres, Core and the web app, and never the worker. The seed runs
-  every worker visit itself, so approved-and-queued and in-progress handoffs stay put.
+  (Core) and 3000 (the front) are published, and Core's internal 8100 stays private.
+- `up` starts Postgres, Core, the web app and a small test-only front, and never the
+  worker. The seed runs every worker visit itself, so approved-and-queued and
+  in-progress handoffs stay put.
+- The front (`tests/harness/front_proxy.mjs`, Node built-ins, the web image) does
+  locally what a deployment's reverse proxy does: `/auth/*` goes to Core and
+  everything else to the web app, so the browser on `http://localhost:3000` reaches
+  the ordinary workspace switcher, sign-out and continue endpoints.
 - `seed` provisions a synthetic owner (Avery Chen at Northwind) with two workspaces,
   A and B, and one undecided approval for each review step that uses one up
   (`spare:<row>` in `urls`). Pending approvals stay pending for 900 seconds; when one

@@ -106,12 +106,13 @@ def verify_compose(path: Path) -> None:
         _fail("resolved Compose project name differs from the guarded project")
 
     services = config.get("services", {})
-    if set(services) != {"core", "postgres", "web", "worker"}:
+    if set(services) != {"core", "front", "postgres", "web", "worker"}:
         _fail(f"unexpected service set: {sorted(services)}")
     expected_images = {
         "core": f"rheo-stream-p14-core:{short}",
         "worker": f"rheo-stream-p14-core:{short}",
         "web": f"rheo-stream-p14-web:{short}",
+        "front": f"rheo-stream-p14-web:{short}",
     }
     for service, image in expected_images.items():
         if services[service].get("image") != image:
@@ -122,10 +123,12 @@ def verify_compose(path: Path) -> None:
         _fail("acceptance-stack must retain the incumbent pinned Postgres image")
 
     published = {name: _ports(service) for name, service in services.items()}
+    # Host 3000 is the single-origin front; web itself is reachable only through it.
     if published != {
         "core": {(8000, 8000)},
+        "front": {(3000, 3000)},
         "postgres": set(),
-        "web": {(3000, 3000)},
+        "web": set(),
         "worker": set(),
     }:
         _fail(f"only host 8000/3000 may be published: {published}")
