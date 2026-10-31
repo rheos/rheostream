@@ -1037,7 +1037,7 @@ describe("Leads to Current detail integration", () => {
             ref: currentHandoff.result_ref,
             content: {
               title: "Prepare Northwind onboarding workshop",
-              body: "Confirm agenda and access requirements.",
+              body: "Confirm agenda, facilitators, and access requirements from the qualified opportunity.",
               status: "open",
               priority: "normal",
               area: "client_delivery",

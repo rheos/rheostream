@@ -1,7 +1,16 @@
+// @vitest-environment happy-dom
+
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { ApprovalDecisionState } from "@/shell/approval-actions";
 import type { ApprovalPreview, ExternalAction } from "@/shell/approval-contract";
+import { ApprovalDecisionForms } from "@/shell/approval-decision-forms";
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
+  true;
 
 const seams = vi.hoisted(() => ({
   preview: null as unknown,
@@ -47,13 +56,14 @@ function preview(overrides: Partial<ApprovalPreview> = {}): ApprovalPreview {
     operation_name: "current.item.create_external",
     requester_kind: "account",
     requester_id: "423e4567-e89b-12d3-a456-426614174000",
-    subject_ref: "leads:opportunity:synthetic",
+    // A Leads-to-Current handoff creates a new record, so Core publishes no subject.
+    subject_ref: null,
     destination_ref: "current",
     payload: {
       destination_ref: "current",
-      source_ref: "leads:opportunity:synthetic",
+      source_ref: "leads.handoff:synthetic",
       title: "Prepare Northwind onboarding workshop",
-      body: "Confirm agenda, facilitators,\nand access requirements.",
+      body: "Confirm agenda, facilitators, and access requirements from the qualified opportunity.",
       priority: "normal",
       area: "Client delivery",
       due_on: null,
@@ -61,7 +71,8 @@ function preview(overrides: Partial<ApprovalPreview> = {}): ApprovalPreview {
       unfamiliar_field: { complete: true },
     },
     payload_digest: DIGEST,
-    purpose: "Create one standalone Current item",
+    // A handoff is requested from an unbound web session, so Core stores no purpose.
+    purpose: null,
     window_start: "2026-10-28T10:00:00Z",
     window_end: "2026-10-28T10:15:00Z",
     durable_state: "pending",
@@ -84,9 +95,9 @@ function action(overrides: Partial<ExternalAction> = {}): ExternalAction {
     operation_name: "current.item.create_external",
     restage_eligible: false,
     result_ref: null,
-    source_ref: "leads:opportunity:synthetic",
+    source_ref: "leads.handoff:synthetic",
     state: "pending",
-    subject_ref: "leads:opportunity:synthetic",
+    subject_ref: null,
     terminal_at: null,
     updated_at: "2026-10-28T10:00:00Z",
     ...overrides,
@@ -136,7 +147,7 @@ describe("ApprovalDetail", () => {
     expect(seams.calls).toEqual([]);
   });
 
-  it("renders refused, invalid, missing and unauthorized answers as one redacted state", async () => {
+  it("approval-denied-or-missing renders refused, invalid, missing and unauthorized answers as one redacted state", async () => {
     seams.previewState = "refused";
     const refused = await render();
     seams.previewState = "ok";
@@ -155,7 +166,7 @@ describe("ApprovalDetail", () => {
     }
   });
 
-  it("keeps transport failure distinct but carries no stale controls", async () => {
+  it("approval-temporarily-unavailable keeps transport failure distinct but carries no stale controls", async () => {
     seams.previewState = "unavailable";
     const html = await render();
     expect(html).toContain("Approval temporarily unavailable");
@@ -174,12 +185,16 @@ describe("ApprovalDetail", () => {
     expect((html.match(/<form/g) ?? [])).toHaveLength(1);
   });
 
-  it("renders the complete verified payload before two separate fixed decision forms", async () => {
+  it("approval-pending renders the complete verified payload before two separate fixed decision forms", async () => {
     const html = await render();
     expect(html).toContain("Review Current handoff");
     expect(html).toContain("No action happens until you choose.");
     expect(html).toContain("Prepare Northwind onboarding workshop");
-    expect(html).toContain("Confirm agenda, facilitators,\nand access requirements.");
+    expect(html).toContain(
+      "Confirm agenda, facilitators, and access requirements from the qualified opportunity.",
+    );
+    expect(html).toContain("No held subject");
+    expect(html).toContain("No purpose binding");
     expect(html).toContain("Due date (due_on)");
     expect(html).toContain("Not set");
     expect(html).toContain("unfamiliar_field");
@@ -202,7 +217,7 @@ describe("ApprovalDetail", () => {
     expect((html.match(/<form/g) ?? [])).toHaveLength(2);
   });
 
-  it("renders expired verified history with no form or submit path", async () => {
+  it("approval-expired renders verified history with no form or submit path", async () => {
     seams.preview = preview({ status: "expired", actionable: false, durable_state: "expired" });
     const html = await render();
     expect(html).toContain("Approval expired");
@@ -212,14 +227,17 @@ describe("ApprovalDetail", () => {
     expect(html).not.toContain("Approve handoff");
   });
 
-  it("shows queued and unresolved external outcomes without repeat controls", async () => {
+  it("approval-approved-queued shows the queued outcome without repeat controls", async () => {
     seams.preview = preview({ status: "resolved", actionable: false, durable_state: "approved" });
     seams.action = action({ state: "pending" });
     const queued = await render();
     expect(queued).toContain("Handoff approved and queued");
     expect(queued).toMatch(/<h1[^>]*tabindex="-1"[^>]*>Handoff approved and queued<\/h1>/);
     expect(queued).not.toContain("<form");
+  });
 
+  it("approval-unresolved shows Outcome unknown without repeat controls", async () => {
+    seams.preview = preview({ status: "resolved", actionable: false, durable_state: "executed" });
     seams.action = action({
       state: "unresolved",
       failure_class: "outcome_unknown",
@@ -238,13 +256,14 @@ describe("ApprovalDetail", () => {
   });
 
   it.each([
-    ["executing", "Handoff in progress"],
-    ["succeeded", "Current item created"],
-    ["failed", "Handoff failed with no effect"],
-    ["refused", "Handoff refused"],
-    ["cancelled", "Handoff cancelled"],
-  ] as const)("renders the %s external outcome as terminal read-only state", async (state, heading) => {
-    seams.preview = preview({ status: "resolved", actionable: false, durable_state: "executed" });
+    // Durable approval states as the seeded Prompt 14 fixtures report them.
+    ["approval-executing", "executing", "Handoff in progress", "approved"],
+    ["approval-succeeded", "succeeded", "Current item created", "executed"],
+    ["approval-failed-no-effect", "failed", "Handoff failed with no effect", "executed"],
+    ["destination-refused", "refused", "Handoff refused", "executed"],
+    ["destination-cancelled", "cancelled", "Handoff cancelled", "executed"],
+  ] as const)("%s renders its external outcome as read-only state without decision controls", async (_fixture, state, heading, durable) => {
+    seams.preview = preview({ status: "resolved", actionable: false, durable_state: durable });
     seams.action = action({
       state,
       result_ref: state === "succeeded" ? "current:item:synthetic" : null,
@@ -262,5 +281,84 @@ describe("ApprovalDetail", () => {
     const html = await render();
     expect(html).toContain(heading);
     expect(html).not.toContain("<form");
+  });
+
+  it("approval-refused renders a person's refusal as closed read-only history", async () => {
+    seams.preview = preview({ status: "resolved", actionable: false, durable_state: "refused" });
+    seams.action = action({
+      state: "refused",
+      failure_class: "permanent_refusal_no_effect",
+      error_code: "approval_refused",
+      terminal_at: "2026-10-28T10:05:00Z",
+    });
+    const html = await render();
+    expect(html).toContain("Handoff refused");
+    expect(html).toContain("Read-only approval history");
+    expect(html).toContain("No held subject");
+    expect(html).not.toContain("<form");
+    expect(html).not.toContain("Approve handoff");
+  });
+});
+
+describe("approval decision interactions", () => {
+  async function mounted(forms: Parameters<typeof ApprovalDecisionForms>[0]) {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<ApprovalDecisionForms {...forms} />);
+    });
+    return {
+      container,
+      async unmount() {
+        await act(async () => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  it("approval-submitting disables both decision controls together while one decision is pending", async () => {
+    let release: (state: ApprovalDecisionState) => void = () => undefined;
+    const approve = vi.fn(
+      () =>
+        new Promise<ApprovalDecisionState>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const refuse = vi.fn(async (): Promise<ApprovalDecisionState> => ({ state: "idle", message: "" }));
+    const view = await mounted({ approve, refuse });
+
+    await act(async () => {
+      view.container.querySelector("form")!.requestSubmit();
+    });
+
+    const fieldset = view.container.querySelector("fieldset");
+    expect(fieldset?.disabled).toBe(true);
+    expect(fieldset?.querySelectorAll("button")).toHaveLength(2);
+    expect(view.container.querySelector('[role="status"]')?.textContent).toBe("Submitting decision…");
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(refuse).not.toHaveBeenCalled();
+
+    await act(async () => {
+      release({ state: "idle", message: "" });
+    });
+    await view.unmount();
+  });
+
+  it("approval-stale-binding leaves the stale tab's decision unapplied with no executable controls", async () => {
+    const message = "The decision was not applied. Reload the approval and review its current state.";
+    const approve = vi.fn(async (): Promise<ApprovalDecisionState> => ({ state: "error", message }));
+    const refuse = vi.fn(async (): Promise<ApprovalDecisionState> => ({ state: "idle", message: "" }));
+    const view = await mounted({ approve, refuse });
+
+    await act(async () => {
+      view.container.querySelector("form")!.requestSubmit();
+    });
+
+    expect(view.container.querySelector('[role="alert"]')?.textContent).toBe(message);
+    expect(view.container.querySelector("fieldset")?.disabled).toBe(true);
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(refuse).not.toHaveBeenCalled();
+    await view.unmount();
   });
 });

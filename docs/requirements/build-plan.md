@@ -799,6 +799,30 @@ never asserts a domain outcome that another module owns. The acceptance scenario
 satisfy is **Crash during handoff**: a retry recovers the same created work, and an uncertain
 external outcome stays visible until reconciled.
 
+**Leads-to-Current acceptance fixture.** The AC 1–18 automation/manual mapping and
+the catalog of all 27 named states are maintained in
+`tests/fixtures/leads-current-handoff.json`. Each state names its own automated
+tests and how a reviewer reaches it: a seeded URL (generic and job-search Leads
+variants), a normal interaction, a scripted step on the disposable stack, or, for
+two states, restricted-token evidence. The seed runs every worker visit itself and
+the stack starts no worker, so approved-and-queued and in-progress handoffs stay
+put for review. The two scripted steps restart that stack's core without Current
+(both Current branches unavailable) or stop it briefly (approval temporarily
+unavailable); neither uses a fault proxy. The seed also creates a second workspace
+for the same synthetic person, and `tests/postgres/test_prompt14_seed.py` runs it
+against disposable test databases. A test-only Compose override and helper
+under `tests/harness/` resolve unique source-head image tags and project-owned
+disposable volumes, keep Core port 8100 private, and use the incumbent local
+same-host session path without a session grant. This authored fixture checkpoint
+does not replace the later Prompt 15 browser, accessibility, responsive, and visual
+audit, and does not claim that audit has passed.
+All 27 named cases remain automated requirements. Only the two asymmetric Current
+sibling-denial cases are manual-not-applicable by approved audit contract; they use
+restricted-token PostgreSQL authorization plus authored UI render evidence. The
+approval denied/missing row remains a real same-human browser flow using the
+unchanged workspace-A approval URL after a normal A-to-B switch and an A return
+control.
+
 ---
 
 ## Phase 6 — Channels and the second runtime

@@ -49,11 +49,12 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
+from urllib.parse import parse_qs, urlencode, urlsplit
 from uuid import UUID
 
 import httpx
 import pytest
-from conftest import ClusterSession
+from conftest import ClusterSession, MakeWorkspace
 from harness.registry import (
     FIXTURE_ACT,
     FIXTURE_ACT_DECLARATION,
@@ -108,7 +109,7 @@ from rheo_core.approvals.tables import approval as approval_table
 from rheo_core.approvals.tables import approval_payload
 from rheo_core.audit import AUDIT_LIST, CORE_AUDIT_SINK, install_sink
 from rheo_core.boundary import context_for_harness, context_for_operator
-from rheo_core.boundary.factories import context_from_token
+from rheo_core.boundary.factories import context_from_session, context_from_token
 from rheo_core.modules import DESTINATIONS, DestinationMode, DestinationRegistration
 from rheo_core.operations import (
     OPERATION_GET,
@@ -131,9 +132,11 @@ from rheo_core.refs.resolver import (
     ResolverRegistry,
     Unavailable,
 )
+from rheo_core.sessions import create_session, mint_host_secret, switch_workspace
 from rheo_core.settings import CORE_ORIGIN, TEST_HARNESS_ORIGIN
 from rheo_core.storage import control_tables
 from rheo_core.storage.backend import UnitOfWork
+from rheo_core.storage.control_plane import list_memberships
 from rheo_core.storage.postgres import PostgresBackend
 from rheo_core.storage.work_tables import audit_record
 from rheo_core.storage.work_tables import job as job_table
@@ -1926,6 +1929,68 @@ def test_preview_of_an_external_action_names_its_exact_destination(
     )
     assert _probe_jobs(engine, database) == 0
     assert probe == []
+
+
+def test_same_human_session_workspace_switch_redacts_one_real_approval_url(
+    cluster: ClusterSession,
+    make_workspace: MakeWorkspace,
+    note: str,
+    owner_account_id: UUID,
+    workspace: UUID,
+) -> None:
+    """Real Core/session/preview A -> B -> A evidence, not a browser audit.
+
+    The shell URL-builder test separately proves ``approvalHref`` emits this exact
+    bounded route with one validated UUID. This test retains that one real URL and
+    approval id while one host-bound human session switches its active workspace.
+    """
+    workspace_b = make_workspace(owner=owner_account_id, slug="prompt14-review-b")
+    host = "prompt14.local"
+    session = create_session(owner_account_id)
+    secret = mint_host_secret(session.id, host)
+
+    with cluster.backend.control_engine.connect() as connection:
+        memberships = list_memberships(connection, account_id=owner_account_id)
+    assert {row.workspace_id for row in memberships} == {workspace, workspace_b}
+    assert all(row.role is Role.OWNER for row in memberships)
+
+    assert switch_workspace(session.id, workspace) is None
+    context_a = context_from_session(secret, host)
+    assert isinstance(context_a, WorkspaceContext), context_a
+    assert (context_a.actor.id, context_a.workspace_id, context_a.role) == (
+        owner_account_id,
+        workspace,
+        Role.OWNER,
+    )
+    approval_id, _ = _held(context_a, FIXTURE_ACT, act_payload(note))
+    approval_url = "/approvals/detail?" + urlencode({"approval_id": str(approval_id)})
+
+    def preview_from_unchanged_url(ctx: WorkspaceContext) -> Any:
+        query = parse_qs(urlsplit(approval_url).query)
+        assert query == {"approval_id": [str(approval_id)]}
+        return _preview(ctx, UUID(query["approval_id"][0]))
+
+    before = preview_from_unchanged_url(context_a)
+    assert before.status == "pending" and before.approval_id == approval_id
+
+    assert switch_workspace(session.id, workspace_b) is None
+    context_b = context_from_session(secret, host)
+    assert isinstance(context_b, WorkspaceContext), context_b
+    assert (context_b.actor.id, context_b.workspace_id, context_b.role) == (
+        owner_account_id,
+        workspace_b,
+        Role.OWNER,
+    )
+    redacted = preview_from_unchanged_url(context_b)
+    assert redacted.model_dump() == REDACTED_PREVIEW.model_dump()
+    assert str(approval_id) not in str(redacted.model_dump(mode="json"))
+
+    assert switch_workspace(session.id, workspace) is None
+    returned_a = context_from_session(secret, host)
+    assert isinstance(returned_a, WorkspaceContext), returned_a
+    assert returned_a.actor.id == owner_account_id
+    assert returned_a.workspace_id == workspace
+    assert preview_from_unchanged_url(returned_a).model_dump() == before.model_dump()
 
 
 def test_preview_redaction_is_identical_for_missing_denied_unauthorized_and_invalid(

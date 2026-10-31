@@ -48,7 +48,7 @@ describe("qualified Current handoff request", () => {
         },
         {
           title: "Prepare Northwind onboarding workshop",
-          body: "Confirm agenda and access requirements.",
+          body: "Confirm agenda, facilitators, and access requirements from the qualified opportunity.",
           priority: "normal",
           area: "client_delivery",
           due_on: "",
@@ -62,7 +62,7 @@ describe("qualified Current handoff request", () => {
       idempotency_key: "stable-request-key",
       payload: {
         title: "Prepare Northwind onboarding workshop",
-        body: "Confirm agenda and access requirements.",
+        body: "Confirm agenda, facilitators, and access requirements from the qualified opportunity.",
         priority: "normal",
         area: "client_delivery",
         due_on: null,

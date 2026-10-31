@@ -99,6 +99,22 @@ or is not ready, the projection is kept as it was. The job runs as a restricted
 service context naming only those two reads, and Leads never imports Current or
 reads its tables.
 
+The authored acceptance fixtures for this journey live in
+`tests/fixtures/leads-current-handoff.json`. The Prompt 14 helper under
+`tests/harness/` resolves a source-head-specific, disposable Compose project and
+refuses any writable volume outside that project before it can build, start, seed,
+or reset. Its runtime seed uses normal account/workspace provisioning, a normal
+same-host session cookie, and `/auth/continue`; path mode does not create or consume
+a session grant. The fixture set is synthetic Northwind/Avery data. Browser, keyboard,
+responsive, and visual inspection remains a separate Prompt 15 gate and is not
+claimed by these authored fixtures.
+Exactly the asymmetric item-denied/project-live and item-live/project-denied cases
+use real operation-narrowed PostgreSQL authorization evidence plus authored UI
+render evidence; they have no normal owner/member web URL or manual-pass claim.
+The redacted approval check remains a normal same-human workflow: use a real
+workspace-A approval URL, switch normally to disposable workspace B, reopen the
+unchanged URL, then switch back to A as the positive control.
+
 Permission records are explicit and scoped by party, purpose and channel. Withdrawal
 and suppression deny subsequent permission checks. Recallatron's existing eligibility
 check consumes the registered permission operation when installed. `ContactPermissionGuard`

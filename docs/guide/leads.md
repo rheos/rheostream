@@ -124,6 +124,20 @@ cannot. Leads remembers which Current project the item was filed under, even aft
 item is deleted. Several intentional handoffs from one opportunity are several records.
 There is no `converted` flag.
 
+For maintainers, the deterministic acceptance authority is
+`tests/fixtures/leads-current-handoff.json`. `tests/harness/prompt14.sh` can prepare a
+private environment file, save and verify the fully resolved disposable Compose
+configuration, and later build, start, seed, list safe fixture URLs, or reset only
+that source-head-specific project. It publishes Core and the web app on ports 8000
+and 3000; Core's internal 8100 endpoint stays private. The seed is synthetic and uses
+the ordinary local session path. The fixture suite is preparation for the manual
+Prompt 15 audit, not evidence that the audit has passed.
+The two asymmetric item/project denial states are the only manual exception: their
+acceptance evidence is a real restricted-token authorization test plus the authored
+independent-redaction render tests, not a fabricated owner/member URL. Approval
+redaction remains a normal browser row using one human's real workspace-A approval
+URL across an ordinary switch to workspace B and back to A.
+
 ### Contact permission is its own record
 
 Showing interest is not permission to contact. A grant names the person, the purpose, the

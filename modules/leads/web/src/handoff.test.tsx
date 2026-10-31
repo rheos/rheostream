@@ -57,7 +57,7 @@ const item = {
   ref: itemRef,
   content: {
     title: "Prepare Northwind onboarding workshop",
-    body: "Confirm agenda, facilitators, and access requirements.",
+    body: "Confirm agenda, facilitators, and access requirements from the qualified opportunity.",
     status: "open",
     priority: "normal",
     area: "client_delivery",
@@ -107,6 +107,27 @@ function render(
 }
 
 describe("independent linked Current state", () => {
+  it("handoff-succeeded-live-item-no-project renders no project assignment controls", () => {
+    const html = render(
+      [history],
+      new Map([
+        [
+          handoffRef,
+          ok({
+            history,
+            item,
+            project: { state: "never_assigned" },
+          }),
+        ],
+      ]),
+    );
+    expect(html).toContain("No Current project assigned yet.");
+    expect(html).toContain("Assign a project from the Current item.");
+    expect(html).not.toContain("<button");
+    expect(html).not.toContain("<select");
+    expect(html).not.toContain("<form");
+  });
+
   it("handoff-succeeded-live-item-live-project shows both authorized siblings", () => {
     const html = render(
       [history],
