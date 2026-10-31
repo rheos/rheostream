@@ -1,7 +1,7 @@
-"""Executes the Prompt 14 synthetic seed on disposable test-cluster workspaces.
+"""Executes the acceptance-stack synthetic seed on disposable test-cluster workspaces.
 
 The seed body is the one ``tests/harness/prompt14_acceptance.py seed`` runs inside
-the unique Prompt 14 Compose project. Here it runs against workspace databases the
+the unique acceptance Compose project. Here it runs against workspace databases the
 cluster fixtures create and drop, and every seeded label is asserted through
 incumbent public reads. The Compose-only parts (the same-host ``/auth/continue``
 request and volume removal on reset) are not exercised here.
@@ -17,6 +17,7 @@ from conftest import ClusterSession, MakeWorkspace
 from harness.prompt14_acceptance import (
     APPROVAL_LABELS,
     LEADS_LABELS,
+    SPARE_PENDING,
     VARIANTS,
     Seeded,
     approval_url,
@@ -146,6 +147,19 @@ def _assert_seeded(routing: Routing, result: Seeded, workspace_b: UUID) -> None:
         )
     assert approvals == APPROVALS
 
+    # Each consuming audit row has its own undecided approval.
+    assert set(result.spares) == set(SPARE_PENDING)
+    spare_ids = {str(row["approval_id"]) for row in result.spares.values()}
+    assert len(spare_ids) == len(SPARE_PENDING)
+    for row_name, row in result.spares.items():
+        spare = routing.call(
+            "core.approval.preview", approval_id=str(row["approval_id"])
+        )
+        assert spare.ok, spare
+        assert (spare.result.status, spare.result.actionable) == ("pending", True), (
+            row_name
+        )
+
     # Workspace B is the same human's second disposable workspace (A to B to A).
     with routing.i.cluster.backend.control_engine.connect() as connection:
         memberships = list_memberships(connection, account_id=routing.ctx.actor.id)
@@ -203,6 +217,7 @@ def test_prompt14_seed_reaches_every_seeded_fixture(
     written = json.loads(state.read_text(encoding="utf-8"))
     assert written["fixtures"] == result.fixtures
     assert written["workspaces"] == {"a": str(workspace), "b": str(workspace_b)}
+    assert set(written["pending_spares"]) == set(SPARE_PENDING)
     assert state.stat().st_mode & 0o777 == 0o600
     # Synthetic, disposable identifiers only (no session secret is stored); shown
     # with ``-s`` so a run's exact seeded URLs can be recorded as evidence.

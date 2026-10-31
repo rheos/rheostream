@@ -813,9 +813,10 @@ for the same synthetic person, and `tests/postgres/test_prompt14_seed.py` runs i
 against disposable test databases. A test-only Compose override and helper
 under `tests/harness/` resolve unique source-head image tags and project-owned
 disposable volumes, keep Core port 8100 private, and use the incumbent local
-same-host session path without a session grant. This authored fixture checkpoint
-does not replace the later Prompt 15 browser, accessibility, responsive, and visual
-audit, and does not claim that audit has passed.
+same-host session path without a session grant; see
+[the acceptance stack](../testing/leads-current-acceptance.md). This authored fixture
+checkpoint does not replace the later manual browser, accessibility, responsive, and
+visual review, and does not claim that review has passed.
 All 27 named cases remain automated requirements. Only the two asymmetric Current
 sibling-denial cases are manual-not-applicable by approved audit contract; they use
 restricted-token PostgreSQL authorization plus authored UI render evidence. The

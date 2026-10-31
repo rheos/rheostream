@@ -278,6 +278,11 @@
     }
   },
   "seed_gaps": {},
+  "pending_spares": {
+    "rows": ["approval-submitting", "approval-stale-binding", "approval-expired", "decision-approve", "decision-refuse"],
+    "note": "Each consuming row has its own undecided approval, printed by urls as spare:<row>. The approval-pending fixture itself is never decided, so its read-only review matrix (themes, viewports, zoom, keyboard) never consumes it.",
+    "reseed": "Every pending approval, spares included, stays pending for 900 seconds after seeding. When a pending row's window lapses before its check is done, run reset, up and seed again (about three minutes) and continue with the new URLs from urls; nothing else changes."
+  },
   "criteria": [
     {
       "criterion": 1,
@@ -322,7 +327,15 @@
     {
       "criterion": 9,
       "automated": ["vitest:modules/leads/web/src/screens.test.tsx > qualified-current enables handoff regardless of qualification score", "vitest:modules/leads/web/src/screens.test.tsx > qualified-stale warns conspicuously without disabling handoff"],
-      "prompt15_manual": ["Inspect qualified current, unqualified, and stale variants in Leads."]
+      "prompt15_manual": ["Inspect qualified current, unqualified, and stale variants in Leads."],
+      "manual_coverage": [
+        {
+          "state": "unqualified",
+          "mode": "automated-only",
+          "automated": ["vitest:modules/leads/web/src/screens.test.tsx > requires a current qualification and renders no disabled facsimile", "pytest:tests/postgres/test_leads_current_handoff.py::test_handoff_without_a_qualification_refuses_and_writes_nothing"],
+          "note": "No unqualified fixture is seeded; the request form is absent rather than disabled, which the render test pins."
+        }
+      ]
     },
     {
       "criterion": 10,
@@ -338,7 +351,15 @@
       "criterion": 12,
       "automated": ["pytest:tests/postgres/test_leads_current_view.py::test_item_and_project_are_authorized_independently", "vitest:modules/leads/web/src/handoff.test.tsx > handoff-denied-item-live-project keeps the authorized project visible", "vitest:modules/leads/web/src/handoff.test.tsx > handoff-live-item-denied-project keeps the item and redacts the project"],
       "prompt15_manual": ["Confirm route absence retains authorized content and produces no fabricated link."],
-      "prompt15_not_applicable": ["The two asymmetric denied-sibling fixtures use reviewed restricted-token PostgreSQL authorization plus authored UI render evidence; do not claim a URL, screenshot, keyboard check, or manual pass."]
+      "prompt15_not_applicable": ["The two asymmetric denied-sibling fixtures use reviewed restricted-token PostgreSQL authorization plus authored UI render evidence; do not claim a URL, screenshot, keyboard check, or manual pass."],
+      "manual_coverage": [
+        {
+          "state": "route absence",
+          "mode": "automated-only",
+          "automated": ["vitest:modules/leads/web/src/handoff.test.tsx > configured-only navigation keeps live content when no route is available"],
+          "note": "The local stack always configures the Current route, so live Current content without a route cannot be reached there without changing web routing; the render test pins it."
+        }
+      ]
     },
     {
       "criterion": 13,
@@ -348,7 +369,19 @@
     {
       "criterion": 14,
       "automated": ["pytest:tests/postgres/test_leads_current_links.py::test_missed_lifecycle_changes_after_an_earlier_scan_are_repaired"],
-      "prompt15_manual": ["Inspect moved, cleared, item-deleted, and project-deleted fixture outcomes."]
+      "prompt15_manual": ["Inspect moved, cleared, item-deleted, and project-deleted fixture outcomes."],
+      "manual_coverage": [
+        {
+          "state": "moved",
+          "mode": "normal-interaction",
+          "automated": ["pytest:tests/postgres/test_leads_current_links.py::test_missed_lifecycle_changes_after_an_earlier_scan_are_repaired"],
+          "steps": [
+            "Open the seeded live item/live project Leads URL and follow its Current item link.",
+            "In Current's existing item edit form, move the item to another project.",
+            "Reload the Leads URL and observe the newly assigned project."
+          ]
+        }
+      ]
     },
     {
       "criterion": 15,
@@ -374,17 +407,17 @@
   "interaction_recipes": {
     "approval-submitting": {
       "kind": "normal-interaction",
-      "route": "the seeded approval-pending URL",
-      "steps": ["Submit one ordinary approve or refuse form and observe its native pending state before the server result returns. This consumes the pending fixture; reset and reseed to repeat."]
+      "route": "the spare:approval-submitting URL",
+      "steps": ["Submit one ordinary approve or refuse form and observe its native pending state before the server result returns. This consumes that spare only."]
     },
     "approval-expired": {
       "kind": "normal-interaction",
-      "route": "the seeded approval-pending URL, left undecided",
-      "steps": ["Leave the seeded pending approval undecided past its window (default 900 seconds after seeding), then reopen the unchanged URL and observe read-only expired history with no decision form."]
+      "route": "the spare:approval-expired URL, left undecided",
+      "steps": ["Leave that spare undecided past its window (900 seconds after seeding), then reopen the unchanged URL and observe read-only expired history with no decision form."]
     },
     "approval-stale-binding": {
       "kind": "normal-interaction",
-      "route": "the seeded approval-pending URL in two ordinary tabs",
+      "route": "the spare:approval-stale-binding URL in two ordinary tabs",
       "steps": [
         "Open the same pending approval in two ordinary tabs.",
         "Decide it in the first tab.",

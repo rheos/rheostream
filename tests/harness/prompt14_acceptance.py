@@ -1,7 +1,10 @@
-"""Disposable Prompt 14 composition guard and synthetic acceptance seed.
+"""Disposable acceptance-stack composition guard and synthetic acceptance seed.
 
-The file is mounted read-only into the Prompt 14 core container.  Its seed path
-uses the incumbent provisioning/session services and the same installed-module
+The ``prompt14`` file, env-var and project names are the harness's historical
+identifiers; they name the acceptance stack, nothing else.
+
+The file is mounted read-only into the acceptance stack's core container.  Its seed
+path uses the incumbent provisioning/session services and the same installed-module
 dispatch helpers as the PostgreSQL acceptance suites.  It writes only public-safe
 record identifiers and configured URLs to the project-owned rheodata volume.
 
@@ -9,7 +12,7 @@ The same :func:`seeded` body runs in two places:
 
 - ``tests/postgres/test_prompt14_seed.py`` runs it against a disposable workspace
   database on the local test cluster and asserts every seeded state;
-- ``seed`` below runs it inside the unique Prompt 14 Compose project.
+- ``seed`` below runs it inside the unique acceptance Compose project.
 
 Worker ordering is controlled by the harness, never by a fault proxy.  The seed
 drives every worker visit itself, in-process, and the Compose ``up`` command starts
@@ -65,6 +68,15 @@ APPROVAL_LABELS = (
     "approval-unresolved",
     "approval-refused",
 )
+#: Rows that consume a pending approval, each given its own spare (seeded last,
+#: so every spare's 900 s window starts at the end of the seed).
+SPARE_PENDING = (
+    "approval-submitting",
+    "approval-stale-binding",
+    "approval-expired",
+    "decision-approve",
+    "decision-refuse",
+)
 
 
 def _fail(message: str) -> None:
@@ -89,7 +101,7 @@ def verify_compose(path: Path) -> None:
         not project.startswith("rheo-stream-p14-")
         or project != f"rheo-stream-p14-{short}"
     ):
-        _fail("Compose project is not bound to the exact Prompt 14 source head")
+        _fail("Compose project is not bound to the exact acceptance-stack source head")
     if config.get("name") != project:
         _fail("resolved Compose project name differs from the guarded project")
 
@@ -103,9 +115,11 @@ def verify_compose(path: Path) -> None:
     }
     for service, image in expected_images.items():
         if services[service].get("image") != image:
-            _fail(f"{service} image is not the source-head-specific Prompt 14 tag")
+            _fail(
+                f"{service} image is not the source-head-specific acceptance-stack tag"
+            )
     if services["postgres"].get("image") != "pgvector/pgvector:pg16":
-        _fail("Prompt 14 must retain the incumbent pinned Postgres image")
+        _fail("acceptance-stack must retain the incumbent pinned Postgres image")
 
     published = {name: _ports(service) for name, service in services.items()}
     if published != {
@@ -154,13 +168,13 @@ def verify_compose(path: Path) -> None:
     # only other allowed value, and it is requested explicitly by prompt14.sh.
     modules = os.environ.get("RHEO_PROMPT14_MODULES", MODULES)
     if modules not in {MODULES, MODULES_WITHOUT_CURRENT}:
-        _fail(f"unsupported Prompt 14 module set: {modules}")
+        _fail(f"unsupported acceptance-stack module set: {modules}")
     for service in ("core", "worker"):
         env = services[service].get("environment", {})
         if env.get("RHEO__modules__installed") != modules:
             _fail(f"{service} does not load the expected module set {modules}")
     print(
-        "Prompt 14 ownership proof: "
+        "acceptance-stack ownership proof: "
         f"project={project} images={sorted(expected_images.values())} "
         f"volumes={sorted(resolved_volumes)} ports=8000,3000 internal_8100=private "
         f"modules={modules}"
@@ -203,6 +217,8 @@ class Seeded:
     opportunities: dict[str, dict[str, Any]] = field(default_factory=dict)
     handoffs: dict[str, dict[str, Any]] = field(default_factory=dict)
     approvals: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Consuming row -> its own pending approval row (not a fixture label).
+    spares: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def leads(self, label: str, variant: str, opportunity: Any) -> None:
         self.opportunities.setdefault(label, {})[variant] = opportunity
@@ -214,13 +230,17 @@ class Seeded:
 
     def state(self, account_id: Any) -> dict[str, Any]:
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "synthetic": True,
             "account_id": str(account_id),
             "workspaces": self.workspaces,
             "routing_mode": "path",
             "base_url": "http://localhost:3000",
             "fixtures": self.fixtures,
+            "pending_spares": {
+                row: approval_url(spare["approval_id"])
+                for row, spare in self.spares.items()
+            },
         }
 
 
@@ -457,7 +477,7 @@ def seeded(
 
         # One real visit with Current answering a typed retryable error: core marks
         # each action executing and requeues its job with a backoff. No worker runs
-        # after this in the seed or in the Prompt 14 composition.
+        # after this in the seed or in the acceptance-stack composition.
         busy_rows = {}
         for variant, opportunity in executing.items():
             handoff = seeder.handoff(opportunity, f"prompt14-{variant}-executing")
@@ -482,6 +502,15 @@ def seeded(
             result.handoffs.setdefault("handoff-approved-queued", {})[variant] = handoff
             if variant == "generic":
                 result.approval("approval-approved-queued", row)
+
+        # One undecided approval per consuming audit row, created last so each
+        # window starts as late as possible. Nothing approves or refuses them.
+        for row_name in SPARE_PENDING:
+            opportunity = seeder.qualified(
+                _title(scenario["opportunity"], "job_search", f"spare {row_name}")
+            )
+            handoff = seeder.handoff(opportunity, f"prompt14-spare-{row_name}")
+            result.spares[row_name] = routing.row(handoff)
         yield routing, result
 
 
@@ -545,7 +574,7 @@ def _auth_continue_check(secret: Any) -> None:
 
 def seed() -> None:
     if STATE.exists():
-        _fail("Prompt 14 fixtures already exist; run the project-scoped reset first")
+        _fail("acceptance fixtures already exist; run the project-scoped reset first")
     # This test-only process loads modules the way the PostgreSQL suites do (the
     # routing harness), not from the deployment module list the core service uses.
     os.environ.pop("RHEO__modules__installed", None)
@@ -565,7 +594,7 @@ def seed() -> None:
     with boot.backend.control_engine.begin() as connection:
         if get_identity(connection, provider_id=PROVIDER, provider_subject=SUBJECT):
             _fail(
-                "Prompt 14 synthetic identity already exists; "
+                "acceptance-stack synthetic identity already exists; "
                 "reset the disposable project"
             )
         account = insert_account(connection, display_name="Avery Chen")
@@ -606,28 +635,76 @@ def seed() -> None:
 
 def urls() -> None:
     if not STATE.exists():
-        _fail("Prompt 14 fixtures are not seeded")
+        _fail("acceptance-stack fixtures are not seeded")
     payload = json.loads(STATE.read_text(encoding="utf-8"))
     base = payload["base_url"]
     for name, variants in sorted(payload["fixtures"].items()):
         for variant, url in sorted(variants.items()):
             print(f"{name}\t{variant}\t{base}{url}")
+    for row, url in sorted(payload.get("pending_spares", {}).items()):
+        print(f"spare:{row}\tshell\t{base}{url}")
     for name, workspace in sorted(payload["workspaces"].items()):
         print(f"workspace-{name}\t{workspace}")
 
 
+def mint_session() -> None:
+    """Mint one ordinary host-bound session for the seeded owner in workspace A and
+    write its secret to stdout for the cookie setter on the other end of a pipe.
+
+    Refuses a terminal, so the secret cannot land on a screen or in a log by
+    accident; ``prompt14.sh browser-start`` is the only caller."""
+    if sys.stdout.isatty():
+        _fail("mint-session writes a session secret; pipe it to the cookie setter")
+    if not STATE.exists():
+        _fail("acceptance-stack fixtures are not seeded")
+    os.environ.pop("RHEO__modules__installed", None)
+    from rheo_app_cli.context import bootstrap
+
+    bootstrap()
+    payload = json.loads(STATE.read_text(encoding="utf-8"))
+    _session, secret = session_context_check(
+        UUID(payload["account_id"]), UUID(payload["workspaces"]["a"])
+    )
+    sys.stdout.write(secret.hex())
+    sys.stdout.flush()
+
+
+def require_clean(root: Path) -> None:
+    """Refuse to build when the tree differs from HEAD: image tags name HEAD."""
+    import subprocess
+
+    status = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    if status.strip():
+        _fail(
+            "refusing to build: the working tree has uncommitted changes, so an "
+            "image tag naming HEAD would misstate its content"
+        )
+
+
 def main() -> None:
     if len(sys.argv) < 2:
-        _fail("usage: prompt14_acceptance.py verify-compose CONFIG | seed | urls")
+        _fail(
+            "usage: prompt14_acceptance.py verify-compose CONFIG | require-clean ROOT"
+            " | seed | urls | mint-session"
+        )
     command = sys.argv[1]
     if command == "verify-compose" and len(sys.argv) == 3:
         verify_compose(Path(sys.argv[2]))
+    elif command == "require-clean" and len(sys.argv) == 3:
+        require_clean(Path(sys.argv[2]))
     elif command == "seed" and len(sys.argv) == 2:
         seed()
     elif command == "urls" and len(sys.argv) == 2:
         urls()
+    elif command == "mint-session" and len(sys.argv) == 2:
+        mint_session()
     else:
-        _fail("invalid Prompt 14 acceptance command")
+        _fail("invalid acceptance-stack command")
 
 
 if __name__ == "__main__":

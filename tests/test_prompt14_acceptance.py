@@ -1,4 +1,4 @@
-"""Prompt 14's authored acceptance and disposable-composition contracts."""
+"""The Leads-to-Current acceptance authority and disposable-composition contracts."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import ast
 import json
 import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "leads-current-handoff.json"
@@ -161,7 +163,7 @@ def test_every_fixture_has_one_honest_manual_evidence_mode() -> None:
     authority = _authority()
     fixtures = authority["fixtures"]
     recipes = authority["interaction_recipes"]
-    # No reachability gap may pass the Prompt 14 boundary.
+    # No reachability gap may pass the acceptance boundary.
     assert authority["seed_gaps"] == {}
     modes = {name: fixture["evidence_mode"] for name, fixture in fixtures.items()}
     assert set(modes.values()) <= EVIDENCE_MODES, modes
@@ -282,3 +284,197 @@ def test_prompt14_helper_has_a_read_only_static_contract() -> None:
     assert {"current-omitted", "current-restored", "core-stop", "core-start"} <= (
         _helper_commands()
     )
+
+
+# --- the Compose ownership guard -----------------------------------------------
+
+HEAD = "0123456789abcdef0123456789abcdef01234567"
+PROJECT = "rheo-stream-p14-0123456789ab"
+
+
+def _guarded_config() -> dict[str, object]:
+    """A resolved config the guard accepts: the unique project only."""
+    image = "rheo-stream-p14-{}:0123456789ab"
+    modules = {"RHEO__modules__installed": "relationships,leads,current"}
+    tests_bind = {"type": "bind", "source": "/x/tests", "read_only": True}
+    data = {"type": "volume", "source": "rheodata"}
+    return {
+        "name": PROJECT,
+        "services": {
+            "core": {
+                "image": image.format("core"),
+                "ports": [{"published": "8000", "target": 8000}],
+                "environment": dict(modules),
+                "volumes": [dict(data), dict(tests_bind)],
+            },
+            "worker": {
+                "image": image.format("core"),
+                "environment": dict(modules),
+                "volumes": [dict(data), dict(tests_bind)],
+            },
+            "web": {
+                "image": image.format("web"),
+                "ports": [{"published": "3000", "target": 3000}],
+                "environment": {
+                    "RHEO_CORE_INTERNAL_API_URL": "http://core:8100",
+                    "RHEO_CORE_INTERNAL_URL": "http://core:8000",
+                    "RHEO_CORE_PUBLIC_URL": "http://core:8000",
+                    "RHEO_INTERNAL_SECRET": "rheo_dev_only_internal_secret",
+                },
+            },
+            "postgres": {
+                "image": "pgvector/pgvector:pg16",
+                "volumes": [{"type": "volume", "source": "pgdata"}],
+            },
+        },
+        "volumes": {
+            "pgdata": {"name": f"{PROJECT}_pgdata"},
+            "rheodata": {"name": f"{PROJECT}_rheodata"},
+        },
+    }
+
+
+def _verify(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: dict[str, object]
+) -> None:
+    from harness.prompt14_acceptance import verify_compose
+
+    monkeypatch.setenv("RHEO_PROMPT14_PROJECT", PROJECT)
+    monkeypatch.setenv("RHEO_PROMPT14_SOURCE_HEAD", HEAD)
+    monkeypatch.delenv("RHEO_PROMPT14_MODULES", raising=False)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    verify_compose(path)
+
+
+def _services(config: dict[str, object]) -> dict[str, dict[str, object]]:
+    services = config["services"]
+    assert isinstance(services, dict)
+    return services
+
+
+def test_compose_guard_accepts_only_the_unique_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _verify(tmp_path, monkeypatch, _guarded_config())
+
+
+@pytest.mark.parametrize(
+    "breach",
+    ["foreign-volume", "published-8100", "writable-bind", "wrong-tag", "worker-port"],
+)
+def test_compose_guard_refuses_every_breach(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, breach: str
+) -> None:
+    config = _guarded_config()
+    services = _services(config)
+    if breach == "foreign-volume":
+        config["volumes"] = {
+            "pgdata": {"name": "rheo-stream_pgdata"},
+            "rheodata": {"name": f"{PROJECT}_rheodata"},
+        }
+    elif breach == "published-8100":
+        services["core"]["ports"] = [
+            {"published": "8000", "target": 8000},
+            {"published": "8100", "target": 8100},
+        ]
+    elif breach == "writable-bind":
+        services["core"]["volumes"] = [
+            {"type": "bind", "source": "/x/tests", "read_only": False}
+        ]
+    elif breach == "wrong-tag":
+        services["core"]["image"] = "rheo-stream-core"
+    else:
+        services["worker"]["ports"] = [{"published": "9000", "target": 9000}]
+    with pytest.raises(SystemExit):
+        _verify(tmp_path, monkeypatch, config)
+
+
+# --- a build names HEAD only when HEAD is what it builds --------------------------
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+        + list(args),
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_build_refuses_a_dirty_tree(tmp_path: Path) -> None:
+    from harness.prompt14_acceptance import require_clean
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "tracked.txt").write_text("one\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-q", "-m", "seed")
+    require_clean(repo)
+
+    (repo / "tracked.txt").write_text("two\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        require_clean(repo)
+    _git(repo, "checkout", "-q", "--", "tracked.txt")
+    (repo / "untracked.txt").write_text("new\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        require_clean(repo)
+
+    helper = HELPER.read_text(encoding="utf-8")
+    build = helper.split("  build)", 1)[1].split(";;", 1)[0]
+    assert "require-clean" in build
+
+
+# --- consuming rows each have their own pending approval ---------------------------
+
+
+def test_every_consuming_row_has_its_own_seeded_pending_approval() -> None:
+    from harness.prompt14_acceptance import SPARE_PENDING
+
+    authority = _authority()
+    spares = authority["pending_spares"]
+    assert set(spares["rows"]) == set(SPARE_PENDING)
+    assert spares["reseed"], spares
+    for row in spares["rows"]:
+        assert row in authority["fixtures"] or row.startswith("decision-"), row
+
+
+# --- manual states that are not fixture labels are classified -----------------------
+
+
+def test_criterion_manual_states_outside_the_labels_are_classified() -> None:
+    criteria = {row["criterion"]: row for row in _authority()["criteria"]}
+    expected = {9: {"unqualified"}, 12: {"route absence"}, 14: {"moved"}}
+    for criterion, states in expected.items():
+        coverage = criteria[criterion]["manual_coverage"]
+        assert {entry["state"] for entry in coverage} == states, criterion
+        for entry in coverage:
+            assert entry["mode"] in {"automated-only", "normal-interaction"}, entry
+            assert entry["automated"], entry
+            for reference in entry["automated"]:
+                _assert_reference_resolves(reference)
+            if entry["mode"] == "normal-interaction":
+                assert entry["steps"], entry
+
+
+# --- the audit browser session ----------------------------------------------------
+
+
+def test_audit_browser_session_keeps_the_secret_between_processes() -> None:
+    commands = _helper_commands()
+    assert {"browser-start", "browser-stop"} <= commands
+    helper = HELPER.read_text(encoding="utf-8")
+    start = helper.split("browser_start() {", 1)[1].split("\n}\n", 1)[0]
+    # The secret goes from the minting process straight into the cookie setter.
+    assert "mint-session \\\n    | node" in start
+    assert "trap cleanup EXIT INT TERM" in start
+    assert "--user-data-dir=" in start
+    seed = SEED.read_text(encoding="utf-8")
+    assert "isatty()" in seed.split("def mint_session", 1)[1].split("\ndef ", 1)[0]
+    driver = (ROOT / "tests" / "harness" / "audit_browser.mjs").read_text(
+        encoding="utf-8"
+    )
+    imports = [line for line in driver.splitlines() if line.startswith("import ")]
+    assert all('from "node:' in line for line in imports), imports
+    assert "httpOnly: true" in driver

@@ -16,7 +16,7 @@ static_check() {
   grep -Fq 'RHEO_CORE_INTERNAL_API_URL: http://core:8100' "$override"
   grep -Fq 'RHEO_CORE_PUBLIC_URL: http://core:8000' "$override"
   if grep -Fq '8100:8100' "$override"; then
-    echo "Prompt 14 must never publish Core 8100" >&2
+    echo "the acceptance stack must never publish Core 8100" >&2
     exit 1
   fi
   printf '%s\n' 'prompt14 static contract: ok'
@@ -92,6 +92,96 @@ save_config() {
   printf '%s\n' "$proof_dir"
 }
 
+# The audit browser: a throwaway Chrome profile holding one ordinary rheo_session
+# cookie for the seeded owner on http://localhost. The session is minted in the
+# project's core container and its secret goes through a pipe straight into the
+# DevTools cookie setter: it is never printed, logged, written to disk, put in a
+# URL or command line, or kept in a long-lived environment. The profile lives until
+# browser-stop (or until browser-start fails, when the trap removes it).
+browser_start() {
+  state_dir=${1:?usage: prompt14.sh browser-start ENV STATE_DIR [--headless]}
+  case "$state_dir" in
+    /*) ;;
+    *) echo "state directory must be absolute" >&2; exit 2 ;;
+  esac
+  case "$state_dir" in
+    "$root"/*) echo "state directory must stay outside the checkout" >&2; exit 2 ;;
+  esac
+  if [ -e "$state_dir/browser.env" ]; then
+    echo "an audit browser is already recorded there; run browser-stop first" >&2
+    exit 2
+  fi
+  chrome="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  test -x "$chrome"
+  headless=""
+  if [ "${2:-}" = "--headless" ]; then
+    headless="--headless=new"
+  fi
+  mkdir -p "$state_dir"
+  chmod 700 "$state_dir"
+  profile=$(mktemp -d "${TMPDIR:-/tmp}/rheo-audit-profile.XXXXXX")
+  chrome_pid=""
+  cleanup() {
+    if [ -n "$chrome_pid" ]; then
+      kill "$chrome_pid" 2>/dev/null || true
+    fi
+    rm -rf "$profile"
+    rm -f "$state_dir/browser.env"
+  }
+  trap cleanup EXIT INT TERM
+  "$chrome" --user-data-dir="$profile" --remote-debugging-port=0 \
+    --no-first-run --no-default-browser-check $headless about:blank \
+    >/dev/null 2>&1 &
+  chrome_pid=$!
+  tries=0
+  while [ ! -s "$profile/DevToolsActivePort" ]; do
+    tries=$((tries + 1))
+    if [ "$tries" -gt 150 ]; then
+      echo "the audit browser did not open its DevTools port" >&2
+      exit 1
+    fi
+    sleep 0.2
+  done
+  port=$(head -n 1 "$profile/DevToolsActivePort")
+  compose exec -T core /app/.venv/bin/python \
+    /app/tests/harness/prompt14_acceptance.py mint-session \
+    | node "$root/tests/harness/audit_browser.mjs" set-cookie "$port"
+  {
+    printf 'AUDIT_BROWSER_PID=%s\n' "$chrome_pid"
+    printf 'AUDIT_BROWSER_PROFILE=%s\n' "$profile"
+    printf 'AUDIT_BROWSER_PORT=%s\n' "$port"
+  } >"$state_dir/browser.env"
+  chmod 600 "$state_dir/browser.env"
+  trap - EXIT INT TERM
+  printf 'audit browser ready: DevTools port %s, profile %s\n' "$port" "$profile"
+}
+
+browser_stop() {
+  state_dir=${1:?usage: prompt14.sh browser-stop STATE_DIR}
+  test -f "$state_dir/browser.env"
+  # The file holds only a pid, a profile path and a port that browser-start wrote.
+  # shellcheck disable=SC1091
+  . "$state_dir/browser.env"
+  case "$AUDIT_BROWSER_PROFILE" in
+    */rheo-audit-profile.*) ;;
+    *) echo "refusing to remove an unexpected profile path" >&2; exit 2 ;;
+  esac
+  kill "$AUDIT_BROWSER_PID" 2>/dev/null || true
+  tries=0
+  while kill -0 "$AUDIT_BROWSER_PID" 2>/dev/null; do
+    tries=$((tries + 1))
+    if [ "$tries" -gt 50 ]; then
+      kill -9 "$AUDIT_BROWSER_PID" 2>/dev/null || true
+      break
+    fi
+    sleep 0.2
+  done
+  rm -rf "$AUDIT_BROWSER_PROFILE"
+  rm -f "$state_dir/browser.env"
+  test ! -e "$AUDIT_BROWSER_PROFILE"
+  printf 'audit browser stopped; profile %s removed\n' "$AUDIT_BROWSER_PROFILE"
+}
+
 case "${1:-}" in
   static-check)
     static_check
@@ -105,6 +195,9 @@ case "${1:-}" in
     ;;
   build)
     load_env "${2:-}"
+    # Image tags name HEAD, so the tree must be exactly HEAD.
+    "$root/.venv/bin/python" "$root/tests/harness/prompt14_acceptance.py" \
+      require-clean "$root"
     save_config "$env_file" "${3:-}" >/dev/null
     compose build core worker web
     ;;
@@ -158,8 +251,15 @@ case "${1:-}" in
     save_config "$env_file" "${3:-}" >/dev/null
     compose down -v --remove-orphans
     ;;
+  browser-start)
+    load_env "${2:-}"
+    browser_start "${3:-}" "${4:-}"
+    ;;
+  browser-stop)
+    browser_stop "${2:-}"
+    ;;
   *)
-    echo "usage: prompt14.sh static-check | prepare-env ENV | config|build|up|seed|reset|current-omitted|current-restored|core-stop|core-start ENV PROOF_DIR | urls ENV" >&2
+    echo "usage: prompt14.sh static-check | prepare-env ENV | config|build|up|seed|reset|current-omitted|current-restored|core-stop|core-start ENV PROOF_DIR | urls ENV | browser-start ENV STATE_DIR [--headless] | browser-stop STATE_DIR" >&2
     exit 2
     ;;
 esac
