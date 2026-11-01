@@ -10,6 +10,10 @@ services:
       - "${RHEO_PROMPT14_CORE_PORT:-8000}:8000"
     environment:
       RHEO__modules__installed: ${RHEO_PROMPT14_MODULES:-relationships,leads,current}
+      # The authority Core prints into every absolute link (the web tier reads
+      # routing config from Core). base_host stays port-free; without this the
+      # links name port 80 while the browser is served by the front below.
+      RHEO__routing__public_host: localhost:${RHEO_PROMPT14_WEB_PORT:-3000}
     volumes:
       - rheodata:/var/lib/rheo-stream
       - ../tests:/app/tests:ro

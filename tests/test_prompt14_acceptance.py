@@ -281,6 +281,10 @@ def test_prompt14_helper_has_a_read_only_static_contract() -> None:
         "${RHEO_PROMPT14_MODULES:-relationships,leads,current}"
     )
     assert text.count(modules) == 2
+    # Core is the one service that builds absolute links (the web tier reads its
+    # routing config from Core), so its public host names the port the front serves.
+    public_host = "RHEO__routing__public_host: localhost:${RHEO_PROMPT14_WEB_PORT:-3000}"
+    assert text.count(public_host) == 1
     helper = HELPER.read_text(encoding="utf-8")
     assert "compose up -d --wait --no-build postgres core web front" in helper
     assert "compose up -d --wait --no-build worker" not in helper
@@ -307,7 +311,10 @@ def _guarded_config() -> dict[str, object]:
             "core": {
                 "image": image.format("core"),
                 "ports": [{"published": "8000", "target": 8000}],
-                "environment": dict(modules),
+                "environment": {
+                    **modules,
+                    "RHEO__routing__public_host": "localhost:3000",
+                },
                 "volumes": [dict(data), dict(tests_bind)],
             },
             "worker": {
@@ -377,6 +384,8 @@ def test_compose_guard_accepts_only_the_unique_project(
         "wrong-tag",
         "worker-port",
         "web-bypasses-front",
+        "port-less-links",
+        "links-to-another-port",
     ],
 )
 def test_compose_guard_refuses_every_breach(
@@ -402,6 +411,14 @@ def test_compose_guard_refuses_every_breach(
         services["core"]["image"] = "rheo-stream-core"
     elif breach == "web-bypasses-front":
         services["web"]["ports"] = [{"published": "3001", "target": 3000}]
+    elif breach in {"port-less-links", "links-to-another-port"}:
+        core_env = services["core"]["environment"]
+        assert isinstance(core_env, dict)
+        if breach == "port-less-links":
+            # Links on http://localhost/ (port 80) refuse to connect on this stack.
+            del core_env["RHEO__routing__public_host"]
+        else:
+            core_env["RHEO__routing__public_host"] = "localhost:3001"
     else:
         services["worker"]["ports"] = [{"published": "9000", "target": 9000}]
     with pytest.raises(SystemExit):

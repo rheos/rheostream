@@ -54,7 +54,10 @@ tests/harness/prompt14.sh reset /ABSOLUTE/PRIVATE/stack.env /ABSOLUTE/PROOF_DIR
   never misstates what it contains.
 - Every command first saves the fully resolved Compose configuration and refuses to
   go on unless every writable volume belongs to this project, only host ports 8000
-  (Core) and 3000 (the front) are published, and Core's internal 8100 stays private.
+  (Core) and 3000 (the front) are published, Core's internal 8100 stays private, and
+  Core's `RHEO__routing__public_host` is `localhost:3000`, so every link the product
+  builds (Current records, approvals, the sign-in redirect) opens on the port the
+  browser is served from rather than on port 80.
 - `up` starts Postgres, Core, the web app and a small test-only front, and never the
   worker. The seed runs every worker visit itself, so approved-and-queued and
   in-progress handoffs stay put.

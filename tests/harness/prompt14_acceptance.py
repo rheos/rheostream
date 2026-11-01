@@ -169,6 +169,13 @@ def verify_compose(path: Path) -> None:
         if web_env.get(key) != value:
             _fail(f"web {key} does not match the incumbent local-development seam")
 
+    # Core prints every absolute link; they must name the port the front serves.
+    (front_port,) = published["front"]
+    public_host = f"localhost:{front_port[0]}"
+    core_env = services["core"].get("environment", {})
+    if core_env.get("RHEO__routing__public_host") != public_host:
+        _fail(f"core links must use the served origin {public_host}")
+
     # The normal stack loads all three modules; the Current-omitted recipe is the
     # only other allowed value, and it is requested explicitly by prompt14.sh.
     modules = os.environ.get("RHEO_PROMPT14_MODULES", MODULES)
@@ -182,7 +189,7 @@ def verify_compose(path: Path) -> None:
         "acceptance-stack ownership proof: "
         f"project={project} images={sorted(expected_images.values())} "
         f"volumes={sorted(resolved_volumes)} ports=8000,3000 internal_8100=private "
-        f"modules={modules}"
+        f"public_host={public_host} modules={modules}"
     )
 
 
