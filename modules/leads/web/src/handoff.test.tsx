@@ -528,4 +528,39 @@ describe("handoff history states and actions", () => {
       /\.secondary\s*\{[\s\S]*min-height:\s*var\(--rs-size-control\)/,
     );
   });
+
+  // happy-dom/node computes no cascade, colour or layout: these pin the class and
+  // rule hooks that carry the fix. Contrast and rendered height are browser proof.
+  it("keeps the review-approval link's on-accent text above the prose link colour", () => {
+    const html = render(
+      [pending("awaiting_approval")],
+      new Map(),
+      shell({ approvalHref: () => "/shell-owned/review" }),
+    );
+    expect(html).toMatch(
+      /<a class="_primary_\w+" href="\/shell-owned\/review">Review approval<\/a>/,
+    );
+    const css = readFileSync(join(__dirname, "leads.module.css"), "utf8");
+    // `.surface p a` (0,1,2) paints prose links accent; the primary anchor sits in a
+    // <p>, so its on-accent colour needs a selector that outranks that rule.
+    expect(css).toMatch(/\.surface p a,/);
+    expect(css).toMatch(
+      /\.surface a\.primary,\s*\.surface a\.primary:hover\s*\{\s*color:\s*var\(--rs-color-on-accent\);/,
+    );
+  });
+
+  it("gives the Current record links a control-sized hit area", () => {
+    const html = render(
+      [history],
+      new Map([[handoffRef, ok({ history, item, project })]]),
+    );
+    expect(html).toMatch(/<a class="_recordLink_\w+" href="[^"]+">Open in Current<\/a>/);
+    expect(html).toMatch(
+      /<a class="_recordLink_\w+" href="[^"]+">Open project in Current<\/a>/,
+    );
+    const css = readFileSync(join(__dirname, "leads.module.css"), "utf8");
+    expect(css).toMatch(
+      /\.recordLink\s*\{[^}]*display:\s*inline-flex;[^}]*min-block-size:\s*var\(--rs-size-control\);/,
+    );
+  });
 });

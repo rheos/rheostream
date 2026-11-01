@@ -149,6 +149,12 @@
 .evidence a {
   color: var(--rs-color-accent);
 }
+/* A primary link inside prose (the handoff's Review approval sits in a <p>) keeps
+   its on-accent text: `.surface p a` and the global `a:hover` outrank `.primary`. */
+.surface a.primary,
+.surface a.primary:hover {
+  color: var(--rs-color-on-accent);
+}
 .table tbody tr:hover {
   background: var(--rs-color-surface-1);
 }
@@ -388,6 +394,11 @@
 .linkedRecord h4 {
   margin: 0 0 var(--rs-space-3);
   font-size: var(--rs-font-size-md);
+}
+.recordLink {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--rs-size-control);
 }
 .projectRecord {
   padding: var(--rs-space-4);

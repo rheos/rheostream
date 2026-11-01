@@ -121,7 +121,9 @@ function liveLink(
 ): ReactNode {
   const href = reference && shell.recordHref ? shell.recordHref(reference) : null;
   return href ? (
-    <a href={href}>{text}</a>
+    <a className={styles.recordLink} href={href}>
+      {text}
+    </a>
   ) : (
     <span className={styles.meta}>Open in Current unavailable.</span>
   );
