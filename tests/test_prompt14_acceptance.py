@@ -283,7 +283,9 @@ def test_prompt14_helper_has_a_read_only_static_contract() -> None:
     assert text.count(modules) == 2
     # Core is the one service that builds absolute links (the web tier reads its
     # routing config from Core), so its public host names the port the front serves.
-    public_host = "RHEO__routing__public_host: localhost:${RHEO_PROMPT14_WEB_PORT:-3000}"
+    public_host = (
+        "RHEO__routing__public_host: localhost:${RHEO_PROMPT14_WEB_PORT:-3000}"
+    )
     assert text.count(public_host) == 1
     helper = HELPER.read_text(encoding="utf-8")
     assert "compose up -d --wait --no-build postgres core web front" in helper
