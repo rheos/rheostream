@@ -327,7 +327,7 @@
   "pending_spares": {
     "rows": ["approval-submitting", "approval-stale-binding", "approval-expired", "decision-approve", "decision-refuse"],
     "note": "Each consuming row has its own undecided approval, printed by urls as spare:<row>. The approval-pending and approval-pending-long-payload fixtures are never decided, so their read-only review matrix (themes, viewports, zoom, keyboard) never consumes them.",
-    "reseed": "Every pending approval, spares included, stays pending for 900 seconds after seeding. When a pending row's window lapses before its check is done, run reset, up and seed again (about three minutes) and continue with the new URLs from urls; nothing else changes."
+    "reseed": "Every pending approval, spares included, stays pending for 900 seconds after seeding. When a pending row's window lapses before its check is done, run reset, up and seed again (about three minutes), then browser-stop and browser-start: reset deletes the database that held the review browser's session, so the old window is signed out. Continue with the new URLs from urls. The labels and recipes stay the same; every URL, approval id and workspace id is new."
   },
   "criteria": [
     {
@@ -521,5 +521,496 @@
       ],
       "constraints": "Stops the unique disposable project's own core service. No network fault proxy, no fake URL."
     }
-  }
+  },
+  "audit_checks": [
+    {
+      "id": "leads-qualified-current",
+      "source": "capture-row",
+      "check": "Leads detail for an opportunity with a current qualification offers the handoff.",
+      "coverage": { "fixtures": ["qualified-current"] }
+    },
+    {
+      "id": "leads-qualified-stale",
+      "source": "capture-row",
+      "check": "Leads detail for an opportunity whose qualification is out of date.",
+      "coverage": { "fixtures": ["qualified-stale"] }
+    },
+    {
+      "id": "leads-awaiting-approval",
+      "source": "capture-row",
+      "check": "Leads detail with a handoff awaiting approval.",
+      "coverage": { "fixtures": ["handoff-awaiting-approval"] }
+    },
+    {
+      "id": "leads-succeeded-live-item-no-project",
+      "source": "capture-row",
+      "check": "Leads detail with a succeeded handoff, a live Current item and no project.",
+      "coverage": { "fixtures": ["handoff-succeeded-live-item-no-project"] }
+    },
+    {
+      "id": "leads-deleted-item-live-project",
+      "source": "capture-row",
+      "check": "Leads detail whose Current item was deleted while its project lives.",
+      "coverage": { "fixtures": ["handoff-deleted-item-live-project"] }
+    },
+    {
+      "id": "leads-unavailable-item-unavailable-project",
+      "source": "capture-row",
+      "check": "Leads detail while both the Current item and project are unavailable.",
+      "coverage": { "fixtures": ["handoff-unavailable-item-unavailable-project"] }
+    },
+    {
+      "id": "leads-unresolved",
+      "source": "capture-row",
+      "check": "Leads detail with a handoff whose outcome is unknown.",
+      "coverage": { "fixtures": ["handoff-unresolved"] }
+    },
+    {
+      "id": "leads-history-empty",
+      "source": "capture-row",
+      "check": "Leads detail whose handoff history is empty.",
+      "coverage": {
+        "fixtures": ["qualified-current", "unqualified"],
+        "automated": [
+          "vitest:modules/leads/web/src/screens.test.tsx > qualified-current enables handoff regardless of qualification score",
+          "vitest:modules/leads/web/src/handoff.test.tsx > renders loading, empty, denied and temporary history states"
+        ],
+        "note": "The seed stages no handoff for either opportunity, so each page's history reads No Current handoffs yet. The qualified-current screen test asserts that copy on the real detail screen."
+      }
+    },
+    {
+      "id": "leads-history-loading",
+      "source": "capture-row",
+      "check": "Leads detail while its handoff history is still loading.",
+      "coverage": {
+        "automated_only": {
+          "tests": [
+            "vitest:modules/leads/web/src/screens.test.tsx > renders the real detail loading fallback before handoff history settles",
+            "vitest:modules/leads/web/src/handoff.test.tsx > renders loading, empty, denied and temporary history states"
+          ],
+          "reason": "The loading line is the fallback streamed while the server-side history read is still pending. On the local stack that read finishes inside the same response, and holding it open would need a slowed or faked Core read, which the acceptance stack never adds."
+        }
+      }
+    },
+    {
+      "id": "leads-history-error",
+      "source": "capture-row",
+      "check": "Leads detail whose handoff history is refused or temporarily unavailable.",
+      "coverage": {
+        "automated_only": {
+          "tests": [
+            "vitest:modules/leads/web/src/handoff.test.tsx > renders loading, empty, denied and temporary history states",
+            "pytest:tests/postgres/test_leads_current_handoff.py::test_owner_and_authenticated_member_receive_the_live_phase"
+          ],
+          "reason": "History is refused only to a caller outside the owner and member roles, and every person who can open the opportunity in a browser holds one of them. It is temporarily unavailable only when the history read fails while the rest of the page renders: core-stop takes the whole page to the shell's temporary failure, and current-omitted leaves Leads history readable. The render test pins both copies."
+        }
+      }
+    },
+    {
+      "id": "leads-denied-item-live-project",
+      "source": "capture-row",
+      "check": "A viewer who may read the project but not the item keeps the project; restricted-token authorization and render evidence, no browser row.",
+      "coverage": { "fixtures": ["handoff-denied-item-live-project"] }
+    },
+    {
+      "id": "leads-live-item-denied-project",
+      "source": "capture-row",
+      "check": "A viewer who may read the item but not the project keeps the item; restricted-token authorization and render evidence, no browser row.",
+      "coverage": { "fixtures": ["handoff-live-item-denied-project"] }
+    },
+    {
+      "id": "approval-pending-long-payload",
+      "source": "capture-row",
+      "check": "Approval detail for a pending approval with a long payload, shown in full.",
+      "coverage": { "fixtures": ["approval-pending-long-payload"] }
+    },
+    {
+      "id": "approval-submitting",
+      "source": "capture-row",
+      "check": "Approval detail while a decision is being submitted.",
+      "coverage": { "fixtures": ["approval-submitting"] }
+    },
+    {
+      "id": "approval-approved-queued",
+      "source": "capture-row",
+      "check": "Approval detail for an approved, queued action.",
+      "coverage": { "fixtures": ["approval-approved-queued"] }
+    },
+    {
+      "id": "approval-succeeded",
+      "source": "capture-row",
+      "check": "Approval detail for a succeeded action.",
+      "coverage": { "fixtures": ["approval-succeeded"] }
+    },
+    {
+      "id": "approval-unresolved",
+      "source": "capture-row",
+      "check": "Approval detail for an action whose outcome is unknown.",
+      "coverage": { "fixtures": ["approval-unresolved"] }
+    },
+    {
+      "id": "approval-expired-binding",
+      "source": "capture-row",
+      "check": "Approval detail after the approval window has expired.",
+      "coverage": { "fixtures": ["approval-expired"] }
+    },
+    {
+      "id": "approval-stale-binding",
+      "source": "capture-row",
+      "check": "Approval detail whose displayed binding is stale.",
+      "coverage": {
+        "fixtures": ["approval-stale-binding"],
+        "manual_coverage": [{ "criterion": 6, "state": "changed binding" }]
+      }
+    },
+    {
+      "id": "approval-denied-or-not-found",
+      "source": "capture-row",
+      "check": "Approval detail for an approval the viewer may not see or that does not exist.",
+      "coverage": { "fixtures": ["approval-denied-or-missing"] }
+    },
+    {
+      "id": "approval-temporary-error",
+      "source": "capture-row",
+      "check": "Approval detail while Core cannot be reached.",
+      "coverage": { "fixtures": ["approval-temporarily-unavailable"] }
+    },
+    {
+      "id": "approval-protected-chrome-across-themes",
+      "source": "capture-row",
+      "check": "The protected approval area, native controls included, looks the same while the shell theme changes.",
+      "coverage": { "every_reachable": "shell" }
+    },
+    {
+      "id": "no-horizontal-scroll-at-200-zoom",
+      "source": "capture-assertion",
+      "check": "No horizontal page scroll and no clipping, including at 200% zoom.",
+      "coverage": { "every_reachable": "all" }
+    },
+    {
+      "id": "long-content-wraps",
+      "source": "capture-assertion",
+      "check": "A long title, body, digest and idempotency key wrap without truncation.",
+      "coverage": { "fixtures": ["approval-pending-long-payload"] }
+    },
+    {
+      "id": "payload-before-actions",
+      "source": "capture-assertion",
+      "check": "A pending approval shows every payload field before its decision controls.",
+      "coverage": { "fixtures": ["approval-pending", "approval-pending-long-payload"] }
+    },
+    {
+      "id": "denied-approval-redacted-like-invalid",
+      "source": "capture-assertion",
+      "check": "A denied, invalid, missing or unauthorized approval shows no sensitive field and looks the same in every case.",
+      "coverage": { "fixtures": ["approval-denied-or-missing"] }
+    },
+    {
+      "id": "deleted-item-keeps-live-project",
+      "source": "capture-assertion",
+      "check": "A deleted item does not hide a project that is still live.",
+      "coverage": { "fixtures": ["handoff-deleted-item-live-project"], "criteria": [13] }
+    },
+    {
+      "id": "denied-siblings-keep-the-other-branch",
+      "source": "capture-assertion",
+      "check": "A denied item or project never hides its authorized sibling; restricted-token authorization and render evidence only.",
+      "coverage": {
+        "fixtures": ["handoff-denied-item-live-project", "handoff-live-item-denied-project"],
+        "criteria": [12]
+      }
+    },
+    {
+      "id": "route-absence-keeps-content",
+      "source": "capture-assertion",
+      "check": "Without a Current route the authorized content stays and no link is invented.",
+      "coverage": { "manual_coverage": [{ "criterion": 12, "state": "route absence" }] }
+    },
+    {
+      "id": "stale-qualification-warns-and-stays-enabled",
+      "source": "capture-assertion",
+      "check": "An out-of-date qualification shows explicit warning text and the handoff stays available.",
+      "coverage": { "fixtures": ["qualified-stale"], "criteria": [9] }
+    },
+    {
+      "id": "success-only-for-proven-result",
+      "source": "capture-assertion",
+      "check": "Success language appears only once a result is proven, never while queued or in progress.",
+      "coverage": {
+        "fixtures": [
+          "handoff-succeeded-live-item-no-project",
+          "approval-succeeded",
+          "handoff-approved-queued",
+          "approval-approved-queued",
+          "handoff-executing",
+          "approval-executing"
+        ]
+      }
+    },
+    {
+      "id": "current-edit-form-is-the-only-project-control",
+      "source": "capture-assertion",
+      "check": "Current's own item edit form is the only place to assign, move or clear a project.",
+      "coverage": { "fixtures": ["handoff-succeeded-live-item-no-project"], "criteria": [15] }
+    },
+    {
+      "id": "skip-link-and-focus-order",
+      "source": "keyboard-focus",
+      "check": "The skip link works and focus moves forward and backward through the page in order.",
+      "coverage": { "every_reachable": "all" }
+    },
+    {
+      "id": "decision-controls-disable-together",
+      "source": "keyboard-focus",
+      "check": "Approve and refuse, each tried on its own approval, disable together while a decision submits.",
+      "coverage": {
+        "fixtures": ["approval-submitting"],
+        "spares": ["decision-approve", "decision-refuse"]
+      }
+    },
+    {
+      "id": "focus-lands-on-result",
+      "source": "keyboard-focus",
+      "check": "After a decision, focus lands on the durable result heading or status.",
+      "coverage": { "spares": ["decision-approve", "decision-refuse"] }
+    },
+    {
+      "id": "concurrent-resolution-never-resubmits",
+      "source": "keyboard-focus",
+      "check": "A decision already taken elsewhere is not resubmitted.",
+      "coverage": { "fixtures": ["approval-stale-binding"] }
+    },
+    {
+      "id": "item-project-branches-in-every-theme",
+      "source": "keyboard-focus",
+      "check": "Every reachable Current item and project branch, in each theme at desktop and mobile sizes.",
+      "coverage": {
+        "fixtures": [
+          "handoff-succeeded-live-item-no-project",
+          "handoff-succeeded-live-item-live-project",
+          "handoff-deleted-item-live-project",
+          "handoff-unavailable-item-unavailable-project",
+          "handoff-cleared-project",
+          "handoff-deleted-project"
+        ],
+        "manual_coverage": [{ "criterion": 14, "state": "moved" }]
+      }
+    },
+    {
+      "id": "reduced-motion-and-forced-colors",
+      "source": "keyboard-focus",
+      "check": "Reduced motion and forced colors behave correctly.",
+      "coverage": { "every_reachable": "all" }
+    },
+    {
+      "id": "leads-detail-both-variants",
+      "source": "audit-check",
+      "check": "Every reachable Leads state in both the generic and the job-search Leads variants.",
+      "coverage": {
+        "fixtures": [
+          "qualified-current",
+          "qualified-stale",
+          "unqualified",
+          "handoff-awaiting-approval",
+          "handoff-approved-queued",
+          "handoff-executing",
+          "handoff-succeeded-live-item-no-project",
+          "handoff-succeeded-live-item-live-project",
+          "handoff-deleted-item-live-project",
+          "handoff-unavailable-item-unavailable-project",
+          "handoff-cleared-project",
+          "handoff-deleted-project",
+          "handoff-unresolved",
+          "handoff-retryable-no-effect"
+        ]
+      }
+    },
+    {
+      "id": "approval-states-complete",
+      "source": "audit-check",
+      "check": "The complete list of approval states on the shell approval page.",
+      "coverage": {
+        "fixtures": [
+          "approval-pending",
+          "approval-pending-long-payload",
+          "approval-submitting",
+          "approval-approved-queued",
+          "approval-executing",
+          "approval-succeeded",
+          "approval-failed-no-effect",
+          "approval-unresolved",
+          "approval-refused",
+          "approval-expired",
+          "approval-stale-binding",
+          "approval-denied-or-missing",
+          "approval-temporarily-unavailable"
+        ]
+      }
+    },
+    {
+      "id": "current-item-and-project-links",
+      "source": "audit-check",
+      "check": "The Current item and project links Leads shows open the provider's own pages.",
+      "coverage": {
+        "fixtures": [
+          "handoff-succeeded-live-item-no-project",
+          "handoff-succeeded-live-item-live-project",
+          "handoff-deleted-item-live-project"
+        ],
+        "criteria": [3, 13]
+      }
+    },
+    {
+      "id": "routing-subdomain-isolation-and-configured-urls",
+      "source": "audit-check",
+      "check": "Subdomain mode keeps each surface on its own host and every link uses the configured URLs.",
+      "coverage": {
+        "automated_only": {
+          "tests": [
+            "vitest:apps/web/src/lib/routing/resolve.test.ts > serves approval detail only on the shell host",
+            "vitest:apps/web/src/lib/routing/resolve.test.ts > gives a module host's whole path to the module, its root included",
+            "vitest:apps/web/src/lib/routing/resolve.test.ts > serves nothing on the shell host below its root, or on any other host",
+            "vitest:apps/web/src/lib/routing/record-href.test.ts > serves a root-path provider on its own subdomain host",
+            "vitest:apps/web/src/lib/routing/record-href.test.ts > returns null rather than linking through an unserved routing surface",
+            "vitest:apps/web/src/lib/routing/links.test.ts > puts the sign-in link on a different host than the shell in subdomain mode",
+            "vitest:apps/web/src/lib/routing/links.test.ts > builds only the bounded approval detail URL from a UUID",
+            "vitest:apps/web/src/lib/routing/url-for.test.ts > keeps the two modes distinct for every case covered in both"
+          ],
+          "reason": "The disposable stack runs path mode on one localhost origin. Subdomain mode needs a separate host for each surface, which the stack does not serve, so these routing tests are the evidence for it and the browser review uses path mode."
+        }
+      }
+    },
+    {
+      "id": "build-start-console-and-responsiveness",
+      "source": "audit-check",
+      "check": "The reviewed build result, Core and web startup readiness, runtime console errors and visible responsiveness, with no invented metrics.",
+      "coverage": { "every_reachable": "all", "criteria": [8] }
+    },
+    {
+      "id": "three-themes",
+      "source": "audit-check",
+      "check": "GreenStream dark, Novadiem dark and Novadiem light on both surfaces.",
+      "coverage": { "every_reachable": "all" }
+    },
+    {
+      "id": "viewports-and-zoom",
+      "source": "audit-check",
+      "check": "Desktop 1440x1024, tablet 1024x768, mobile 390x844 and 200% zoom on both surfaces.",
+      "coverage": { "every_reachable": "all" }
+    },
+    {
+      "id": "row-record-contrast-and-overflow",
+      "source": "audit-check",
+      "check": "Each reviewed row records its route, theme, viewport, zoom, keyboard outcome, contrast, overflow, wrapping, motion, forced colors, console result and evidence.",
+      "coverage": { "every_reachable": "all" }
+    },
+    {
+      "id": "get-refresh-back-forward-inert",
+      "source": "audit-check",
+      "check": "Opening, refreshing, Back and Forward change nothing.",
+      "coverage": { "fixtures": ["approval-pending"], "criteria": [18] }
+    },
+    {
+      "id": "controls-at-least-44px",
+      "source": "audit-check",
+      "check": "Interactive controls are at least 44px.",
+      "coverage": { "every_reachable": "all" }
+    },
+    {
+      "id": "cleared-project",
+      "source": "audit-check",
+      "check": "A project connection cleared in Current.",
+      "coverage": { "fixtures": ["handoff-cleared-project"], "criteria": [14] }
+    },
+    {
+      "id": "later-project-deletion",
+      "source": "audit-check",
+      "check": "A project deleted in Current after the handoff.",
+      "coverage": { "fixtures": ["handoff-deleted-project"], "criteria": [14] }
+    },
+    {
+      "id": "current-omitted",
+      "source": "audit-check",
+      "check": "Current left out of the deployment: Leads stays usable and shows Current as unavailable.",
+      "coverage": { "fixtures": ["handoff-unavailable-item-unavailable-project"], "criteria": [16] }
+    },
+    {
+      "id": "current-disabled",
+      "source": "audit-check",
+      "check": "Current disabled in the workspace: Leads stays usable and a handoff makes no Current effect.",
+      "coverage": {
+        "automated_only": {
+          "tests": [
+            "pytest:tests/postgres/test_leads_current_handoff.py::test_request_time_unavailable_restages_once_current_is_ready",
+            "pytest:tests/postgres/test_leads_current_links.py::test_current_absent_denied_or_unready_preserves_the_projection"
+          ],
+          "reason": "A workspace module is disabled only by writing its module state, and nothing does that: Core has install, enable and upgrade operations but no disable, and only those and export restore write module state. A reviewer would have to edit the database. The PostgreSQL tests set the state directly and pin that a request made while Current is disabled becomes a local handoff with no effect, restages once Current is back, and leaves the linked projection untouched. The omitted state, which a deployment can reach, has its own runtime recipe."
+        }
+      }
+    },
+    {
+      "id": "keyed-lost-response",
+      "source": "audit-check",
+      "check": "A request whose response was lost, retried with the same key, makes one handoff.",
+      "coverage": {
+        "automated_only": {
+          "tests": [
+            "vitest:modules/leads/web/src/handoff-request-form.test.tsx > keeps one user request key across a lost response and retry",
+            "pytest:tests/postgres/test_leads_current_handoff.py::test_same_key_same_snapshot_returns_the_same_handoff_after_a_lost_response",
+            "pytest:tests/postgres/test_leads_current_handoff.py::test_a_restage_replays_a_lost_response_and_refuses_a_stale_attempt",
+            "pytest:tests/postgres/test_keyed_idempotency.py::test_keyed_dispatch_replays_defaults_nulls_unicode_and_exact_whitespace",
+            "pytest:tests/postgres/test_keyed_idempotency.py::test_keyed_dispatch_concurrent_same_request_runs_one_handler_and_effect"
+          ],
+          "reason": "A lost response means Core committed the request but the reply never reached the browser. Only a network fault between the two produces that, and the acceptance stack adds no fault proxy; a stopped Core refuses the request before anything commits, which is a different state. The form test pins that a retry reuses the same request key, and the PostgreSQL tests pin that the same key returns the same handoff and that concurrent identical requests run one effect."
+        }
+      }
+    },
+    {
+      "id": "explicit-unresolved-resolution",
+      "source": "audit-check",
+      "check": "A person explicitly resolves an action whose outcome is unknown, and Leads follows the named outcome.",
+      "coverage": {
+        "automated_only": {
+          "tests": [
+            "pytest:tests/postgres/test_external_continuation.py::test_resolve_success_requires_a_verified_result_ref",
+            "pytest:tests/postgres/test_external_continuation.py::test_resolve_failed_requires_proof_of_no_effect",
+            "pytest:tests/postgres/test_external_continuation.py::test_resolve_cancelled_is_terminal_without_proof",
+            "pytest:tests/postgres/test_leads_current_links.py::test_a_resolution_to_succeeded_reaches_leads_and_then_its_link",
+            "pytest:tests/postgres/test_leads_current_links.py::test_a_resolution_to_failed_reaches_leads_and_restages_on_a_new_approval",
+            "pytest:tests/postgres/test_leads_current_links.py::test_a_resolution_to_cancelled_is_recorded_and_never_restages_but_a_new_key_does"
+          ],
+          "reason": "Core's core.operation.resolve has no page or form, and no token of any kind may carry it, so no normal page, CLI or MCP client calls it; reaching it would mean hand-building a request. The unknown-outcome state itself is seeded (handoff-unresolved and approval-unresolved). The PostgreSQL tests pin each resolution outcome and that Leads picks it up."
+        }
+      }
+    },
+    {
+      "id": "stage-and-outcome-unchanged",
+      "source": "audit-check",
+      "check": "A succeeded handoff leaves the opportunity's stage and outcome unchanged.",
+      "coverage": { "fixtures": ["handoff-succeeded-live-item-no-project"], "criteria": [17] }
+    },
+    {
+      "id": "closed-history-read-only",
+      "source": "audit-check",
+      "check": "An expired or resolved approval shows its verified snapshot only as closed, read-only history with no decision controls or submit path.",
+      "coverage": {
+        "fixtures": ["approval-expired", "approval-succeeded", "approval-refused", "approval-failed-no-effect"]
+      }
+    },
+    {
+      "id": "denied-or-missing-workspace-switch",
+      "source": "audit-check",
+      "check": "The same person's approval link from workspace A is redacted after a normal switch to workspace B and readable again back in A.",
+      "coverage": { "fixtures": ["approval-denied-or-missing"] }
+    },
+    {
+      "id": "requires-reapproval-never-rebuilds",
+      "source": "audit-check",
+      "check": "An expired approval or one that needs a fresh decision is never silently rebuilt.",
+      "coverage": {
+        "fixtures": ["approval-expired"],
+        "manual_coverage": [{ "criterion": 6, "state": "restored requires_reapproval" }]
+      }
+    }
+  ]
 }

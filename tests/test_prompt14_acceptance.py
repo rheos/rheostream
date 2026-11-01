@@ -551,3 +551,272 @@ def test_audit_browser_session_keeps_the_secret_between_processes() -> None:
     imports = [line for line in driver.splitlines() if line.startswith("import ")]
     assert all('from "node:' in line for line in imports), imports
     assert "httpOnly: true" in driver
+
+
+def test_reseed_restarts_the_review_browser() -> None:
+    # Reset deletes the database that held the browser's session, so a reseed
+    # without a new browser session leaves the reviewer signed out.
+    reseed = _authority()["pending_spares"]["reseed"]
+    assert "browser-stop" in reseed and "browser-start" in reseed, reseed
+    doc = (ROOT / "docs" / "testing" / "leads-current-acceptance.md").read_text(
+        encoding="utf-8"
+    )
+    (paragraph,) = [part for part in doc.split("\n\n") if "lapses" in part]
+    assert "browser-stop" in paragraph and "browser-start" in paragraph, paragraph
+
+
+# --- every audit check maps to something that resolves -----------------------------
+
+AUDIT_SOURCES = {"capture-row", "capture-assertion", "keyboard-focus", "audit-check"}
+#: Keys that each claim a reviewer path or a classification.
+MAPPING_KEYS = {
+    "fixtures",
+    "every_reachable",
+    "spares",
+    "manual_coverage",
+    "criteria",
+    "automated_only",
+    "not_applicable",
+}
+#: Keys that only support a mapping.
+SUPPORT_KEYS = {"automated", "note"}
+EXCLUSIVE_KEYS = {"automated_only", "not_applicable"}
+#: The inventory, pinned: dropping or renaming a check is a visible change here.
+AUDIT_CHECK_IDS = {
+    "leads-qualified-current",
+    "leads-qualified-stale",
+    "leads-awaiting-approval",
+    "leads-succeeded-live-item-no-project",
+    "leads-deleted-item-live-project",
+    "leads-unavailable-item-unavailable-project",
+    "leads-unresolved",
+    "leads-history-empty",
+    "leads-history-loading",
+    "leads-history-error",
+    "leads-denied-item-live-project",
+    "leads-live-item-denied-project",
+    "approval-pending-long-payload",
+    "approval-submitting",
+    "approval-approved-queued",
+    "approval-succeeded",
+    "approval-unresolved",
+    "approval-expired-binding",
+    "approval-stale-binding",
+    "approval-denied-or-not-found",
+    "approval-temporary-error",
+    "approval-protected-chrome-across-themes",
+    "no-horizontal-scroll-at-200-zoom",
+    "long-content-wraps",
+    "payload-before-actions",
+    "denied-approval-redacted-like-invalid",
+    "deleted-item-keeps-live-project",
+    "denied-siblings-keep-the-other-branch",
+    "route-absence-keeps-content",
+    "stale-qualification-warns-and-stays-enabled",
+    "success-only-for-proven-result",
+    "current-edit-form-is-the-only-project-control",
+    "skip-link-and-focus-order",
+    "decision-controls-disable-together",
+    "focus-lands-on-result",
+    "concurrent-resolution-never-resubmits",
+    "item-project-branches-in-every-theme",
+    "reduced-motion-and-forced-colors",
+    "leads-detail-both-variants",
+    "approval-states-complete",
+    "current-item-and-project-links",
+    "routing-subdomain-isolation-and-configured-urls",
+    "build-start-console-and-responsiveness",
+    "three-themes",
+    "viewports-and-zoom",
+    "row-record-contrast-and-overflow",
+    "get-refresh-back-forward-inert",
+    "controls-at-least-44px",
+    "cleared-project",
+    "later-project-deletion",
+    "current-omitted",
+    "current-disabled",
+    "keyed-lost-response",
+    "explicit-unresolved-resolution",
+    "stage-and-outcome-unchanged",
+    "closed-history-read-only",
+    "denied-or-missing-workspace-switch",
+    "requires-reapproval-never-rebuilds",
+}
+
+
+def _audit_problems(authority: dict[str, object]) -> list[str]:
+    """Every way an audit check fails to map to something that resolves."""
+    problems: list[str] = []
+    fixtures = authority["fixtures"]
+    assert isinstance(fixtures, dict)
+    reachable = {
+        "all": set(fixtures) - RESTRICTED_TOKEN_FIXTURES,
+        "leads": {
+            name
+            for name, fixture in fixtures.items()
+            if fixture["surface"] == "leads" and name not in RESTRICTED_TOKEN_FIXTURES
+        },
+        "shell": {
+            name for name, fixture in fixtures.items() if fixture["surface"] == "shell"
+        },
+    }
+    spare_rows = set(authority["pending_spares"]["rows"]) - set(fixtures)
+    criteria = {row["criterion"]: row for row in authority["criteria"]}
+    states = {
+        (number, entry["state"])
+        for number, row in criteria.items()
+        for entry in row.get("manual_coverage", [])
+    }
+
+    def resolves(cid: str, reference: object) -> None:
+        try:
+            assert isinstance(reference, str)
+            _assert_reference_resolves(reference)
+        except (AssertionError, ValueError, OSError):
+            problems.append(f"{cid}: unresolved test {reference!r}")
+
+    checks = authority.get("audit_checks")
+    if not isinstance(checks, list) or not checks:
+        return ["audit_checks: missing or empty"]
+    ids = [check.get("id") for check in checks]
+    for cid in sorted({i for i in ids if ids.count(i) > 1}, key=str):
+        problems.append(f"{cid}: duplicate id")
+    for cid in sorted(AUDIT_CHECK_IDS - set(ids)):
+        problems.append(f"{cid}: pinned check missing from the inventory")
+    for cid in sorted(set(ids) - AUDIT_CHECK_IDS, key=str):
+        problems.append(f"{cid}: check not in the pinned inventory")
+
+    referenced_fixtures: set[str] = set()
+    referenced_states: set[tuple[int, str]] = set()
+    for check in checks:
+        cid = str(check.get("id"))
+        if set(check) != {"id", "source", "check", "coverage"}:
+            problems.append(f"{cid}: fields {sorted(check)}")
+            continue
+        if check["source"] not in AUDIT_SOURCES:
+            problems.append(f"{cid}: unknown source {check['source']!r}")
+        if not str(check["check"]).strip():
+            problems.append(f"{cid}: empty check text")
+        coverage = check["coverage"]
+        if not isinstance(coverage, dict):
+            problems.append(f"{cid}: coverage is not an object")
+            continue
+        unknown = set(coverage) - MAPPING_KEYS - SUPPORT_KEYS
+        if unknown:
+            problems.append(f"{cid}: unknown coverage keys {sorted(unknown)}")
+        mapping = set(coverage) & MAPPING_KEYS
+        if not mapping:
+            problems.append(f"{cid}: no mapping")
+            continue
+        claims = mapping | (set(coverage) & SUPPORT_KEYS)
+        if mapping & EXCLUSIVE_KEYS and len(claims) > 1:
+            problems.append(f"{cid}: a classification cannot also claim another path")
+        if "automated" in coverage:
+            if not coverage["automated"]:
+                problems.append(f"{cid}: empty automated list")
+            for reference in coverage["automated"]:
+                resolves(cid, reference)
+        if "note" in coverage and not str(coverage["note"]).strip():
+            problems.append(f"{cid}: empty note")
+        if "fixtures" in coverage:
+            for name in coverage["fixtures"] or [None]:
+                if name not in fixtures:
+                    problems.append(f"{cid}: unknown fixture {name!r}")
+                else:
+                    referenced_fixtures.add(name)
+        scope = coverage.get("every_reachable")
+        if "every_reachable" in coverage and scope not in reachable:
+            problems.append(f"{cid}: unknown scope {scope!r}")
+        if "spares" in coverage:
+            for row in coverage["spares"] or [None]:
+                if row not in spare_rows:
+                    problems.append(f"{cid}: unknown pending spare {row!r}")
+        if "manual_coverage" in coverage:
+            for entry in coverage["manual_coverage"] or [{}]:
+                key = (entry.get("criterion"), entry.get("state"))
+                if key not in states:
+                    problems.append(f"{cid}: unknown manual_coverage {key!r}")
+                else:
+                    referenced_states.add(key)
+        if "criteria" in coverage:
+            for number in coverage["criteria"] or [None]:
+                if number not in criteria:
+                    problems.append(f"{cid}: unknown criterion {number!r}")
+        for key in EXCLUSIVE_KEYS & mapping:
+            classified = coverage[key]
+            if (
+                not isinstance(classified, dict)
+                or not str(classified.get("reason", "")).strip()
+            ):
+                problems.append(f"{cid}: {key} without a reason")
+                continue
+            if key == "automated_only":
+                if not classified.get("tests"):
+                    problems.append(f"{cid}: automated_only without tests")
+                for reference in classified.get("tests", ()):
+                    resolves(cid, reference)
+            elif set(classified) != {"reason"}:
+                problems.append(f"{cid}: not_applicable carries {sorted(classified)}")
+
+    for name in sorted(set(fixtures) - referenced_fixtures):
+        problems.append(f"{name}: fixture named by no audit check")
+    for key in sorted(states - referenced_states):
+        problems.append(f"{key!r}: manual_coverage state named by no audit check")
+
+    # The two complete-list checks name every reachable state on their surface.
+    by_id = {str(check.get("id")): check for check in checks}
+    for cid, scope in (
+        ("leads-detail-both-variants", "leads"),
+        ("approval-states-complete", "shell"),
+    ):
+        named = set(by_id.get(cid, {}).get("coverage", {}).get("fixtures", ()))
+        if named != reachable[scope]:
+            problems.append(f"{cid}: names {sorted(named ^ reachable[scope])} wrongly")
+    return problems
+
+
+def test_every_audit_check_maps_to_coverage_that_resolves() -> None:
+    assert _audit_problems(_authority()) == []
+
+
+@pytest.mark.parametrize(
+    ("breach", "expected"),
+    [
+        ("drop-mapping", "leads-history-empty: no mapping"),
+        ("unknown-fixture", "leads-qualified-current: unknown fixture 'qualified-x'"),
+        ("no-tests", "keyed-lost-response: automated_only without tests"),
+        ("no-reason", "current-disabled: automated_only without a reason"),
+        ("unresolved-test", "leads-history-loading: unresolved test"),
+        ("duplicate", "leads-unresolved: duplicate id"),
+        ("unreferenced-fixture", "handoff-retryable-no-effect: fixture named by no"),
+        ("unreferenced-state", "(14, 'moved'): manual_coverage state named by no"),
+        ("mixed", "current-disabled: a classification cannot also claim another"),
+    ],
+)
+def test_audit_check_completeness_refuses_every_gap(breach: str, expected: str) -> None:
+    authority = _authority()
+    checks = {check["id"]: check for check in authority["audit_checks"]}
+    if breach == "drop-mapping":
+        checks["leads-history-empty"]["coverage"] = {"note": "kept only a note"}
+    elif breach == "unknown-fixture":
+        checks["leads-qualified-current"]["coverage"]["fixtures"] = ["qualified-x"]
+    elif breach == "no-tests":
+        checks["keyed-lost-response"]["coverage"]["automated_only"]["tests"] = []
+    elif breach == "no-reason":
+        checks["current-disabled"]["coverage"]["automated_only"]["reason"] = " "
+    elif breach == "unresolved-test":
+        checks["leads-history-loading"]["coverage"]["automated_only"]["tests"] = [
+            "vitest:modules/leads/web/src/screens.test.tsx > a title nobody wrote"
+        ]
+    elif breach == "duplicate":
+        authority["audit_checks"].append(dict(checks["leads-unresolved"]))
+    elif breach == "unreferenced-fixture":
+        listed = checks["leads-detail-both-variants"]["coverage"]["fixtures"]
+        listed.remove("handoff-retryable-no-effect")
+    elif breach == "unreferenced-state":
+        branches = checks["item-project-branches-in-every-theme"]["coverage"]
+        del branches["manual_coverage"]
+    else:
+        checks["current-disabled"]["coverage"]["fixtures"] = ["qualified-current"]
+    problems = _audit_problems(authority)
+    assert any(problem.startswith(expected) for problem in problems), problems

@@ -20,6 +20,18 @@ browser row, because an ordinary owner or member can always read both siblings.
 `tests/test_prompt14_acceptance.py` keeps that file honest, and
 `tests/postgres/test_prompt14_seed.py` runs the seed against disposable test databases.
 
+The file's `audit_checks` list is the browser review's checklist: one entry per screen
+state to capture, per assertion made on every capture, per keyboard and focus check,
+and per named review check. Each entry maps to something the test resolves: seeded
+states, every reachable state on a surface, pending spares, a classified manual state,
+or an acceptance criterion. An entry no reviewer can reach without faking data is
+automated-only, with the exact tests and the reason. The test fails on an entry with no
+mapping, a mapping that does not resolve, an automated-only entry without tests or a
+reason, a duplicate id, or a state that no entry names. Empty handoff history is
+reachable on the seeded `qualified-current` and `unqualified` pages; loading and failed
+history, a lost response, Current disabled in a workspace, an explicit resolution of an
+unknown outcome and subdomain-mode routing are automated-only.
+
 The `prompt14` file, variable and project names are the harness's historical
 identifiers. They name this stack and nothing else.
 
@@ -53,7 +65,9 @@ tests/harness/prompt14.sh reset /ABSOLUTE/PRIVATE/stack.env /ABSOLUTE/PROOF_DIR
 - `seed` provisions a synthetic owner (Avery Chen at Northwind) with two workspaces,
   A and B, and one undecided approval for each review step that uses one up
   (`spare:<row>` in `urls`). Pending approvals stay pending for 900 seconds; when one
-  lapses, run `reset`, `up` and `seed` again.
+  lapses, run `reset`, `up` and `seed` again, then `browser-stop` and `browser-start`.
+  `reset` deletes the database that held the review browser's session, so the old
+  window is signed out, and every URL and id in `urls` is new.
 - `reset` removes this project's containers, volumes and network only.
 
 Two scripted steps reach states that only exist while something is down:
