@@ -238,15 +238,28 @@ jobs:
           persist-credentials: false
       # The service cluster is thrown away with the job, so it needs no crash
       # safety. Each Postgres test creates and drops its own workspace database,
-      # and with fsync on every one of those waits on the disk. All three settings
-      # reload without a restart; nothing the suite asserts depends on them.
-      - name: Turn off durability on the throwaway CI cluster
-        run: >-
-          docker exec ${{ job.services.postgres.id }} psql -U rheo -d rheo -v ON_ERROR_STOP=1
-          -c "ALTER SYSTEM SET fsync = off"
-          -c "ALTER SYSTEM SET synchronous_commit = off"
-          -c "ALTER SYSTEM SET full_page_writes = off"
-          -c "SELECT pg_reload_conf()"
+      # and with fsync on every one of those waits on the disk. max_connections:
+      # a pytest process can hold 36 pooled connections (tests/test_engine_pool.py)
+      # and a shard runs four, against the image's default of 100. It takes a
+      # restart, which also applies the rest; nothing the suite asserts depends on
+      # these settings.
+      - name: Tune the throwaway CI cluster (durability off, more connections)
+        env:
+          PG: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$PG" psql -U rheo -d rheo -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET fsync = off" \
+            -c "ALTER SYSTEM SET synchronous_commit = off" \
+            -c "ALTER SYSTEM SET full_page_writes = off" \
+            -c "ALTER SYSTEM SET max_connections = 300"
+          docker restart "$PG" >/dev/null
+          for _ in $(seq 1 30); do
+            docker exec "$PG" pg_isready -U rheo -q && break
+            sleep 1
+          done
+          docker exec "$PG" psql -U rheo -d rheo -v ON_ERROR_STOP=1 -At \
+            -c "SHOW fsync" -c "SHOW full_page_writes" -c "SHOW max_connections" \
+            | tr '\n' ' ' | tee /dev/stderr | grep -qx 'off off 300 '
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
@@ -307,15 +320,28 @@ jobs:
           persist-credentials: false
       # The service cluster is thrown away with the job, so it needs no crash
       # safety. Each Postgres test creates and drops its own workspace database,
-      # and with fsync on every one of those waits on the disk. All three settings
-      # reload without a restart; nothing the suite asserts depends on them.
-      - name: Turn off durability on the throwaway CI cluster
-        run: >-
-          docker exec ${{ job.services.postgres.id }} psql -U rheo -d rheo -v ON_ERROR_STOP=1
-          -c "ALTER SYSTEM SET fsync = off"
-          -c "ALTER SYSTEM SET synchronous_commit = off"
-          -c "ALTER SYSTEM SET full_page_writes = off"
-          -c "SELECT pg_reload_conf()"
+      # and with fsync on every one of those waits on the disk. max_connections:
+      # a pytest process can hold 36 pooled connections (tests/test_engine_pool.py)
+      # and a shard runs four, against the image's default of 100. It takes a
+      # restart, which also applies the rest; nothing the suite asserts depends on
+      # these settings.
+      - name: Tune the throwaway CI cluster (durability off, more connections)
+        env:
+          PG: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$PG" psql -U rheo -d rheo -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET fsync = off" \
+            -c "ALTER SYSTEM SET synchronous_commit = off" \
+            -c "ALTER SYSTEM SET full_page_writes = off" \
+            -c "ALTER SYSTEM SET max_connections = 300"
+          docker restart "$PG" >/dev/null
+          for _ in $(seq 1 30); do
+            docker exec "$PG" pg_isready -U rheo -q && break
+            sleep 1
+          done
+          docker exec "$PG" psql -U rheo -d rheo -v ON_ERROR_STOP=1 -At \
+            -c "SHOW fsync" -c "SHOW full_page_writes" -c "SHOW max_connections" \
+            | tr '\n' ' ' | tee /dev/stderr | grep -qx 'off off 300 '
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
@@ -396,15 +422,28 @@ jobs:
           persist-credentials: false
       # The service cluster is thrown away with the job, so it needs no crash
       # safety. Each Postgres test creates and drops its own workspace database,
-      # and with fsync on every one of those waits on the disk. All three settings
-      # reload without a restart; nothing the suite asserts depends on them.
-      - name: Turn off durability on the throwaway CI cluster
-        run: >-
-          docker exec ${{ job.services.postgres.id }} psql -U rheo -d rheo -v ON_ERROR_STOP=1
-          -c "ALTER SYSTEM SET fsync = off"
-          -c "ALTER SYSTEM SET synchronous_commit = off"
-          -c "ALTER SYSTEM SET full_page_writes = off"
-          -c "SELECT pg_reload_conf()"
+      # and with fsync on every one of those waits on the disk. max_connections:
+      # a pytest process can hold 36 pooled connections (tests/test_engine_pool.py)
+      # and a shard runs four, against the image's default of 100. It takes a
+      # restart, which also applies the rest; nothing the suite asserts depends on
+      # these settings.
+      - name: Tune the throwaway CI cluster (durability off, more connections)
+        env:
+          PG: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$PG" psql -U rheo -d rheo -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET fsync = off" \
+            -c "ALTER SYSTEM SET synchronous_commit = off" \
+            -c "ALTER SYSTEM SET full_page_writes = off" \
+            -c "ALTER SYSTEM SET max_connections = 300"
+          docker restart "$PG" >/dev/null
+          for _ in $(seq 1 30); do
+            docker exec "$PG" pg_isready -U rheo -q && break
+            sleep 1
+          done
+          docker exec "$PG" psql -U rheo -d rheo -v ON_ERROR_STOP=1 -At \
+            -c "SHOW fsync" -c "SHOW full_page_writes" -c "SHOW max_connections" \
+            | tr '\n' ' ' | tee /dev/stderr | grep -qx 'off off 300 '
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
