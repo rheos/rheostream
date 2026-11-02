@@ -1,5 +1,6 @@
 """Approved erasure of an item or a project. Nothing outside Current refers to
-either yet, so there are no deletion participants."""
+either yet, so there are no deletion participants. A source link, which is Current's
+own, records either deletion instead of disappearing with it."""
 
 from rheo_contracts import RecordRef, Role, StaleRecord, WorkspaceContext
 from rheo_core.boundary.context import Refusal
@@ -13,6 +14,7 @@ from rheo_core.refs.resolver import UnitOfWork
 from sqlalchemy import delete, or_, select, update
 
 from rheo_current import common as h
+from rheo_current import links
 from rheo_current.references import DELETABLE, MODULE_ID
 from rheo_current.storage import tables as t
 
@@ -61,6 +63,8 @@ def delete_owned(
                 )
             )
         )
+        # The source link outlives its item as the tombstone, project unchanged.
+        links.item_deleted(ctx, uow, reference.format())
     else:
         # Items outlive their project: each is detached and its revision moves on.
         uow.connection.execute(
@@ -68,6 +72,7 @@ def delete_owned(
             .where(t.item.c.project_id == reference.id)
             .values(project_id=None, revision=t.item.c.revision + 1, updated_at=h.now())
         )
+        links.project_deleted(ctx, uow, reference.format())
     removed = uow.connection.execute(
         delete(table)
         .where(table.c.id == reference.id, table.c.revision == authorization.revision)

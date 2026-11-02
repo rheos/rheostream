@@ -368,6 +368,65 @@
         "created_by_id",
         "created_at"
       ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "record_type": {
+          "const": "current.source_item_link"
+        },
+        "source_ref": {
+          "type": "string"
+        },
+        "item_ref": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer"
+        },
+        "item_state": {
+          "type": "string"
+        },
+        "project_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_project_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "project_state": {
+          "type": "string"
+        },
+        "changed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "record_type",
+        "source_ref",
+        "item_ref",
+        "revision",
+        "item_state",
+        "project_ref",
+        "last_project_ref",
+        "project_state",
+        "changed_at"
+      ]
     }
   ]
 }

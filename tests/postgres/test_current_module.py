@@ -169,7 +169,9 @@ def test_current_installs_alone_with_its_schema_and_areas(current: Current) -> N
             assert indexes == {i.name for i in table.indexes}, table.name
     areas = current.ok("area.list").items
     assert [(a.key, a.label) for a in areas] == list(DEFAULT_AREAS)
-    assert len(MANIFEST.operations) == 17 and len(MANIFEST.tools) == 16
+    # 17 tool-backed or screen operations, the tool-less approved external create and
+    # the tool-less source-link lifecycle read.
+    assert len(MANIFEST.operations) == 19 and len(MANIFEST.tools) == 16
 
 
 def test_source_dedup_groups_reopens_and_wakes(current: Current) -> None:

@@ -51,6 +51,7 @@ from rheo_core.deletion import OwnedDeletionRegistry
 from rheo_core.events import ConsumerRegistry
 from rheo_core.migrations.orchestrator import CORE_CHAIN, build_config
 from rheo_core.modules import (
+    DESTINATIONS,
     ENTRY_POINT_GROUP,
     Dependency,
     EventDeclaration,
@@ -590,6 +591,11 @@ def loaded_probe_modules(
     reset_surfaces()
     try:
         monkeypatch.setattr(loader_module, "SETTINGS_REGISTRY", SettingsRegistry())
+        # The loader writes a manifest's destinations into the process registry that
+        # the continuation resolves against. A copy keeps them for this body only.
+        monkeypatch.setattr(
+            DESTINATIONS, "_destinations", dict(DESTINATIONS._destinations)
+        )
         publish(monkeypatch, *_entry_points_for(module_ids))
         install(monkeypatch, *module_ids)
         surfaces = LoadedSurfaces(

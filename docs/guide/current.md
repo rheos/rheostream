@@ -53,20 +53,58 @@ Updates are compare-and-set. If the item moved on since you loaded it, the edit 
 out leaves it alone; emptying an optional field means naming it in `clear`, because an
 agent's tool call sends every field, so presence cannot carry that meaning.
 
-### Handoffs from Leads arrive exactly once
+### A handoff becomes one approved item
 
-When Leads hands an opportunity to Current, it calls Current's handoff operation
-(`current.work.create_from_handoff`) with the handoff reference and its snapshot. That
-operation is external class: it needs its own approval, its destination guard, and an
-external-action record. It is also the first operation that must hand back a created
-reference on a retry whose natural key does not already carry the answer, so it uses keyed
-idempotency: the core stores the result and returns it on a repeat. A lost response after
-the work was created never creates a second piece of work.
+A handoff, such as a qualified lead from Leads, arrives through
+`current.item.create_external`. Owners and members may stage it, and it has no MCP tool.
+Staging only creates an approval request: nothing in Current changes until a person
+approves it in the shell. A token may stage the request but can never approve it.
+
+The operation is external class and keyed on `idempotency_key`. After approval, the core's
+continuation rebuilds the held caller, runs its guards again and writes the item through
+Current's one registered destination, `current`. The operation's own handler always
+refuses, so no other route creates anything.
+
+The request carries a source reference, a title, a body, a priority, an area and a due
+date. It has no project field, because filing the work under a project is a person's
+later choice. The item gets the source kind `handoff`, which is reserved for this path:
+`current.item.create` refuses it. The core's stored result answers a retry of the same
+approved request, and when that result is gone Current's source link still returns the
+first item. A lost response never creates a second item, and a retry never reopens,
+wakes or regroups it.
+
+### The source link outlasts the item
+
+Each handed-off item has one `current.source_item_link` row, written in the same
+transaction. It holds the source reference, the item reference (fixed for the row's
+life), one revision, the item state (`available` or `deleted`), the live project, the
+last project the item left, and a project state (`never_assigned`, `linked`, `cleared`
+or `deleted`). Only paths Current already has change it:
+
+- Assigning, moving or clearing the project stays in the existing item edit form,
+  through `current.item.update`. There is no separate assign step.
+- Approved item deletion marks the item `deleted` and leaves a linked project live. The
+  row stays as a tombstone, so the same source can never create the item again.
+- Approved project deletion moves that project to history, state `deleted`, on every link
+  that holds it, including links whose item is already gone.
+
+Each real change moves the revision by one and publishes one
+`current.source_item_link.changed` event whose data is the whole link. Repeating the
+same assignment, or clearing a project that is already empty, changes nothing and
+publishes nothing.
+
+`current.item.link_state` reads the link by source reference. It is its own read for
+owners, members and services, with no tool, and it reads no item or project row: it
+still answers after the item is deleted, and it neither needs nor grants
+`current.item.get` or `current.project.get`. The reasons for this shape are in
+[ADR-0001](../adr/0001-leads-current-project-link.md).
 
 ### One copy of the task
 
-Leads writes the handoff's outcome from the operation record and displays the work's state
-through the record resolver. There is never a second editable copy of the task.
+Current holds the only editable copy of the task. A module that handed work over reads
+where it went from the link, through `current.item.link_state` or the change event, and
+reads item or project content only through Current's own reads, each under its own
+permission.
 
 ### Completion claims nothing else
 
@@ -77,7 +115,8 @@ dossier was accepted; the module that owns the dossier says that.
 ### Events carry references only
 
 `current.item.created`, `.completed` and `.reopened` carry a reference and a revision,
-never the item's text.
+never the item's text. `current.source_item_link.changed` carries the link's references,
+states and revision, and no item or project text either.
 
 ### Deletion goes through approval
 
@@ -109,11 +148,16 @@ regulatory dossier while a dossier module owns the evidence and the submission.
 - Specification: [work-in-motion design](../architecture/later-phases.md#phase-5-the-work-in-motion-module),
   [keyed idempotency](../architecture/intake-and-events.md#idempotency),
   [the handoff operation](../architecture/confirmation-and-safety.md#the-handoff-operation-fr-45-criterion-64),
+  [ADR-0001: the handoff and the source link](../adr/0001-leads-current-project-link.md),
   [module guide](../../modules/current/README.md)
 - Code: [module](../../modules/current/src/rheo_current),
   [items](../../modules/current/src/rheo_current/items.py),
+  [approved external items](../../modules/current/src/rheo_current/external.py),
+  [source link](../../modules/current/src/rheo_current/links.py),
   [projects](../../modules/current/src/rheo_current/projects.py),
   [areas](../../modules/current/src/rheo_current/areas.py),
   [screens](../../modules/current/web)
 - Tests: [Current module](../../tests/postgres/test_current_module.py),
+  [approved external items](../../tests/postgres/test_current_external.py),
+  [source link](../../tests/postgres/test_current_source_link.py),
   [module tests](../../modules/current/tests)

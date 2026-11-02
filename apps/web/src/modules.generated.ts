@@ -19,7 +19,10 @@ export const MODULES = [
       { id: "project", path: "/project", screen: currentWeb.screens.project },
       { id: "areas", path: "/areas", screen: currentWeb.screens.areas },
     ],
-    recordRoutes: [],
+    recordRoutes: [
+      { recordType: "item", routeId: "item", refQuery: "ref" },
+      { recordType: "project", routeId: "project", refQuery: "ref" },
+    ],
     recordViews: [],
     forms: [
       { operation: "current.item.create", component: currentWeb.components.ActionForm },
@@ -37,6 +40,7 @@ export const MODULES = [
     readOperations: [
       "current.area.list",
       "current.item.get",
+      "current.item.link_state",
       "current.item.list",
       "current.project.get",
       "current.project.list",

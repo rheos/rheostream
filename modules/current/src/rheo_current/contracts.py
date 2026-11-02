@@ -1,7 +1,7 @@
 """Bounded wire shapes for items, projects, areas and the summary."""
 
 from datetime import date
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -26,6 +26,10 @@ Body = Annotated[str, Field(max_length=20000)]
 # One definition for create and close by source, so the two bounds cannot drift.
 SourceKind = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")]
 SourceRef = Annotated[str, Field(min_length=1, max_length=512)]
+HANDOFF_SOURCE_KIND: Final = "handoff"
+"""Reserved for the approved external destination. Its source index converges on any
+item already holding a pair of this kind, so no ordinary create may make one.
+Provenance ``handoff`` stays open to ordinary create: it dedups nothing."""
 
 
 def _calendar_date(value: object) -> date:
@@ -73,6 +77,10 @@ class ItemCreate(Strict):
     def _source_pair(self) -> "ItemCreate":
         if (self.source_kind is None) != (self.source_ref is None):
             raise ValueError("source_kind and source_ref go together")
+        if self.source_kind == HANDOFF_SOURCE_KIND:
+            raise ValueError(
+                f"source_kind {HANDOFF_SOURCE_KIND!r} is reserved for approved handoffs"
+            )
         if self.fingerprint is not None and self.source_ref is None:
             raise ValueError("fingerprint needs source_ref")
         return self
@@ -222,6 +230,60 @@ class ItemCreated(Strict):
 class ItemPage(Strict):
     items: list[ItemSummary]
     next_offset: int | None
+
+
+# --- the approved external destination ---------------------------------------------
+
+
+class ExternalItemCreate(Strict):
+    """One approved request for one standalone item from an outside source.
+
+    The destination is fixed by type, so a request can only ever name Current. There
+    is deliberately no ``project_ref``: assigning a project is a person's later act
+    through ``current.item.update``, never part of an approved handoff.
+    """
+
+    destination_ref: Literal["current"]
+    source_ref: SourceRef
+    title: Title
+    body: Body = ""
+    priority: Priority = "normal"
+    area: AreaKey | None = None
+    due_on: CalendarDate | None = None
+    idempotency_key: str = Field(min_length=1, max_length=256)
+
+
+class ExternalItemCreated(Strict):
+    item_ref: str
+
+
+ItemState = Literal["available", "deleted"]
+LinkProjectState = Literal["never_assigned", "linked", "cleared", "deleted"]
+
+
+class SourceItemLinkInput(Strict):
+    source_ref: SourceRef
+
+
+class SourceItemLink(Strict):
+    """One outside source's lasting link to its item and that item's project.
+
+    ``current.item.link_state`` returns it and ``current.source_item_link.changed``
+    carries it, field for field. ``revision`` is the link's own and is the one order
+    for every reader: it moves once per change and never on a no-op. ``item_ref`` is
+    fixed for the life of the link. ``project_ref`` is the live project, present
+    exactly when ``project_state`` is ``linked``; ``last_project_ref`` is the most
+    recent project the item left (by a move, a clear or that project's deletion).
+    """
+
+    source_ref: str
+    item_ref: str
+    project_ref: str | None
+    last_project_ref: str | None
+    item_state: ItemState
+    project_state: LinkProjectState
+    revision: int = Field(ge=1)
+    changed_at: AwareDatetime
 
 
 # --- projects --------------------------------------------------------------------

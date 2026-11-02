@@ -153,3 +153,40 @@ dependency = Table(
     CheckConstraint("item_id <> blocker_id", name="dependency_not_self"),
 )
 Index("ix_dependency_blocker", dependency.c.blocker_id)
+# One row per outside source that an approved request turned into an item. It outlives
+# the item: ``item_state`` becomes ``deleted`` and the row stays as the tombstone that
+# stops the same source creating the item again. ``item_ref`` is never rewritten, and
+# deliberately has no foreign key, so deleting the item cannot take the row with it.
+source_item_link = Table(
+    "source_item_link",
+    metadata,
+    Column("source_ref", Text, primary_key=True),
+    Column("item_ref", Text, nullable=False),
+    Column("revision", Integer, nullable=False, server_default="1"),
+    Column("item_state", Text, nullable=False),
+    Column("project_ref", Text),
+    Column("last_project_ref", Text),
+    Column("project_state", Text, nullable=False),
+    stamp("changed_at"),
+    CheckConstraint("revision >= 1", name="source_item_link_revision"),
+    CheckConstraint(
+        "item_state in ('available','deleted')", name="source_item_link_item_state"
+    ),
+    CheckConstraint(
+        "project_state in ('never_assigned','linked','cleared','deleted')",
+        name="source_item_link_project_state",
+    ),
+    CheckConstraint(
+        "(project_state = 'linked') = (project_ref IS NOT NULL)",
+        name="source_item_link_live_project",
+    ),
+    CheckConstraint(
+        "project_state NOT IN ('cleared','deleted') OR last_project_ref IS NOT NULL",
+        name="source_item_link_project_history",
+    ),
+    CheckConstraint(
+        "project_state <> 'never_assigned' OR last_project_ref IS NULL",
+        name="source_item_link_never_assigned",
+    ),
+)
+Index("uq_source_item_link_item", source_item_link.c.item_ref, unique=True)

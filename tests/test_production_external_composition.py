@@ -234,9 +234,21 @@ def _unkeyed_financial() -> None:
     )
 
 
+def _shipped_current() -> None:
+    """The real Current manifest, registered exactly as the loader's ``_register``
+    does: every declared operation, then every declared destination, under its id."""
+    from rheo_current import MANIFEST
+
+    for declaration, handler in MANIFEST.operations:
+        REGISTRY.register(declaration, handler, origin=MANIFEST.module_id)
+    for registration in MANIFEST.destinations:
+        DESTINATIONS.register(registration, origin=MANIFEST.module_id)
+
+
 SCENARIOS: dict[str, tuple[Callable[[], None], bool]] = {
     "absent_current": (lambda: None, True),
     "exact_current": (_exact, True),
+    "shipped_current_manifest": (_shipped_current, True),
     "financial": (_financial, False),
     "nonallowlisted": (_nonallowlisted, False),
     "missing_external_spec": (_missing_spec, False),
