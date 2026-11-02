@@ -51,10 +51,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 from rheo_contracts import ContextPurpose, Role, WorkspaceContext
+from rheo_contracts.judgment import JudgmentFailed
 from rheo_core.boundary.context import Refusal
 from rheo_core.boundary.factories import context_for_scheduled_job
 from rheo_core.log_config import content_free_extra
 from rheo_core.refs import uuid7
+from rheo_core.runtime.judgment import JudgmentRunner, judgment_runner
 from rheo_core.runtime.oneshot import (
     ADAPTER_UNAVAILABLE,
     OneShotCredentialNotOwned,
@@ -79,7 +81,7 @@ from sqlalchemy.exc import StatementError
 from rheo_leads import model_calls
 from rheo_leads import pipeline_common as h
 from rheo_leads.references import ref
-from rheo_leads.scoring import tier2
+from rheo_leads.scoring import prefilter, tier2
 from rheo_leads.scoring.profile import StoredProfile, read_profile
 from rheo_leads.scoring.tier1 import EXTENSION, JobFacts, Tier1Result, run_tier1
 from rheo_leads.storage import pipeline as p
@@ -204,6 +206,8 @@ class Outcome:
     deferred: str | None = None
     """Why scoring paused for every job: no attempt is counted."""
     failure: str | None = None
+    prefilter_model: str | None = None
+    prefilter_version: str | None = None
 
 
 def _now() -> datetime:
@@ -220,6 +224,7 @@ class Hooks:
 
     clock: Callable[[], datetime] = _now
     runner: Callable[[], OneShotRunner | None] = _runner
+    judgment: Callable[[], JudgmentRunner | None] = judgment_runner
 
 
 HOOKS = Hooks()
@@ -520,9 +525,11 @@ def assess(
     heartbeat: Callable[[], None],
     promoted: bool = False,
     track: model_calls.CallTracker = model_calls.NO_TRACKING,
+    filter_config: prefilter.Config = prefilter.DISABLED,
+    filter_runner: JudgmentRunner | None = None,
 ) -> Outcome:
-    """Tier 1, then the model for a job tier 1 lets through (or the owner promoted)
-    with a description. ``track`` records the model call in the call log."""
+    """Tier 1, optional typed pre-filter, then full scoring of described jobs.
+    Invited/promoted jobs bypass both gates. ``track`` records each model call."""
     decided = run_tier1(job, profile.policy.tier1)
     if not decided.passed and not promoted:
         return _held(job, decided)
@@ -533,6 +540,10 @@ def assess(
         )
     if job.description is None:
         return _undescribed(job)
+    if filter_config.enabled and not promoted and not job.invited:
+        held = _prefilter(job, profile, filter_config, filter_runner, heartbeat, track)
+        if held is not None:
+            return held
     if runner is None:
         return Outcome(deferred=ADAPTER_UNAVAILABLE)
     text = tier2.source_text(job)
@@ -592,6 +603,100 @@ def assess(
         uncertainty=uncertainty,
         completeness=_completeness(job),
         model=True,
+    )
+
+
+def _prefilter(
+    job: JobFacts,
+    profile: StoredProfile,
+    config: prefilter.Config,
+    runner: JudgmentRunner | None,
+    heartbeat: Callable[[], None],
+    track: model_calls.CallTracker,
+) -> Outcome | None:
+    """Provider failures are logged, then the existing full scorer takes over."""
+    request = prefilter.request(job, profile, config.model)
+    with track.call(model_calls.PREFILTER, prefilter.MODEL_KEY) as call:
+        try:
+            if runner is None:
+                raise JudgmentFailed("adapter_unavailable")
+            result = runner.run(request, heartbeat=heartbeat, on_usage=call.usage)
+        except JudgmentFailed as exc:
+            call.unusable(exc.kind)
+            return None
+        decision = prefilter.decide(
+            result, has_economics=bool(profile.policy.economics)
+        )
+        if not decision.holds(config.threshold):
+            return None
+        return Outcome(
+            fit="low",
+            lines=(
+                prefilter.HELD_LINE,
+                f"Pre-filter estimate {decision.score}/100 is below the "
+                f"{config.threshold}/100 threshold; this is not a final score.",
+                *decision.reasons,
+                "Promote this job from the Review queue to request full scoring.",
+            ),
+            uncertainty="high",
+            completeness=_completeness(job),
+            prefilter_model="jev:" + result.model,
+            prefilter_version=prefilter.config_version(config)
+            + "/"
+            + prefilter.version_for(request),
+        )
+
+
+def refresh_prefilter_holds(
+    uow: UnitOfWork, config: prefilter.Config, *, profile_version: int, now: datetime
+) -> None:
+    """Release old holds when disabled or when the model, threshold or rubric moves.
+
+    Only terminal holds are requeued; never disturb a claim another sweep owns.
+    Profile changes requeue unscored jobs; the version check also recovers a hold
+    recorded by an in-flight call after that requeue.
+    """
+    state, qual = s.job_score_state, p.qualification
+    latest = (
+        select(qual.c.id)
+        .where(qual.c.opportunity_id == state.c.opportunity_id)
+        .correlate(state)
+        .order_by(
+            qual.c.input_revision.desc(), qual.c.created_at.desc(), qual.c.id.desc()
+        )
+        .limit(1)
+        .scalar_subquery()
+    )
+    held = (
+        select(qual.c.id)
+        .where(
+            qual.c.id == latest,
+            qual.c.score.is_(None),
+            qual.c.explanation.startswith(prefilter.HELD_LINE),
+        )
+        .correlate(state)
+    )
+    if config.enabled:
+        held = held.where(
+            (~qual.c.prompt_version.startswith(prefilter.config_version(config) + "/"))
+            | (~qual.c.prompt_version.endswith(f"/profile.{profile_version}"))
+        )
+    uow.connection.execute(
+        update(state)
+        .where(
+            state.c.state == "scored",
+            state.c.opportunity_id.in_(
+                _open_jobs().with_only_columns(p.opportunity.c.id)
+            ),
+            held.exists(),
+        )
+        .values(
+            state="pending",
+            attempts=0,
+            retry_after=None,
+            failure_kind=None,
+            updated_at=now,
+        )
     )
 
 
@@ -683,10 +788,14 @@ def record(
             evidence_completeness=outcome.completeness,
             explanation="\n".join(outcome.lines),
             uncertainty=outcome.uncertainty,
-            model_id=_model_id(ctx.workspace_id, uow) if outcome.model else None,
+            model_id=_model_id(ctx.workspace_id, uow)
+            if outcome.model
+            else outcome.prefilter_model,
             prompt_version=(
                 f"{tier2.PROMPT_VERSION}/profile.{profile_version}"
                 if outcome.model
+                else f"{outcome.prefilter_version}/profile.{profile_version}"
+                if outcome.prefilter_version
                 else None
             ),
             score=outcome.score,
@@ -815,6 +924,19 @@ def _sweep(
             source=TransactionBoundOverrideSource(short, workspace_id=ctx.workspace_id),
         )
         budget = settings.get_int(MAX_PER_RUN_KEY)
+        filter_config = prefilter.Config(
+            enabled=(
+                settings.get_bool("runtime.jev.enabled")
+                and settings.set_by_workspace(prefilter.ENABLED_KEY)
+                and settings.get_bool(prefilter.ENABLED_KEY)
+            ),
+            threshold=settings.get_int(prefilter.THRESHOLD_KEY),
+            model=settings.get_str(prefilter.MODEL_KEY),
+        )
+        if profile is not None:
+            refresh_prefilter_holds(
+                short, filter_config, profile_version=profile.version, now=now
+            )
         window = (
             timedelta(
                 seconds=min(settings.get_int(DEADLINE_KEY), HARD_DEADLINE_SECONDS)
@@ -850,6 +972,8 @@ def _sweep(
             heartbeat=token.checkpoint,
             promoted=claimed.promoted,
             track=model_calls.Tracker(ctx, claimed.opportunity_id, hooks.clock),
+            filter_config=filter_config,
+            filter_runner=hooks.judgment() if filter_config.enabled else None,
         )
         token.checkpoint(force=True)
         now = hooks.clock()

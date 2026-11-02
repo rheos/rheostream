@@ -265,6 +265,29 @@ value never fails a clause, a rating of 0 (no rating yet) is unknown, and so is 
 failing clauses as its reasons, and no score. Unknown payment is a condition to
 confirm, not a failure.
 
+**Optional Jev pre-filter** runs after tier 1 and before tier 2, once a full
+posting exists. It is off by default and needs both deployment enablement and an
+explicit workspace opt-in. It sends the posting, candidate evidence and scoring
+policy to TypeSafe System One for typed judgments. Code combines those judgments
+into a preliminary estimate; only a confident estimate below the workspace threshold
+(default 50/100) holds the job. Equality passes. Low-confidence experience judgments
+pass unless a separate clear exclusion, unmet mandatory requirement or goal mismatch
+already holds the job. Missing price alone never counts as poor economics.
+
+A Jev hold has **no final score** and appears in Review queue with a Jev badge,
+its estimate, threshold and reason. The qualification records the resolved Jev model,
+question/configuration versions and profile version. Invited and promoted jobs bypass
+Jev. A provider failure (including missing credentials, malformed output, oversized
+input, rate limits or timeout) falls through to tier 2 in the same attempt. Jev gets
+one bounded call, at most 30 seconds, with cancellation heartbeats and no tools.
+
+Disabling either gate, changing the threshold or configured model, or changing the
+profile reconsiders held jobs on the next sweep. An unchanged hold is not called again.
+Existing final scores are not replaced. This portable gate follows the workspace's
+policy; it does not ship personal rates, occupations or exclusions. Its estimates are
+heuristics, not calibrated final scores or a guarantee of savings/recall. Review held
+jobs when choosing a threshold. See [Jev setup](../../runtimes/README.md#jev-typed-judgments).
+
 **Tier 2** asks the model, through the `claude_cli` runtime with no tools, to judge
 the posting against the profile under a fixed response contract: it picks candidate
 evidence, numbered excerpts of the posting, recorded experience boundaries and fixed
@@ -296,7 +319,7 @@ jobs and every job without a score yet, so changed thresholds apply to held jobs
 projects and quote the recorded experience boundaries they cite, and those reasons
 sit on the job's qualification record, which every workspace member can read.
 
-**The review queue.** Leads > Review queue lists the open Job search jobs tier 1 holds
+**The review queue.** Leads > Review queue lists the open Job search jobs tier 1 or Jev holds
 back, newest first, each with a badge for every clause that held it (unverified
 payment, client spend, rating, hire rate, too many proposals), decided again against
 the current profile. `leads.ui.queue` with `held_only` is its read; each item carries
@@ -319,10 +342,10 @@ the last 48 hours grouped into imports, each with its stage: queued with its pos
 (newest first, as the sweep claims them), scoring now, scored with its score, retrying,
 paused, needs the full posting, failed, or held by the filters (folded away, with a link
 to the review queue). The Model calls tab is the call log: every model call Leads makes
-(`leads.model_call`, written around each one-shot run) with its purpose, model, input
+(`leads.model_call`, written around each inference call) with its purpose, model, input
 and output tokens, time and outcome, plus a seven-day summary by purpose and model.
-Tokens and time only: the calls run on a subscription login, so the adapter's cost
-figure is never stored. No task, answer or posting text is kept; rows older than 90 days
+Tokens and time only: no provider cost figure is stored. Claude calls use the
+subscription login; Jev uses a metered API billed by TypeSafe. No task, answer or posting text is kept; rows older than 90 days
 are deleted as new calls start; the log is not exported; and a deleted job leaves its
 rows without the link. `leads.ui.scoring` is the view's single read. The page reloads
 itself every 15 seconds while scoring is moving (a call running, or queued jobs with a
