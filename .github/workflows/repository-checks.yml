@@ -238,12 +238,11 @@ jobs:
           persist-credentials: false
       # The service cluster is thrown away with the job, so it needs no crash
       # safety. Each Postgres test creates and drops its own workspace database,
-      # and with fsync on every one of those waits on the disk. max_connections:
-      # a pytest process can hold 36 pooled connections (tests/test_engine_pool.py)
-      # and a shard runs four, against the image's default of 100. It takes a
-      # restart, which also applies the rest; nothing the suite asserts depends on
-      # these settings.
-      - name: Tune the throwaway CI cluster (durability off, more connections)
+      # and with fsync on every one of those waits on the disk. All three settings
+      # reload without a restart, and the step fails unless they read back as set.
+      # max_connections stays at the image's stock 100: test_cli.py runs doctor's
+      # connection-budget check against a stock cluster.
+      - name: Turn off durability on the throwaway CI cluster
         env:
           PG: ${{ job.services.postgres.id }}
         run: |
@@ -251,15 +250,16 @@ jobs:
             -c "ALTER SYSTEM SET fsync = off" \
             -c "ALTER SYSTEM SET synchronous_commit = off" \
             -c "ALTER SYSTEM SET full_page_writes = off" \
-            -c "ALTER SYSTEM SET max_connections = 300"
-          docker restart "$PG" >/dev/null
-          for _ in $(seq 1 30); do
-            docker exec "$PG" pg_isready -U rheo -q && break
+            -c "SELECT pg_reload_conf()"
+          # The reload is asynchronous, so give it a few seconds to land.
+          for _ in $(seq 1 10); do
+            now=$(docker exec "$PG" psql -U rheo -d rheo -At \
+              -c "SHOW fsync" -c "SHOW full_page_writes" | tr '\n' ' ')
+            [ "$now" = "off off " ] && break
             sleep 1
           done
-          docker exec "$PG" psql -U rheo -d rheo -v ON_ERROR_STOP=1 -At \
-            -c "SHOW fsync" -c "SHOW full_page_writes" -c "SHOW max_connections" \
-            | tr '\n' ' ' | tee /dev/stderr | grep -qx 'off off 300 '
+          echo "fsync, full_page_writes: $now"
+          [ "$now" = "off off " ]
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
@@ -320,12 +320,11 @@ jobs:
           persist-credentials: false
       # The service cluster is thrown away with the job, so it needs no crash
       # safety. Each Postgres test creates and drops its own workspace database,
-      # and with fsync on every one of those waits on the disk. max_connections:
-      # a pytest process can hold 36 pooled connections (tests/test_engine_pool.py)
-      # and a shard runs four, against the image's default of 100. It takes a
-      # restart, which also applies the rest; nothing the suite asserts depends on
-      # these settings.
-      - name: Tune the throwaway CI cluster (durability off, more connections)
+      # and with fsync on every one of those waits on the disk. All three settings
+      # reload without a restart, and the step fails unless they read back as set.
+      # max_connections stays at the image's stock 100: test_cli.py runs doctor's
+      # connection-budget check against a stock cluster.
+      - name: Turn off durability on the throwaway CI cluster
         env:
           PG: ${{ job.services.postgres.id }}
         run: |
@@ -333,15 +332,16 @@ jobs:
             -c "ALTER SYSTEM SET fsync = off" \
             -c "ALTER SYSTEM SET synchronous_commit = off" \
             -c "ALTER SYSTEM SET full_page_writes = off" \
-            -c "ALTER SYSTEM SET max_connections = 300"
-          docker restart "$PG" >/dev/null
-          for _ in $(seq 1 30); do
-            docker exec "$PG" pg_isready -U rheo -q && break
+            -c "SELECT pg_reload_conf()"
+          # The reload is asynchronous, so give it a few seconds to land.
+          for _ in $(seq 1 10); do
+            now=$(docker exec "$PG" psql -U rheo -d rheo -At \
+              -c "SHOW fsync" -c "SHOW full_page_writes" | tr '\n' ' ')
+            [ "$now" = "off off " ] && break
             sleep 1
           done
-          docker exec "$PG" psql -U rheo -d rheo -v ON_ERROR_STOP=1 -At \
-            -c "SHOW fsync" -c "SHOW full_page_writes" -c "SHOW max_connections" \
-            | tr '\n' ' ' | tee /dev/stderr | grep -qx 'off off 300 '
+          echo "fsync, full_page_writes: $now"
+          [ "$now" = "off off " ]
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
@@ -422,12 +422,11 @@ jobs:
           persist-credentials: false
       # The service cluster is thrown away with the job, so it needs no crash
       # safety. Each Postgres test creates and drops its own workspace database,
-      # and with fsync on every one of those waits on the disk. max_connections:
-      # a pytest process can hold 36 pooled connections (tests/test_engine_pool.py)
-      # and a shard runs four, against the image's default of 100. It takes a
-      # restart, which also applies the rest; nothing the suite asserts depends on
-      # these settings.
-      - name: Tune the throwaway CI cluster (durability off, more connections)
+      # and with fsync on every one of those waits on the disk. All three settings
+      # reload without a restart, and the step fails unless they read back as set.
+      # max_connections stays at the image's stock 100: test_cli.py runs doctor's
+      # connection-budget check against a stock cluster.
+      - name: Turn off durability on the throwaway CI cluster
         env:
           PG: ${{ job.services.postgres.id }}
         run: |
@@ -435,15 +434,16 @@ jobs:
             -c "ALTER SYSTEM SET fsync = off" \
             -c "ALTER SYSTEM SET synchronous_commit = off" \
             -c "ALTER SYSTEM SET full_page_writes = off" \
-            -c "ALTER SYSTEM SET max_connections = 300"
-          docker restart "$PG" >/dev/null
-          for _ in $(seq 1 30); do
-            docker exec "$PG" pg_isready -U rheo -q && break
+            -c "SELECT pg_reload_conf()"
+          # The reload is asynchronous, so give it a few seconds to land.
+          for _ in $(seq 1 10); do
+            now=$(docker exec "$PG" psql -U rheo -d rheo -At \
+              -c "SHOW fsync" -c "SHOW full_page_writes" | tr '\n' ' ')
+            [ "$now" = "off off " ] && break
             sleep 1
           done
-          docker exec "$PG" psql -U rheo -d rheo -v ON_ERROR_STOP=1 -At \
-            -c "SHOW fsync" -c "SHOW full_page_writes" -c "SHOW max_connections" \
-            | tr '\n' ' ' | tee /dev/stderr | grep -qx 'off off 300 '
+          echo "fsync, full_page_writes: $now"
+          [ "$now" = "off off " ]
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
