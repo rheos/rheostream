@@ -1571,17 +1571,6 @@ export async function detail({ shell, query }: ScreenProps) {
                         ? "Evidence changed since · Reassess after changes"
                         : "Evidence unchanged"}
                     </p>
-                    <Suspense fallback={null}>
-                      <QualificationHandoffSlot
-                        shell={shell}
-                        resource={handoffSummaryResource}
-                        qualified
-                        opportunityRef={str(envelope.ref)}
-                        revision={envelope.revision}
-                        title={str(record.title) || "Opportunity"}
-                        stale={qualificationIsStale}
-                      />
-                    </Suspense>
                   </>
                 ) : (
                   <p>
@@ -1783,24 +1772,39 @@ export async function detail({ shell, query }: ScreenProps) {
             </div>
           </RecordFor>
           {isJob ? null : (
-            <Suspense
-              fallback={
-                <CurrentHandoffHistory
+            // Rarely used, so it stays closed at the foot of the page.
+            <details className={styles.evidence}>
+              <summary>Send to Current</summary>
+              <Suspense fallback={null}>
+                <QualificationHandoffSlot
                   shell={shell}
-                  result={null}
-                  views={new Map()}
+                  resource={handoffSummaryResource}
+                  qualified={Boolean(record.qualification)}
+                  opportunityRef={str(envelope.ref)}
+                  revision={envelope.revision}
+                  title={str(record.title) || "Opportunity"}
+                  stale={qualificationIsStale}
+                />
+              </Suspense>
+              <Suspense
+                fallback={
+                  <CurrentHandoffHistory
+                    shell={shell}
+                    result={null}
+                    views={new Map()}
+                    opportunityRef={str(envelope.ref)}
+                    offset={handoffOffset}
+                  />
+                }
+              >
+                <HandoffHistorySlot
+                  shell={shell}
+                  resource={handoffHistoryResource}
                   opportunityRef={str(envelope.ref)}
                   offset={handoffOffset}
                 />
-              }
-            >
-              <HandoffHistorySlot
-                shell={shell}
-                resource={handoffHistoryResource}
-                opportunityRef={str(envelope.ref)}
-                offset={handoffOffset}
-              />
-            </Suspense>
+              </Suspense>
+            </details>
           )}
         </>
       )}
