@@ -640,6 +640,11 @@ describe("Leads to Current detail integration", () => {
     expect(html).toContain("Hand off to Current");
     expect(html).toContain("requires separate human approval");
     expect(html).toContain("No Current handoffs yet.");
+    // Closed at the foot of the page, after everything else.
+    const foot = html.indexOf("<summary>Send to Current</summary>");
+    expect(foot).toBeGreaterThan(html.indexOf("Record details"));
+    expect(html.slice(0, foot)).toMatch(/<details class="[^"]*"><summary>Send to Current<\/summary>$|<details class="[^"]*">$/);
+    expect(html.indexOf("Hand off to Current")).toBeGreaterThan(foot);
   });
 
   it("unqualified requires a current qualification and renders no disabled facsimile", async () => {
