@@ -45,7 +45,7 @@ of the override rows (C3), and the write path's accepted value.
 """
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
@@ -212,6 +212,18 @@ class KeySpec:
     choices: tuple[str, ...] | None = None
     minimum: int | None = None
     maximum: int | None = None
+    validator: Callable[[object], None] | None = None
+    """Checks the structure inside a value the type system cannot see.
+
+    ``choices`` and ``minimum``/``maximum`` close a value's set or range; this is for
+    a key whose value is a document, where ``str`` is the whole of what the type says.
+    The declaring module supplies it, because the structure is the module's: Leads
+    declares ``leads.jobfeed.presets`` with ``validate_presets``, so a list breaking a
+    preset bound is refused at the write instead of at the next collection run.
+
+    It raises ``ValueError`` to refuse, and the refusal's message reaches the caller.
+    Only the write path consults it, so a value already stored before a module
+    declared one keeps resolving; the next write to that key is where it is held."""
 
     def __post_init__(self) -> None:
         if not _KEY_SHAPE.fullmatch(self.key):

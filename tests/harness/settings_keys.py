@@ -1,4 +1,4 @@
-"""Eight harness settings keys, registered under ``profile = test`` with origin
+"""Nine harness settings keys, registered under ``profile = test`` with origin
 ``test_harness``.
 
 Four floored keys, one per comparator, because ``union`` and ``and`` have
@@ -9,7 +9,10 @@ package default and is tested against; one ``member``-scope key, because every
 other key in this run is workspace- or deployment-scope and the member-row path of the
 resolver and the write path needs one; one **bounded** key, because 1a1 added
 ``minimum``/``maximum`` to ``KeySpec`` and the first production key to carry them
-(``recallatron.retention.days``) is a later prompt's; and one **gate** key beside it,
+(``recallatron.retention.days``) is a later prompt's; one **validator** key, whose
+structure lives inside a ``str`` the type system cannot see, because the first
+production key to carry one (``leads.jobfeed.presets``) belongs to a module and the
+write path's hook must be proved on core's own seam; and one **gate** key beside it,
 because the core's verified-expiry entry rechecks a gate and a window together and
 core declares neither of them itself. Every key carries a default: that default is
 literally what provisioning writes.
@@ -36,6 +39,7 @@ HARNESS_FLOOR_AND = "harness.floor_and"
 HARNESS_EXPLICIT = "harness.explicit_per_workspace"
 HARNESS_MEMBER = "harness.member_preference"
 HARNESS_RETENTION_DAYS = "harness.retention_days"
+HARNESS_DOCUMENT = "harness.document"
 HARNESS_RETENTION_MINIMUM = 1
 HARNESS_RETENTION_MAXIMUM = 10
 HARNESS_RETENTION_DEFAULT = 7
@@ -65,6 +69,21 @@ gate's *own* recheck has one case that writes the row false explicitly. Recallat
 default-off posture is proved against Recallatron's own key, in
 ``tests/postgres/test_memory_retention.py``.
 """
+
+
+class HarnessDocumentInvalid(ValueError):
+    """What a validator raises to refuse, carrying a ``code`` the write path reads."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def _document_validator(value: object) -> None:
+    """A ``validator`` key: the type is ``str``, the structure is inside it."""
+    if not isinstance(value, str) or (value and not value.startswith("doc:")):
+        raise HarnessDocumentInvalid("document_prefix_missing")
+
 
 HARNESS_KEYS: tuple[KeySpec, ...] = (
     KeySpec(
@@ -126,6 +145,15 @@ HARNESS_KEYS: tuple[KeySpec, ...] = (
         maximum=HARNESS_RETENTION_MAXIMUM,
     ),
     KeySpec(
+        key=HARNESS_DOCUMENT,
+        type=ValueType.STR,
+        scope=Scope.WORKSPACE,
+        floor=None,
+        explicit_per_workspace=False,
+        default="",
+        validator=_document_validator,
+    ),
+    KeySpec(
         key=HARNESS_EXPIRE_BY_AGE,
         type=ValueType.BOOL,
         scope=Scope.WORKSPACE,
@@ -137,6 +165,6 @@ HARNESS_KEYS: tuple[KeySpec, ...] = (
 
 
 def register_harness_keys() -> None:
-    """Register the eight keys (idempotent). The resolved profile must be ``test``."""
+    """Register the nine keys (idempotent). The resolved profile must be ``test``."""
     for spec in HARNESS_KEYS:
         register(spec, origin=TEST_HARNESS_ORIGIN)
