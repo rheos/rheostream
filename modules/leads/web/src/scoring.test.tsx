@@ -296,6 +296,40 @@ describe("retrying failed jobs", () => {
       "Could not put the failed jobs back in line",
     );
   });
+
+  it("lets an owner retry waiting jobs now (#478)", async () => {
+    const waiting = { ...VIEW, waiting_total: 3 };
+    expect(markup("queue", waiting, false)).not.toContain(
+      "Retry 3 waiting jobs now",
+    );
+    const submit = vi.fn().mockResolvedValue({ state: "unavailable" });
+    act(() =>
+      root.render(
+        <ScoringView
+          view={waiting}
+          now={NOW}
+          zone="UTC"
+          tab="queue"
+          hrefs={{}}
+          tabHrefs={{ queue: "/q", calls: "/c", feed: "/f" }}
+          reviewHref="/r"
+          canRetry
+          submit={submit as unknown as ShellApi["submit"]}
+        />,
+      ),
+    );
+    const button = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="Retry 3 waiting jobs now"]',
+    );
+    expect(button).not.toBeNull();
+    await act(async () => {
+      button?.click();
+    });
+    expect(submit).toHaveBeenCalledWith("leads.jobscoring.retry_waiting", {});
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+      "Could not retry the waiting jobs",
+    );
+  });
 });
 
 describe("following scoring work (#443)", () => {
