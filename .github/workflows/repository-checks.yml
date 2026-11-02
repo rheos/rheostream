@@ -267,14 +267,15 @@ jobs:
       # scripts/ci_pytest_shard.py keeps this shard's files and deselects the rest;
       # the five shards together select every collected test once. Loaded with -p
       # here only, so the suite's own pytest subprocesses still see everything.
-      # Within the shard, xdist spreads whole files over four workers (one per
-      # runner core); each worker is its own pytest session with its own
+      # Within the shard, xdist spreads the tests over four workers (one per
+      # runner core), whole files together except the few heaviest (see the
+      # plugin). Each worker is its own pytest session with its own
       # rheo_control_test_* database and data root, as two developers' runs are.
       - name: Pytest
         env:
           RHEO_TEST_SHARD: ${{ matrix.shard }}/5
           PYTHONPATH: scripts
-        run: uv run pytest -p ci_pytest_shard -n 4 --dist loadfile --durations=10 --junitxml=/tmp/junit.xml
+        run: uv run pytest -p ci_pytest_shard -n 4 --dist loadgroup --durations=10 --junitxml=/tmp/junit.xml
       # TEMPORARY (#517): per-file seconds, to check the shard split. Removed before merge.
       - name: Per-file timings
         if: always()

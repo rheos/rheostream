@@ -66,6 +66,16 @@ def test_files_run_heaviest_first() -> None:
     ]
 
 
+def test_only_files_at_the_split_weight_are_spread_over_workers() -> None:
+    heavy = [f"tests/postgres/test_heavy.py::test_{i}" for i in range(56)]
+    light = [f"tests/postgres/test_light.py::test_{i}" for i in range(55)]
+    plain = [f"tests/test_plain.py::test_{i}" for i in range(999)]
+    assert shard.whole_files([*heavy, *light, *plain]) == {
+        "tests/postgres/test_light.py",
+        "tests/test_plain.py",
+    }
+
+
 @pytest.mark.parametrize(
     ("value", "expected"), [("1/1", (1, 1)), ("3/5", (3, 5)), (" 2/4 ".strip(), (2, 4))]
 )
