@@ -1,10 +1,16 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+
+const noSubscription = () => () => {};
+const onClient = () => true;
+const onServer = () => false;
 
 /**
- * A durable decision replaces the form during refresh. Keep the result an
- * ordinary server-rendered heading, then move focus once hydration can do so.
+ * A durable decision replaces the form during refresh, so the result heading
+ * mounts in a client render and takes focus. A plain page load hydrates the
+ * same heading from server HTML, where the server snapshot applies; capturing
+ * that first value keeps the shell's skip link first after hydration.
  */
 export function ApprovalOutcomeHeading({
   children,
@@ -14,10 +20,14 @@ export function ApprovalOutcomeHeading({
   className?: string;
 }) {
   const target = useRef<HTMLHeadingElement | null>(null);
+  const mountedOnClient = useSyncExternalStore(noSubscription, onClient, onServer);
+  const [fromDecision] = useState(mountedOnClient);
 
   useEffect(() => {
-    target.current?.focus();
-  }, []);
+    if (fromDecision) {
+      target.current?.focus();
+    }
+  }, [fromDecision]);
 
   return (
     <h1 className={className} ref={target} tabIndex={-1}>
