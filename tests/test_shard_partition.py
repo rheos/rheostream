@@ -48,11 +48,22 @@ def test_the_partition_ignores_collection_order() -> None:
 
 
 def test_postgres_files_are_spread_by_weight() -> None:
-    """40 postgres tests weigh 200, more than 90 plain ones, so the two postgres files
+    """40 postgres tests weigh 720, more than 90 plain ones, so the two postgres files
     do not share a shard with each other when two shards are available."""
     first, second = shard.partition(NODEIDS, 2)
     assert "tests/postgres/test_big.py" in first
     assert "tests/postgres/test_mid.py" in second
+
+
+def test_files_run_heaviest_first() -> None:
+    assert shard.heaviest_first(NODEIDS) == [
+        "tests/postgres/test_big.py",
+        "tests/postgres/test_mid.py",
+        "tests/test_unit_a.py",
+        "tests/test_unit_b.py",
+        "modules/example/tests/test_mod.py",
+        "tests/test_unit_c.py",
+    ]
 
 
 @pytest.mark.parametrize(

@@ -12,6 +12,11 @@ break on the file path, so every job computes the same partition from the same
 collection, and the shards together select every collected test exactly once
 (`tests/test_shard_partition.py`).
 
+Within a shard the kept tests run heaviest file first, each file's own order intact
+(#517). CI spreads a shard's files over xdist workers with `--dist loadfile`, which
+hands files out in collection order, so a heavy file collected last would start last
+and leave one worker running long after the others have finished.
+
 It is a `-p` plugin rather than a conftest on purpose. A root `conftest.py` would
 shadow the `from conftest import ...` the test suite relies on, and a plugin named
 on the command line is not inherited by the suites' own `pytest` subprocesses
@@ -28,7 +33,9 @@ from collections.abc import Iterable
 import pytest
 
 SHARD_ENV = "RHEO_TEST_SHARD"
-POSTGRES_WEIGHT = 5
+#: Measured on CI (#517, Nov 2026): a postgres test took 0.71 s on average and any
+#: other test 0.039 s, about 18 to 1.
+POSTGRES_WEIGHT = 18
 
 
 def _file_of(nodeid: str) -> str:
@@ -39,10 +46,17 @@ def _weight(path: str, count: int) -> int:
     return count * (POSTGRES_WEIGHT if "/postgres/" in f"/{path}" else 1)
 
 
+def heaviest_first(nodeids: Iterable[str]) -> list[str]:
+    """The files of ``nodeids`` by descending weight, ties on the path."""
+    counts = Counter(_file_of(n) for n in nodeids)
+    return sorted(counts, key=lambda f: (-_weight(f, counts[f]), f))
+
+
 def partition(nodeids: Iterable[str], shards: int) -> list[set[str]]:
     """The files of each shard, heaviest file first onto the lightest shard."""
+    nodeids = list(nodeids)
     counts = Counter(_file_of(n) for n in nodeids)
-    files = sorted(counts, key=lambda f: (-_weight(f, counts[f]), f))
+    files = heaviest_first(nodeids)
     loads = [0] * shards
     groups: list[set[str]] = [set() for _ in range(shards)]
     for path in files:
@@ -74,6 +88,8 @@ def pytest_collection_modifyitems(
     index, total = parse_shard(value)
     mine = partition((item.nodeid for item in items), total)[index - 1]
     keep = [item for item in items if _file_of(item.nodeid) in mine]
+    rank = {f: i for i, f in enumerate(heaviest_first(item.nodeid for item in keep))}
+    keep.sort(key=lambda item: rank[_file_of(item.nodeid)])
     dropped = [item for item in items if _file_of(item.nodeid) not in mine]
     if dropped:
         config.hook.pytest_deselected(items=dropped)
