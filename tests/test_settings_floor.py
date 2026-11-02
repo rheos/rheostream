@@ -17,6 +17,7 @@ from uuid import UUID
 import pytest
 from harness import isolate_rheo_environment
 from harness.settings_keys import (
+    HARNESS_DOCUMENT,
     HARNESS_FLOOR_AND,
     HARNESS_FLOOR_MIN,
     HARNESS_FLOOR_SUBSET,
@@ -312,3 +313,35 @@ def test_comparators(
 ) -> None:
     assert apply_floor(floor, deployment, override) == effective
     assert is_looser(floor, deployment, override) is looser
+
+
+def test_a_validator_refuses_a_value_the_type_alone_accepts(data_root: Path) -> None:
+    """``setting_type`` carries the declaring module's own code, as ``check_bounds``
+    folds its refusal into the same state rather than adding a fifth."""
+    register_harness_keys()
+    refusal = validate_override(HARNESS_DOCUMENT, "no prefix here", "")
+    assert isinstance(refusal, SettingRefusal), refusal
+    assert refusal.state == "setting_type"
+    assert refusal.state in REFUSAL_STATES
+    assert "document_prefix_missing" in refusal.detail
+
+
+def test_a_validator_accepts_a_well_formed_value(data_root: Path) -> None:
+    register_harness_keys()
+    accepted = validate_override(HARNESS_DOCUMENT, "doc:hello", "")
+    assert isinstance(accepted, SettingAccepted), accepted
+    assert accepted.key == HARNESS_DOCUMENT
+
+
+def test_a_validator_accepts_the_empty_value_that_restores_the_default(
+    data_root: Path,
+) -> None:
+    """Clearing a key is how an owner goes back to the package default, so the
+    validator must not stand in the way of the empty value."""
+    register_harness_keys()
+    assert isinstance(validate_override(HARNESS_DOCUMENT, "", ""), SettingAccepted)
+
+
+def test_a_key_without_a_validator_is_unaffected(data_root: Path) -> None:
+    register_harness_keys()
+    assert isinstance(validate_override(HARNESS_RETENTION_DAYS, 5, 5), SettingAccepted)
