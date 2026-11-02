@@ -70,6 +70,12 @@ CANCELLED: Final = "cancelled"
 """The five members of the ``job_state`` check constraint (``work_tables.JOB_STATES``),
 named here so no predicate in this module spells one of them by hand."""
 
+EXTERNAL_ACTION_EXECUTE: Final = "core.external_action.execute"
+"""The core-only continuation kind that performs one approved external action.
+
+Named here, beside the job states, because :func:`request_cancellation` must treat
+its queued rows differently and this module may not import the operations layer."""
+
 
 @dataclass(frozen=True, slots=True)
 class LeasedJob:
@@ -466,6 +472,35 @@ def finish_failed(
     )
 
 
+def finish_owned(
+    conn: Connection,
+    *,
+    job_id: UUID,
+    owner: str,
+    now: datetime,
+    state: str,
+    error: str | None,
+) -> bool:
+    """End a continuation job leased in cancellation mode ``succeeded`` or ``failed``.
+
+    Ownership only, without the ``cancel_requested = false`` predicate of
+    :func:`finish_succeeded`/:func:`finish_failed`: a continuation leased with the flag
+    already set has observed the cancellation and reconciled it, and a real effect it
+    proved cannot be erased by the flag. Nothing else calls this.
+    """
+    if state not in (SUCCEEDED, FAILED):
+        raise ValueError(f"{state!r} is not an owned continuation finish")
+    return _apply(
+        conn,
+        _held(job_id, owner),
+        state=state,
+        finished_at=now,
+        lease_owner=None,
+        lease_until=None,
+        last_error=error,
+    )
+
+
 def finish_cancelled(
     conn: Connection, *, job_id: UUID, owner: str, now: datetime
 ) -> bool:
@@ -586,7 +621,11 @@ def request_cancellation(
         finish_cancelled as finish_operation_cancelled,
     )
 
-    was_queued = t.job.c.state == QUEUED
+    # An external-action continuation owns its own cancellation settlement, so a
+    # queued one is only flagged and made due now; its cancellation mode then
+    # reconciles and settles the action, approval, operation and keyed rows.
+    continuation = t.job.c.kind == EXTERNAL_ACTION_EXECUTE
+    was_queued = (t.job.c.state == QUEUED) & ~continuation
     row = conn.execute(
         update(t.job)
         .where(t.job.c.id == job_id)
@@ -594,6 +633,10 @@ def request_cancellation(
         .values(
             state=case((was_queued, CANCELLED), else_=t.job.c.state),
             finished_at=case((was_queued, now), else_=t.job.c.finished_at),
+            next_run_at=case(
+                ((t.job.c.state == QUEUED) & continuation, now),
+                else_=t.job.c.next_run_at,
+            ),
             cancel_requested=True,
         )
         .returning(t.job.c.state, t.job.c.operation_id)

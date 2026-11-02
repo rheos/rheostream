@@ -1,11 +1,11 @@
 """Synthetic pipeline acceptance through installed modules and real dispatch."""
 
 import json
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import pytest
-from rheo_contracts import RecordRef, WorkspaceContext
+from rheo_contracts import ExternalSpec, RecordRef, WorkspaceContext
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_tables import audit_record
 from rheo_leads import pipeline_common as h
@@ -622,20 +622,28 @@ def test_contact_guard_blocks_held_sink_after_withdrawal(
         Role,
         SafetyClass,
     )
-    from rheo_core.approvals import gate
     from rheo_core.audit import CORE_AUDIT_SINK, install_sink
     from rheo_core.boundary import context_for_harness
+    from rheo_core.modules import (
+        DESTINATIONS,
+        EXECUTION_GUARDS,
+        DestinationMode,
+        DestinationRegistration,
+        GuardRegistration,
+    )
     from rheo_core.operations.registry import REGISTRY
     from rheo_core.settings import TEST_HARNESS_ORIGIN
     from rheo_leads.permissions import ContactPermissionGuard
     from rheo_leads.pipeline_contracts import PermissionCheck
 
     class SinkInput(PermissionCheck):
+        destination_ref: Literal["synthetic"] = "synthetic"
         message: str
 
     class Sent(BaseModel):
         model_config = ConfigDict(frozen=True)
         sent: bool
+        result_ref: str = "synthetic:sent"
 
     def send(ctx: Any, uow: Any, model: SinkInput) -> Sent:
         write_note(uow.connection, body=model.message)
@@ -649,21 +657,41 @@ def test_contact_guard_blocks_held_sink_after_withdrawal(
         output=Sent,
         idempotency=Idempotency.NONE,
         audit=AuditSpec(subject_field="party_ref"),
+        external=ExternalSpec(
+            destination_field="destination_ref",
+            destination_ref="synthetic",
+            result_ref_field="result_ref",
+        ),
+        # The Leads guard reaches the approval through the declared module-guard
+        # seam, after the core guards and DestinationGuard in the effective order.
+        guards=("harness.contact_permission",),
     )
     monkeypatch.setattr(REGISTRY, "_operations", dict(REGISTRY._operations))
     REGISTRY._operations.pop(declaration.name, None)
     REGISTRY.register(declaration, send, origin=TEST_HARNESS_ORIGIN)
     intake.surfaces.operations.register(declaration, send, origin=TEST_HARNESS_ORIGIN)
     install_sink("harness", CORE_AUDIT_SINK)
-    original = gate.core_guards_for
-    monkeypatch.setattr(
-        gate,
-        "core_guards_for",
-        lambda d: (
-            (*original(d), ContactPermissionGuard())
-            if d.name == declaration.name
-            else original(d)
+    monkeypatch.setattr(EXECUTION_GUARDS, "_guards", dict(EXECUTION_GUARDS._guards))
+    EXECUTION_GUARDS.register(
+        GuardRegistration(
+            name="harness.contact_permission", guard=ContactPermissionGuard()
         ),
+        origin="harness",
+    )
+    # DestinationGuard has no permissive fallback, so the synthetic sink's exact
+    # destination is registered and available; only the contact guard can refuse.
+    monkeypatch.setattr(DESTINATIONS, "_destinations", dict(DESTINATIONS._destinations))
+    DESTINATIONS.register(
+        DestinationRegistration(
+            destination_ref="synthetic",
+            operation_name=declaration.name,
+            mode=DestinationMode.IN_PROCESS,
+            is_installed=lambda: True,
+            is_enabled=lambda ctx: True,
+            is_ready=lambda ctx, uow: True,
+            execute=send,
+        ),
+        origin="harness",
     )
     with open_unit_of_work(intake.ctx) as uow:
         enable_harness_module(uow.connection)

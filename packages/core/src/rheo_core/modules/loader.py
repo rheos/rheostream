@@ -122,13 +122,24 @@ from rheo_core.deletion.registry import (
     OwnedDeletionRegistry,
 )
 from rheo_core.events.consumers import ConsumerRegistry, ConsumerUnknown
+from rheo_core.modules.execution import (
+    DESTINATIONS,
+    EXECUTION_GUARDS,
+    DestinationRegistry,
+    GuardRegistry,
+)
 from rheo_core.modules.manifest import (
+    KeyedAdapterKind,
     ManifestInvalid,
     ModuleManifest,
     WebSurface,
     check_module_id,
     check_name_prefixes,
     check_sensitivity,
+)
+from rheo_core.operations.idempotency import (
+    KEYED_COMPATIBILITY,
+    KeyedCompatibilityRegistry,
 )
 from rheo_core.operations.registry import REGISTRY, OperationRegistry
 from rheo_core.redaction.policy import exclude_types_spec
@@ -317,6 +328,9 @@ def load_modules(
     kinds: JobKindRegistry | None = None,
     consumers: ConsumerRegistry | None = None,
     deletions: OwnedDeletionRegistry | None = None,
+    guards: GuardRegistry = EXECUTION_GUARDS,
+    destinations: DestinationRegistry = DESTINATIONS,
+    keyed_compatibility: KeyedCompatibilityRegistry = KEYED_COMPATIBILITY,
     allow: frozenset[str] | None = None,
 ) -> tuple[str, ...]:
     """Register the allowed discovered modules; return their ids, sorted.
@@ -434,6 +448,9 @@ def load_modules(
             kinds=kinds,
             consumers=consumers,
             deletions=deletions,
+            guards=guards,
+            destinations=destinations,
+            keyed_compatibility=keyed_compatibility,
         )
         loaded.append(manifest.module_id)
     return tuple(sorted(loaded))
@@ -841,6 +858,9 @@ def _register(
     kinds: JobKindRegistry | None,
     consumers: ConsumerRegistry | None,
     deletions: OwnedDeletionRegistry | None,
+    guards: GuardRegistry,
+    destinations: DestinationRegistry,
+    keyed_compatibility: KeyedCompatibilityRegistry,
 ) -> None:
     """One validated manifest's extension points, its sink and its web surface.
 
@@ -852,6 +872,22 @@ def _register(
     """
     for declaration, handler in manifest.operations:
         registry.register(declaration, handler, origin=manifest.module_id)
+    for guard_registration in manifest.execution_guards:
+        guards.register(guard_registration, origin=manifest.module_id)
+    for destination_registration in manifest.destinations:
+        destinations.register(destination_registration, origin=manifest.module_id)
+    for adapter in manifest.keyed_compatibility:
+        register_adapter = (
+            keyed_compatibility.register_request
+            if adapter.kind is KeyedAdapterKind.REQUEST
+            else keyed_compatibility.register_result
+        )
+        register_adapter(
+            adapter.operation_name,
+            adapter.from_version,
+            adapter.to_version,
+            adapter.adapter,
+        )
     for record_type, resolver in manifest.resolvers:
         resolvers.register(
             manifest.module_id, record_type, resolver, origin=manifest.module_id

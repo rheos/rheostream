@@ -503,6 +503,7 @@ def run_retention_sweep(
     from rheo_core.events.retention import OUTBOX_RETENTION_DAYS_KEY, purge_outbox
     from rheo_core.evidence.record import republish_for_stalled_drain
     from rheo_core.evidence.retention import purge_evidence
+    from rheo_core.operations.idempotency import purge_expired
 
     assert isinstance(payload, RetentionSweepPayload)
     token.checkpoint()
@@ -531,6 +532,7 @@ def run_retention_sweep(
         - timedelta(days=settings.get_int(OUTBOX_RETENTION_DAYS_KEY)),
         checkpoint=token.checkpoint,
     )
+    purge_expired(uow.connection, now=now)
     republish_for_stalled_drain(
         uow, workspace_id=payload.workspace_id, settings=settings, now=now
     )

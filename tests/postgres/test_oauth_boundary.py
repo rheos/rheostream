@@ -117,10 +117,10 @@ _POINTER: Final = re.compile(r'^Bearer resource_metadata="([^"]+)"$')
 
 
 @pytest.fixture(autouse=True)
-def registrations() -> None:
+def registrations(fresh_startup_composition: None) -> None:
     register_core_operations()
     register_core_tools()
-    register_harness()
+    register_harness(include_external=False)
 
 
 @pytest.fixture

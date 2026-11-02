@@ -36,14 +36,44 @@ export function homeHref(config: RoutingConfig): string {
   return urlFor(config, SHELL, "/");
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A canonical UUID accepted by the one bounded approval route, or null. */
+export function approvalId(value: string | undefined): string | null {
+  return value !== undefined && UUID.test(value) ? value.toLowerCase() : null;
+}
+
+/**
+ * The one shell-owned approval detail URL. The caller supplies only a UUID, never
+ * a path or host, so topology remains entirely routing configuration's decision.
+ */
+export function approvalHref(config: RoutingConfig, value: string): string | null {
+  const id = approvalId(value);
+  if (id === null) {
+    return null;
+  }
+  const query = new URLSearchParams({ approval_id: id });
+  return `${urlFor(config, SHELL, "/approvals/detail")}?${query.toString()}`;
+}
+
+function loginHrefFor(config: RoutingConfig, returnTarget: string): string {
+  const query = new URLSearchParams({ return: returnTarget });
+  return `${urlFor(config, IDENTITY, "/login")}?${query.toString()}`;
+}
+
 /**
  * The sign-in entry point: `/auth/login` on the identity surface, carrying the
  * shell root as its `return`. The host of that `return` is validated against
  * `application_hosts()` by the route itself, so this builder can never widen it.
  */
 export function loginHref(config: RoutingConfig): string {
-  const query = new URLSearchParams({ return: postLoginReturn(config) });
-  return `${urlFor(config, IDENTITY, "/login")}?${query.toString()}`;
+  return loginHrefFor(config, postLoginReturn(config));
+}
+
+/** Sign in, then return to the exact bounded approval URL when the UUID is valid. */
+export function approvalLoginHref(config: RoutingConfig, value: string): string | null {
+  const target = approvalHref(config, value);
+  return target === null ? null : loginHrefFor(config, target);
 }
 
 /**

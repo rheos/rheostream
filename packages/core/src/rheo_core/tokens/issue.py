@@ -23,7 +23,7 @@ role of its own that means anything here; the fourth set, the enumerated
 both of its operations) -> expand the named set or the
 explicit list -> intersect with the issuer's permitted set -> strip
 :data:`~rheo_core.tokens.policy.NON_TOKEN_ISSUABLE` (an **explicit** list naming
-one of the eight is refused ``SET_NOT_ISSUABLE`` naming the operation; a **named
+one of the ten is refused ``SET_NOT_ISSUABLE`` naming the operation; a **named
 package set** silently loses them -- it never contained them in the first
 place, by ``sets.py``'s own construction) -> refuse ``SET_EMPTY`` if nothing
 survives -> write one ``access_token`` row and one ``access_token_operation``
@@ -79,7 +79,7 @@ from rheo_core.tokens.sets import (
 )
 
 SET_NOT_ISSUABLE: Final = "set_not_issuable"
-"""An explicit ``operations`` list named one of the eight non-token-issuable
+"""An explicit ``operations`` list named one of the ten non-token-issuable
 operations. Module-local (a handler's ``OperationRefused``), not a
 ``boundary.context`` constant -- see ``core_ops.py``'s own comment on this
 pattern for ``COMPOSITION_MISSING``/``ACTOR_REQUIRED``."""
@@ -182,7 +182,7 @@ def _expand(model_input: TokenIssueInput) -> frozenset[str]:
     non-token-issuable operation is refused here, immediately, naming it --
     before any permitted-set intersection, so the refusal is specific to
     "you asked for this by name", distinct from a named set (which never
-    contains one of the eight to begin with)."""
+    contains one of the ten to begin with)."""
     if (model_input.set_name is None) == (model_input.operations is None):
         raise OperationRefused(
             SET_SELECTION_INVALID,

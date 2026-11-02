@@ -82,7 +82,7 @@ operation; the assertions set it aside rather than depend on it."""
 
 
 @pytest.fixture(autouse=True)
-def registrations() -> None:
+def registrations(fresh_startup_composition: None) -> None:
     """The operations, the tools and the harness, all idempotent.
 
     Startup registers the first two again inside the lifespan; registering them here
@@ -91,7 +91,7 @@ def registrations() -> None:
     """
     register_core_operations()
     register_core_tools()
-    register_harness()
+    register_harness(include_external=False)
 
 
 @pytest.fixture

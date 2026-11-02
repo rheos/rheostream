@@ -2,7 +2,7 @@
 itself, and the allowlist that decides whether it loads at all.
 
 - ``manifest.py`` — ``ModuleManifest`` as a frozen pydantic model, its ten
-  declaration types, and its ``WebContribution`` with the ``WebSurface`` and five
+  declaration types, and its ``WebContribution`` with the ``WebSurface`` and six
   entry types inside it. Not in ``rheo_contracts``, which may not import
   ``UnitOfWork`` (F3).
 - ``loader.py`` — ``discovered()`` over the ``rheo.modules`` entry-point group,
@@ -17,6 +17,13 @@ install a module, and the ``core.module_state`` row a workspace needs is written
 hand (run 0v's finding F15). Nothing here writes one.
 """
 
+from rheo_core.modules.execution import (
+    DESTINATIONS,
+    EXECUTION_GUARDS,
+    DestinationRegistry,
+    GuardRegistry,
+    RegisteredDestination,
+)
 from rheo_core.modules.loader import (
     ENTRY_POINT_GROUP,
     allowed_module_ids,
@@ -35,17 +42,23 @@ from rheo_core.modules.manifest import (
     DeletionHandler,
     DeletionParticipant,
     Dependency,
+    DestinationMode,
+    DestinationRegistration,
     EventDeclaration,
     ExportDeclaration,
     Exporter,
     FormDeclaration,
     FrozenMap,
+    GuardRegistration,
     HealthCheck,
     Importer,
     JobKind,
+    KeyedAdapterKind,
+    KeyedCompatibilityRegistration,
     ManifestInvalid,
     ModuleManifest,
     NavigationEntry,
+    RecordRoute,
     RecordType,
     RecordView,
     Schedule,
@@ -73,8 +86,13 @@ from rheo_core.redaction.tiers import Tiered as Tiered
 from rheo_core.storage.data_root import model_cache_dir as model_cache_dir
 
 __all__ = [
+    "DESTINATIONS",
     "ENTRY_POINT_GROUP",
+    "EXECUTION_GUARDS",
     "ConnectorBinding",
+    "DestinationMode",
+    "DestinationRegistration",
+    "DestinationRegistry",
     "DeletionHandler",
     "DeletionParticipant",
     "Dependency",
@@ -86,10 +104,16 @@ __all__ = [
     "HealthCheck",
     "Importer",
     "JobKind",
+    "GuardRegistration",
+    "GuardRegistry",
+    "KeyedAdapterKind",
+    "KeyedCompatibilityRegistration",
     "ManifestInvalid",
     "ModuleManifest",
     "NavigationEntry",
+    "RecordRoute",
     "RecordType",
+    "RegisteredDestination",
     "RecordView",
     "Schedule",
     "SearchProvider",

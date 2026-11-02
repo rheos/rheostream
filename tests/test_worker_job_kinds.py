@@ -14,6 +14,7 @@ import pytest
 from harness.modules import install as _install
 from harness.modules import manifest as _manifest
 from harness.modules import publish as _publish
+from harness.registry import SINK_SEND, register_harness
 from pydantic import BaseModel, ConfigDict, ValidationError
 from rheo_app_worker import main as worker_main
 from rheo_app_worker.main import ADAPTERS, CONSUMERS, JOB_KINDS, register_modules
@@ -28,16 +29,19 @@ from rheo_core.exports import (
     run_restore_job,
 )
 from rheo_core.exports.erasure import SWEEP_JOB_KIND
-from rheo_core.modules import ENTRY_POINT_GROUP, JobKind, reset_surfaces
+from rheo_core.modules import DESTINATIONS, ENTRY_POINT_GROUP, JobKind, reset_surfaces
 from rheo_core.modules.operations import (
     MODULE_INSTALL,
     ModuleInstallPayload,
     run_module_install_job,
 )
+from rheo_core.modules.production import ProductionExternalCompositionError
+from rheo_core.operations import REGISTRY
+from rheo_core.operations.idempotency import KEYED_COMPATIBILITY
 from rheo_core.runtime import RUNTIME_RUN, AdapterRegistry, RuntimeJobPayload
 from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.work.cancellation import CancellationToken
-from rheo_core.work.kinds import JobKindUnknown
+from rheo_core.work.kinds import JobKindRegistry, JobKindUnknown
 from rheo_core.work.schedules import (
     RETENTION_SWEEP,
     RetentionSweepPayload,
@@ -119,6 +123,16 @@ WORKER_ENTRY_POINT = EntryPoint(
 
 def test_production_job_kinds_include_core_runtime_run_and_retention_sweep() -> None:
     assert JOB_KINDS.names() == PRODUCTION_KINDS
+    # The one core continuation kind, kept apart from the ordinary handlers.
+    from rheo_core.operations.continuation import (
+        EXTERNAL_ACTION_EXECUTE,
+        run_external_continuation,
+    )
+
+    assert JOB_KINDS.continuation_names() == frozenset({EXTERNAL_ACTION_EXECUTE})
+    assert JOB_KINDS.continuation_for(EXTERNAL_ACTION_EXECUTE) is (
+        run_external_continuation
+    )
 
     export_model, export_handler = JOB_KINDS.lookup(EXPORT_JOB_KIND)
     assert export_model is ExportJobPayload
@@ -156,8 +170,34 @@ def test_production_job_kinds_still_refuse_an_unknown_kind() -> None:
         JOB_KINDS.lookup("core.missing")
 
 
+def test_a_kind_is_either_ordinary_or_a_continuation_never_both() -> None:
+    """The loop looks a continuation up first, so a kind held by both maps would
+    silently shadow its ordinary handler. Each registration refuses the other's."""
+
+    from rheo_core.operations.continuation import run_external_continuation
+
+    registry = JobKindRegistry()
+    registry.register_continuation("core.synthetic.continue", run_external_continuation)
+    with pytest.raises(ValueError, match="already a continuation"):
+        registry.register(
+            "core.synthetic.continue", _WorkerProbePayload, _worker_job_handler
+        )
+    assert registry.names() == frozenset()
+
+    registry.register(
+        "core.synthetic.ordinary", _WorkerProbePayload, _worker_job_handler
+    )
+    with pytest.raises(ValueError, match="already an ordinary job kind"):
+        registry.register_continuation(
+            "core.synthetic.ordinary", run_external_continuation
+        )
+    assert registry.continuation_names() == frozenset({"core.synthetic.continue"})
+
+
 @pytest.fixture
-def restored_composition_root(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def restored_composition_root(
+    monkeypatch: pytest.MonkeyPatch, fresh_startup_composition: None
+) -> Iterator[None]:
     """Let a test write into the real ``JOB_KINDS``/``CONSUMERS`` and hand them back.
 
     Neither registry publishes an unregister, so the table each holds is swapped for
@@ -177,6 +217,37 @@ def restored_composition_root(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]
     yield
     reset_surfaces()
     reset_sinks()
+
+
+def _reset_owned_startup_composition() -> None:
+    """Reset the four process tables owned by ``fresh_startup_composition``."""
+    REGISTRY._operations.clear()  # noqa: SLF001
+    DESTINATIONS._destinations.clear()  # noqa: SLF001
+    KEYED_COMPATIBILITY._request.clear()  # noqa: SLF001
+    KEYED_COMPATIBILITY._result.clear()  # noqa: SLF001
+
+
+def test_actual_worker_root_refuses_poison_then_succeeds_after_owned_reset(
+    fresh_startup_composition: None,
+) -> None:
+    """One process rejects broad poison, resets all owned tables, then starts clean."""
+    register_harness()
+    assert SINK_SEND in REGISTRY
+
+    with pytest.raises(ProductionExternalCompositionError, match=SINK_SEND):
+        register_modules()
+
+    # No fixture teardown occurs between these phases. These are exactly the four
+    # tables in the three final-composition registries the startup fixture owns; reset
+    # each explicitly so the second call models a new worker process rather than
+    # inheriting harness poison.
+    _reset_owned_startup_composition()
+    assert REGISTRY.names() == frozenset()
+    assert DESTINATIONS.names() == frozenset()
+    assert KEYED_COMPATIBILITY._request == {}  # noqa: SLF001
+    assert KEYED_COMPATIBILITY._result == {}  # noqa: SLF001
+
+    register_modules()
 
 
 def test_register_modules_puts_a_modules_job_kind_and_consumer_on_the_worker(
@@ -232,6 +303,10 @@ def test_main_registers_modules_after_the_login_check_and_before_the_loop(
         ("refuse_misconfigured_login", "login"),
         ("register_modules", "register_modules"),
         ("get_backend", "get_backend"),
+        (
+            "check_keyed_replay_compatibility",
+            "check_keyed_replay_compatibility",
+        ),
         ("install_stop_signals", "install_stop_signals"),
         ("worker_loop", "worker_loop"),
         ("reset_backend", "reset_backend"),
@@ -244,6 +319,7 @@ def test_main_registers_modules_after_the_login_check_and_before_the_loop(
         "login",
         "register_modules",
         "get_backend",
+        "check_keyed_replay_compatibility",
         "install_stop_signals",
         "worker_loop",
         "reset_backend",

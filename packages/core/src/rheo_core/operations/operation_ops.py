@@ -129,6 +129,15 @@ class OperationResolveInput(BaseModel):
     outcome: ResolutionOutcome
     note: str = Field(min_length=1, max_length=2000)
     terminal_check_kind: TerminalCheckKind | None = None
+    # For an external action resolved to ``succeeded``: the destination's result ref,
+    # which its reconcile must confirm before anything is written.
+    result_ref: str | None = Field(default=None, min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def _note_is_not_blank(self) -> Self:
+        if not self.note.strip():
+            raise ValueError("a resolution needs a nonblank note giving its reason")
+        return self
 
     @model_validator(mode="after")
     def _succeeded_names_its_terminal_check(self) -> Self:
@@ -261,6 +270,25 @@ def resolve_handler(
             f"operation {model_input.operation_id} is {row.state!r}; only an "
             "'unresolved' operation can be resolved",
         )
+    from rheo_core.operations.external_actions import get_for_operation
+
+    action = get_for_operation(uow.connection, operation_id=model_input.operation_id)
+    if action is not None:
+        # An external action's record moves only with its action and keyed
+        # envelope, and only on the destination's own proof (or to cancelled).
+        from rheo_core.operations.continuation import resolve_external
+
+        resolve_external(
+            ctx,
+            uow,
+            action=action,
+            outcome=model_input.outcome,
+            note=model_input.note,
+            result_ref=model_input.result_ref,
+            terminal_check_kind=model_input.terminal_check_kind,
+            now=datetime.now(UTC),
+        )
+        return _published(_must_read(uow, model_input.operation_id))
     applied = resolve_operation(
         uow.connection,
         operation_id=model_input.operation_id,

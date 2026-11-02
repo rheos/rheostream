@@ -4,7 +4,7 @@ objects in schema ``core``.
 Columns are verbatim from ``docs/architecture/confirmation-and-safety.md`` § The
 approval record, with three deviations recorded at their own columns below
 (``operation_id`` carries no foreign key, ``purpose`` is nullable, and
-``destination_ref`` has no writer in release one).
+``destination_ref`` is written only for EXTERNAL/FINANCIAL).
 
 **Why a third ``MetaData`` and not two more tables in ``core_tables.py`` or
 ``work_tables.py``.** ``0001_core_schema`` and ``0002_durable_work`` each call their
@@ -91,13 +91,11 @@ def _in(column: str, values: tuple[str, ...]) -> str:
 # ``create_all`` depend on a table it does not own, for a reference nothing joins on:
 # every read here is by ``approval.id`` or by ``operation.id``, never across.
 #
-# ``destination_ref`` is written null by every path in release one, and that is a
-# recorded gap rather than an oversight: ``OperationDeclaration`` declares no
-# destination field (``rheo_contracts.manifest``), so there is nothing for the
-# dispatcher to read one *from*. A destination therefore lives inside the payload,
-# where a differing destination is a differing ``payload_digest`` and the binding
-# tuple still refuses it. The column's first real writer is the phase-five execution
-# operation, which has a registered destination to name.
+# ``destination_ref`` is written only for an EXTERNAL/FINANCIAL declaration, from its
+# ``ExternalSpec`` exact destination, and is null for every other class. The
+# destination still lives inside the payload too, where a differing destination is a
+# differing ``payload_digest`` and the binding tuple refuses it; ``DestinationGuard``
+# additionally refuses an approval whose recorded destination is not the declared one.
 #
 # ``purpose`` is nullable for the same kind of reason: the purpose vocabulary it draws
 # from is a Leads concern (``confirmation-and-safety.md`` § Opportunities), and no

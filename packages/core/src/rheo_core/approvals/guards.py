@@ -17,16 +17,18 @@ enforces at startup", verbatim in its guard-attachment rule: "Class in
 ``subject_ref``, ``RecordStateGuard``; the module's ``guards`` list adds domain
 guards and may be empty."
 
-**The other two are not the core's and are not written here.**
-``ContactPermissionGuard`` is added by Leads and ``DestinationGuard`` by the connector
-owning a destination — both are *domain* guards a module supplies through its own
-declaration, and neither Leads nor any connector exists in release one. There is
-therefore no module to add either, and a core-side class for one would be a guard
-nothing could attach.
+**The effective list adds two more.** :class:`DestinationGuard` is core-written but
+reads the module-registered destination: it is attached to every ``EXTERNAL`` and
+``FINANCIAL`` declaration and fails closed for an unregistered or unavailable
+destination or unavailable credentials. Domain guards such as Leads'
+``ContactPermissionGuard`` follow, resolved by name from a module's registered
+guards in the declaration's order. :func:`effective_guards_for` composes all of them,
+in that order, for approval and continuation alike.
 
 **"Attached at registration" is implemented as "derived from the declaration."**
-:func:`core_guards_for` is a pure function of the declaration, called by
-``gate.execute_approved`` on the declaration the registry already resolved. A
+:func:`core_guards_for` and :func:`effective_guards_for` are pure functions of the
+declaration and the registries, called by ``gate.execute_approved`` on the
+declaration the registry already resolved. A
 declaration is immutable and registered once, so the set it yields at execution is the
 set registration would have computed; deriving it keeps ``rheo_core.operations`` free
 of any module-level import of this package, which is the import direction
@@ -36,7 +38,7 @@ of any module-level import of this package, which is the import direction
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Final, Protocol
+from typing import TYPE_CHECKING, Final, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -65,6 +67,9 @@ from rheo_core.storage.control_plane import (
     list_access_token_operations,
 )
 from rheo_core.storage.postgres import get_backend
+
+if TYPE_CHECKING:
+    from rheo_core.modules.execution import DestinationRegistry, GuardRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +355,71 @@ class RecordStateGuard:
         return None
 
 
+@dataclass(frozen=True, slots=True)
+class DestinationGuard:
+    """Fail closed unless the payload's exact destination is presently usable."""
+
+    operation_name: str
+    destination_field: str
+    destination_ref: str
+    # Null means the process-wide registry, resolved at check time; see
+    # :func:`_execution_registries` for why it is not a module-level default.
+    destinations: "DestinationRegistry | None" = None
+
+    @property
+    def name(self) -> str:
+        return "DestinationGuard"
+
+    def check(
+        self,
+        ctx: WorkspaceContext,
+        uow: UnitOfWork,
+        *,
+        approval: ApprovalRow,
+        model_input: BaseModel,
+        now: datetime,
+    ) -> str | None:
+        supplied = getattr(model_input, self.destination_field, None)
+        if supplied != self.destination_ref:
+            return (
+                f"the validated destination is {supplied!r}, not the declared exact "
+                f"destination {self.destination_ref!r}"
+            )
+        if approval.destination_ref != self.destination_ref:
+            return "the approval is not bound to the validated exact destination"
+        registry = (
+            _execution_registries()[1]
+            if self.destinations is None
+            else self.destinations
+        )
+        return registry.availability_problem(
+            ctx,
+            uow,
+            destination_ref=self.destination_ref,
+            operation_name=self.operation_name,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _UnavailableDeclaredGuard:
+    qualified_name: str
+
+    @property
+    def name(self) -> str:
+        return self.qualified_name
+
+    def check(
+        self,
+        ctx: WorkspaceContext,
+        uow: UnitOfWork,
+        *,
+        approval: ApprovalRow,
+        model_input: BaseModel,
+        now: datetime,
+    ) -> str | None:
+        return f"declared guard {self.qualified_name!r} is not registered"
+
+
 CORE_GUARDS: Final[tuple[Guard, ...]] = (ActorPermissionGuard(), WindowGuard())
 """The guards the core attaches to **every** upper-class operation.
 
@@ -378,6 +448,61 @@ def core_guards_for(declaration: OperationDeclaration) -> tuple[Guard, ...]:
     if spec is None or spec.subject_field is None:
         return CORE_GUARDS
     return (*CORE_GUARDS, RecordStateGuard(spec.subject_field))
+
+
+def _execution_registries() -> tuple["GuardRegistry", "DestinationRegistry"]:
+    """The process-wide module guard and destination registries.
+
+    Imported here rather than at module level: ``rheo_core.modules`` imports the
+    deletion registry, which reaches ``rheo_core.operations`` and from there back into
+    this package, so a module-level import closes an import cycle at startup.
+    """
+    from rheo_core.modules.execution import (  # deferred: see the docstring
+        DESTINATIONS,
+        EXECUTION_GUARDS,
+    )
+
+    return EXECUTION_GUARDS, DESTINATIONS
+
+
+def effective_guards_for(
+    declaration: OperationDeclaration,
+    *,
+    guards: "GuardRegistry | None" = None,
+    destinations: "DestinationRegistry | None" = None,
+) -> tuple[Guard, ...]:
+    """Core, conditional destination, then module guards in declared order.
+
+    Null registries mean the process-wide ones. Approval and continuation both call
+    this one builder, so the effective order cannot differ between them.
+    """
+    if guards is None:
+        guards = _execution_registries()[0]
+    effective = list(core_guards_for(declaration))
+    external = declaration.external
+    if declaration.safety_class in {
+        SafetyClass.EXTERNAL,
+        SafetyClass.FINANCIAL,
+    }:
+        if external is None:
+            # OperationDeclaration normally makes this unreachable; fail closed for
+            # a model_construct-ed declaration rather than silently omitting it.
+            effective.append(_UnavailableDeclaredGuard("DestinationGuard"))
+        else:
+            effective.append(
+                DestinationGuard(
+                    declaration.name,
+                    external.destination_field,
+                    external.destination_ref,
+                    destinations,
+                )
+            )
+    for name in declaration.guards:
+        registered = guards.lookup(name)
+        effective.append(
+            _UnavailableDeclaredGuard(name) if registered is None else registered
+        )
+    return tuple(effective)
 
 
 def run_guards(

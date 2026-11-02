@@ -32,7 +32,7 @@ import httpx
 import pytest
 from conftest import ClusterSession
 from harness.modules import manifest
-from harness.registry import add_member, enable_harness_module, register_harness
+from harness.registry import add_member, enable_harness_module
 from pydantic import BaseModel, ConfigDict
 from rheo_app_core import connector_oauth_routes
 from rheo_app_core.auth_routes import identity_host
@@ -140,9 +140,8 @@ PLAIN_MANIFEST: Final = manifest(PLAIN)
 
 
 @pytest.fixture(autouse=True)
-def registrations() -> Iterator[None]:
+def registrations(fresh_startup_composition: None) -> Iterator[None]:
     register_core_operations()
-    register_harness()
     REGISTRY.register(COMPLETE_DECLARATION, HANDLER, origin=TEST_HARNESS_ORIGIN)
     HANDLER.ran.clear()
     HANDLER.answer = "connected"

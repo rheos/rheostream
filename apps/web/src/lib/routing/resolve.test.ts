@@ -34,6 +34,26 @@ describe("resolveRequest, path mode", () => {
     expect(resolve("/")).toEqual({ kind: "shell" });
   });
 
+  it("reserves the exact shell approval detail route", () => {
+    expect(resolve("/approvals/detail")).toEqual({ kind: "approval" });
+    expect(resolve("/approvals/detail/")).toEqual({ kind: "approval" });
+    expect(resolve("/approvals")).toEqual({ kind: "not-found" });
+    expect(resolve("/approvals/detail/extra")).toEqual({ kind: "not-found" });
+  });
+
+  it("places approval detail below a configured shell prefix", () => {
+    const prefixed = {
+      ...config,
+      surfaces: { ...config.surfaces, shell: { ...config.surfaces.shell, path: "/operate" } },
+    };
+    expect(resolveRequest(prefixed, "example.test", "/operate/approvals/detail")).toEqual({
+      kind: "approval",
+    });
+    expect(resolveRequest(prefixed, "example.test", "/approvals/detail")).toEqual({
+      kind: "not-found",
+    });
+  });
+
   it("matches a module surface at its path and below it", () => {
     expect(resolve("/ledger")).toEqual({ kind: "module", surface: "ledger", subPath: "/" });
     expect(resolve("/ledger/")).toEqual({ kind: "module", surface: "ledger", subPath: "/" });
@@ -82,6 +102,23 @@ describe("resolveRequest, subdomain mode", () => {
       kind: "shell",
     });
     expect(resolveRequest(config, "CIRCUIT.Example.Test", "/")).toEqual({ kind: "shell" });
+  });
+
+  it("serves approval detail only on the shell host", () => {
+    expect(resolveRequest(config, "circuit.example.test", "/approvals/detail")).toEqual({
+      kind: "approval",
+    });
+    expect(resolveRequest(config, "circuit.example.test", "/approvals/detail/")).toEqual({
+      kind: "approval",
+    });
+    expect(resolveRequest(config, "ledger.example.test", "/approvals/detail")).toEqual({
+      kind: "module",
+      surface: "ledger",
+      subPath: "/approvals/detail",
+    });
+    expect(resolveRequest(config, "auth.example.test", "/approvals/detail")).toEqual({
+      kind: "not-found",
+    });
   });
 
   it("gives a module host's whole path to the module, its root included", () => {

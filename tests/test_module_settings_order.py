@@ -139,7 +139,9 @@ def _recallatron_entry_point() -> EntryPoint:
 
 
 @pytest.fixture(autouse=True)
-def restored_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def restored_settings(
+    monkeypatch: pytest.MonkeyPatch, fresh_startup_composition: None
+) -> Iterator[None]:
     """A private copy of the settings tables, and both modules discoverable."""
     monkeypatch.setattr(SETTINGS_REGISTRY, "_specs", dict(SETTINGS_REGISTRY._specs))
     monkeypatch.setattr(SETTINGS_REGISTRY, "_origins", dict(SETTINGS_REGISTRY._origins))

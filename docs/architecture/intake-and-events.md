@@ -649,7 +649,9 @@ Because the sweep skips locked rows, a still-pending row whose lock holder rolls
 left for a later daily sweep; expiry therefore has no hard one-sweep-interval upper bound.
 It also deletes settled outbox events past `work.outbox_retention_days`, as described
 under [Events and the outbox](#events-and-the-outbox-fr-15), before the session-file
-walk for the same reason. Each workspace is provisioned a
+walk for the same reason, and expired keyed-result envelopes not referenced by a
+pending, executing, or unresolved external action, as described under
+[Idempotency](#idempotency). Each workspace is provisioned a
 `core.schedule` row at migrate time; the worker's schedule ticker enqueues
 `RetentionSweepPayload(workspace_id)` when the row is due
 ([module contract](module-contract.md#operations-tools-events)). `core.exports.sweep`, not
@@ -705,17 +707,38 @@ same rule that keeps them out of operation records
 
 ### Idempotency
 
-Release one has natural idempotency only. An operation declared `NATURAL` names the unique index
+An operation declared `NATURAL` names the unique index
 under which a repeat is the same row, and its handler returns that row on a repeat:
 `leads.intake.accept_delivery` on `(connection_id, source_event_id)` (the branch table above),
 `leads.handoff.request` on `(opportunity_id, idempotency_key)`
 ([handoffs](confirmation-and-safety.md#the-handoff-operation-fr-45-criterion-64)), and
-`relationships.party.resolve_or_create` through the per-receipt consumer dedup. There is no
-keyed idempotency and no stored-result table, because nothing in release one must return a
-*created* reference on a retry whose natural key does not already carry the answer. Phase five's
-`current.work.create_from_handoff` is the first operation that must, and `KEYED` idempotency
-with its result table and retention setting arrive with it
-([later phases](later-phases.md#phase-5-the-work-in-motion-module)).
+`relationships.party.resolve_or_create` through the per-receipt consumer dedup.
+
+`KEYED` operations declare the validated string field carrying the key and positive request and
+result schema versions. The public dispatcher stores `core.idempotency_result` in the same
+transaction as a synchronous effect: canonical UTF-8 JSON of the validated input fields and values
+(defaults and explicit nulls included), its SHA-256 digest, the schema versions, and the terminal
+result or stable error. A retained same-request repeat returns that envelope without invoking the
+handler; a changed protected request refuses `idempotency_key_reused`; a missing or failing adapter
+path refuses `idempotency_schema_incompatible`. The default retention window is 90 days, with a
+hard 30-day minimum, and `retained_until` never changes after reservation. The daily sweep removes
+an expired envelope only when no pending, executing, or unresolved external action references it.
+After module composition and backend opening, both the Core and worker startup roots scan every
+active workspace's nonexpired retained rows before serving or leasing. Each retained operation
+must still be declared `KEYED`, and its request version and any stored result version must have a
+unique registered adapter path to the declaration's current versions. Adapter graphs themselves
+must terminate at those current versions. A registered operation that no longer has a keyed
+contract, a missing path, or a graph that continues past current fails startup rather than
+silently weakening the replay promise. Retained rows for operations absent from the selected final
+composition are not callable there and are not part of that composition's scan.
+Revision `0015_terminal_action_history` removes the original composite foreign key: a terminal
+action keeps its copied operation name and key as immutable history without pinning the expired
+envelope, while the sweep's explicit state predicate preserves every live or unknown outcome. After
+removal, core makes no generic stored-envelope replay promise: generic keyed dispatch reserves the
+swept key afresh and runs the handler again, and only a domain's own durable source identity may
+still describe the earlier outcome. External staging is stricter: a key whose envelope was swept
+but whose external action survives as history refuses `idempotency_key_reused` and writes nothing,
+so another external effect requires a new intentional key/source identity.
 
 ### External actions
 
@@ -726,15 +749,39 @@ Introduced here because they are durable work; their approval is in
 | --- | --- |
 | `id uuid`, `operation_id`, `approval_id` | |
 | `destination_ref text` | A party reference, a connector destination, or the recording sink. |
-| `payload_digest bytea`, `payload_ref` | The approved payload; the digest is rechecked at execution. |
+| `approval_payload_digest bytea`, `approval_payload_ref` | The approved payload; the digest is rechecked at execution. |
 | `state` | `pending`, `executing`, `succeeded`, `failed`, `refused`, `unresolved`, `cancelled`. |
 | `provider_request_id null`, `attempts` | |
 
-Execution is a job of kind `core.external_action.execute` with `depends_on_ref = destination_ref`,
-so withdrawing a destination party's permission or deleting the party cancels or refuses it
-(criteria 61 and 65). Concurrent execution of one action is prevented by the job lease; a retry
-after an unknown outcome first reconciles by `provider_request_id` when the provider allows, and
-otherwise sets `unresolved`.
+Migration `0014_external_actions` creates this table together with the keyed envelope; the
+append-only `0015_terminal_action_history` correction makes terminal operation/key fields
+historical rather than a live foreign key. No migration was added for continuation.
+
+Approving a staged keyed action queues exactly one `core.external_action.execute` job whose
+payload is only `{"external_action_id": ...}`, with `operation_id` and `depends_on_ref` null.
+The worker looks that core-only continuation kind up before its cancellation and budget gates,
+mints an `ExternalContinuationGrant` only after locking and matching the action, approval,
+operation, pending keyed envelope and leased job, and the continuation rechecks the held caller,
+payload digest, readiness and every guard before invoking the registered destination at most
+once. It settles the action, approval, operation, keyed envelope and audit row in the same
+transaction as the job write, returning one of `succeeded`, `handled_terminal`, `retry`,
+`failed_terminal` or `cancelled_terminal`; a lost lease finish rolls all of it back.
+Cancellation and exhausted-budget leases reconcile and never invoke. A provider destination is
+always reconciled there with its deterministic request id, because a run that invoked it and
+then rolled back left no marker on the action but kept the effect; a destination that is no
+longer registered settles `unresolved`. A retried run lease (the job's lease count is above
+one, so an earlier lease may have invoked) does the same before any effect-time refusal:
+proven success settles success, an unprovable answer or an unregistered destination settles
+`unresolved`, and only proven absence lets the refusal stand. A cancellation whose job was
+never leased settles `cancelled` without a destination lookup. Only an in-process
+destination, whose effect commits with its settlement, proves absence from an open action.
+`failure_class` is one of `destination_unavailable_no_effect`, `permanent_refusal_no_effect`,
+`retryable_no_effect`, `outcome_unknown` and `cancelled_no_effect`. A `failed` action is
+always proven no-effect; a
+possibly effective one is `unresolved` until `core.operation.resolve` moves it, which needs the
+destination's confirmed result ref for success and its proof of absence for failure. Callers
+read the outcome through `core.external_action.get`, whose `restage_eligible` is true only for
+`failed` and for a destination-unavailable refusal.
 
 ## Contact permission records (FR 46)
 

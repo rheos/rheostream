@@ -13,7 +13,7 @@ builds it.
 
 import pickle
 import time
-from typing import get_args
+from typing import Literal, get_args
 from unittest import mock
 from uuid import UUID
 
@@ -32,7 +32,9 @@ from rheo_contracts import (
     AuthenticatedPrincipal,
     ContextPurpose,
     Entry,
+    ExternalSpec,
     Idempotency,
+    KeyedSpec,
     OperationDeclaration,
     RecordRef,
     RecordRefMalformed,
@@ -164,7 +166,7 @@ def test_enum_members_are_exactly_the_ratified_sets() -> None:
         "external",
         "financial",
     }
-    assert {member.name for member in Idempotency} == {"NONE", "NATURAL"}
+    assert {member.name for member in Idempotency} == {"NONE", "NATURAL", "KEYED"}
 
 
 def test_role_rejects_an_unknown_value() -> None:
@@ -317,12 +319,158 @@ def test_operation_declaration_defaults_match_the_module_contract() -> None:
     )
     assert decl.roles == frozenset({Role.OWNER, Role.MEMBER})
     assert decl.audit is None
+    assert decl.keyed is None
+    assert decl.guards == ()
+    assert decl.external is None
     # Default ``False``, which is what makes the field additive: every declaration
     # shipped before run 0c2 mints no operation record and needed no edit.
     assert decl.long_running is False
     assert "handler" not in OperationDeclaration.model_fields
     with pytest.raises(ValidationError):
         decl.name = "core.workspace.other"
+
+
+class _KeyedInput(BaseModel):
+    request_key: str
+    optional: str | None = None
+
+
+class _NumericKeyInput(BaseModel):
+    request_key: int
+
+
+class _ExternalInput(BaseModel):
+    destination_ref: Literal["current"] = "current"
+
+
+class _ExternalOutput(BaseModel):
+    item_ref: str
+
+
+def test_keyed_declaration_requires_a_real_string_field_and_positive_versions() -> None:
+    keyed = KeyedSpec(
+        key_field="request_key", request_schema_version=1, result_schema_version=2
+    )
+    declaration = OperationDeclaration(
+        name="core.probe.write",
+        safety_class=SafetyClass.MUTATE,
+        input_model=_KeyedInput,
+        output=_Output,
+        idempotency=Idempotency.KEYED,
+        keyed=keyed,
+        guards=("core.permission", "core.record_state"),
+        audit=AuditSpec(subject_field=None),
+    )
+    assert declaration.keyed == keyed
+    assert declaration.guards == ("core.permission", "core.record_state")
+
+    with pytest.raises(ValidationError, match="requires a KeyedSpec"):
+        OperationDeclaration(
+            name="core.probe.write",
+            safety_class=SafetyClass.MUTATE,
+            input_model=_KeyedInput,
+            output=_Output,
+            idempotency=Idempotency.KEYED,
+            audit=AuditSpec(subject_field=None),
+        )
+    with pytest.raises(ValidationError, match="must not carry"):
+        OperationDeclaration(
+            name="core.probe.write",
+            safety_class=SafetyClass.MUTATE,
+            input_model=_KeyedInput,
+            output=_Output,
+            idempotency=Idempotency.NONE,
+            keyed=keyed,
+            audit=AuditSpec(subject_field=None),
+        )
+    with pytest.raises(ValidationError):
+        KeyedSpec(
+            key_field="request_key",
+            request_schema_version=0,
+            result_schema_version=1,
+        )
+    for input_model, key_field in (
+        (_KeyedInput, "missing_key"),
+        (_NumericKeyInput, "request_key"),
+    ):
+        with pytest.raises(ValidationError, match="key field"):
+            OperationDeclaration(
+                name="core.probe.write",
+                safety_class=SafetyClass.MUTATE,
+                input_model=input_model,
+                output=_Output,
+                idempotency=Idempotency.KEYED,
+                keyed=KeyedSpec(
+                    key_field=key_field,
+                    request_schema_version=1,
+                    result_schema_version=1,
+                ),
+                audit=AuditSpec(subject_field=None),
+            )
+    for guards in (("core.permission", "core.permission"), ("permission",)):
+        with pytest.raises(ValidationError, match="guards"):
+            OperationDeclaration(
+                name="core.probe.write",
+                safety_class=SafetyClass.MUTATE,
+                input_model=_KeyedInput,
+                output=_Output,
+                idempotency=Idempotency.NONE,
+                guards=guards,
+                audit=AuditSpec(subject_field=None),
+            )
+
+
+def test_external_contract_is_exact_and_default_preserving() -> None:
+    external = ExternalSpec(
+        destination_field="destination_ref",
+        destination_ref="current",
+        result_ref_field="item_ref",
+    )
+    declaration = OperationDeclaration(
+        name="core.probe.send",
+        safety_class=SafetyClass.EXTERNAL,
+        input_model=_ExternalInput,
+        output=_ExternalOutput,
+        idempotency=Idempotency.NONE,
+        external=external,
+        audit=AuditSpec(subject_field=None),
+    )
+    assert declaration.external == external
+    assert _ExternalInput().destination_ref == "current"
+
+    with pytest.raises(ValidationError, match="requires an ExternalSpec"):
+        OperationDeclaration(
+            name="core.probe.send",
+            safety_class=SafetyClass.EXTERNAL,
+            input_model=_ExternalInput,
+            output=_ExternalOutput,
+            idempotency=Idempotency.NONE,
+            audit=AuditSpec(subject_field=None),
+        )
+    with pytest.raises(ValidationError, match="only EXTERNAL or FINANCIAL"):
+        OperationDeclaration(
+            name="core.probe.write",
+            safety_class=SafetyClass.MUTATE,
+            input_model=_ExternalInput,
+            output=_ExternalOutput,
+            idempotency=Idempotency.NONE,
+            external=external,
+            audit=AuditSpec(subject_field=None),
+        )
+    with pytest.raises(ValidationError, match="must be Literal"):
+        OperationDeclaration(
+            name="core.probe.send",
+            safety_class=SafetyClass.EXTERNAL,
+            input_model=_ExternalInput,
+            output=_ExternalOutput,
+            idempotency=Idempotency.NONE,
+            external=ExternalSpec(
+                destination_field="destination_ref",
+                destination_ref="other",
+                result_ref_field="item_ref",
+            ),
+            audit=AuditSpec(subject_field=None),
+        )
 
 
 def test_tool_declaration_requires_a_safety_class() -> None:
