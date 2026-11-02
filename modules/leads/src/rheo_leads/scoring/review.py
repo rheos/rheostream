@@ -36,6 +36,7 @@ from rheo_leads import pipeline_common as h
 from rheo_leads.pipeline_contracts import RefInput, Strict
 from rheo_leads.references import ref
 from rheo_leads.scoring import job as scoring
+from rheo_leads.scoring import prefilter
 from rheo_leads.scoring.profile import read_profile
 from rheo_leads.scoring.tier1 import JobFacts, run_tier1
 from rheo_leads.storage import pipeline as p
@@ -71,6 +72,7 @@ def is_held(opportunity_id: Any) -> Any:
     qual = p.qualification
     return (latest(qual.c.score, opportunity_id).is_(None)) & (
         latest(qual.c.explanation, opportunity_id).startswith(scoring.HELD_LINE)
+        | latest(qual.c.explanation, opportunity_id).startswith(prefilter.HELD_LINE)
     )
 
 
@@ -94,6 +96,10 @@ def hold_reasons(
     found: dict[UUID, list[dict[str, str]]] = {}
     for record in records:
         identifier = record["id"]
+        saved = stored.get(identifier, [])
+        if saved and saved[0] == prefilter.HELD_LINE:
+            found[identifier] = [{"code": "prefilter", "text": " ".join(saved[1:])}]
+            continue
         reasons: list[dict[str, str]] = []
         if profile is not None:
             decided = run_tier1(
@@ -138,7 +144,7 @@ def promote(ctx: WorkspaceContext, uow: UnitOfWork, m: RefInput) -> PromoteOutpu
     held: bool | None = uow.connection.execute(select(is_held(identifier))).scalar_one()
     if open_stage != "open" or not held:
         raise OperationRefused(
-            "not_held", "the client filters are not holding this job"
+            "not_held", "the scoring filters are not holding this job"
         )
     now = datetime.now(UTC)
     uow.connection.execute(

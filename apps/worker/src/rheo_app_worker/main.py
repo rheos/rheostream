@@ -56,6 +56,7 @@ from rheo_core.runtime import (
     make_run_runtime_job,
 )
 from rheo_core.runtime.extraction import register_claude_cli_extraction
+from rheo_core.runtime.judgment import JudgmentRunner, set_judgment_runner
 from rheo_core.runtime.oneshot import register_oneshot_adapters
 from rheo_core.settings import resolve
 from rheo_core.storage.postgres import get_backend, reset_backend
@@ -67,6 +68,7 @@ from rheo_core.work.schedules import (
     run_retention_sweep,
 )
 from rheo_runtimes import ClaudeCliRuntime
+from rheo_runtimes.jev import JevProvider
 
 from rheo_app_worker.heartbeat import heartbeat_from_env
 
@@ -189,6 +191,7 @@ def main() -> None:
     register_claude_cli_extraction(ADAPTERS)
     # The same adapters for a module job's one-shot structured run (job scoring).
     register_oneshot_adapters(ADAPTERS)
+    set_judgment_runner(JudgmentRunner(JevProvider()))
     register_modules()
     backend = get_backend()
     check_keyed_replay_compatibility(backend, REGISTRY)

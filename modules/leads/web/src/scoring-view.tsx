@@ -260,9 +260,9 @@ function Calls({
         </h2>
         <InfoTip label="About the model call log" wide>
           <p>
-            One row for each model call Leads makes: scoring a job, the steps of
-            drafting a proposal, and pricing. Tokens and time only; the calls
-            run on your subscription login, not a metered API.
+            One row for each model call Leads makes: pre-filtering, full scoring,
+            drafting a proposal, and pricing. Tokens and time only. Jev uses a
+            metered API; its provider account reports the charges.
           </p>
           <p>
             No posting text, prompt or answer is kept. Rows older than 90 days
@@ -596,8 +596,10 @@ export function ScoringView(props: ScoringProps) {
         <InfoTip label="About scoring" wide>
           <p>
             New jobs are scored one at a time, newest first. The client filters
-            decide first; a job they let through goes to the model with your
-            profile, and its score lands on the job.
+            decide first. When enabled, Jev pre-filters eligible jobs against your
+            profile before full scoring. Held jobs remain in the Review queue;
+            Promote requests full scoring. A Jev failure falls through to the
+            full scorer. Its final score lands on the job.
           </p>
           <p>
             When the usage limit stops a call, every waiting job pauses and

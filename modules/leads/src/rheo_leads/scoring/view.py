@@ -49,6 +49,7 @@ from rheo_leads import pipeline_common as h
 from rheo_leads.pipeline_contracts import Empty, Strict
 from rheo_leads.references import ref
 from rheo_leads.scoring import job as scoring
+from rheo_leads.scoring import prefilter
 from rheo_leads.short_ids import with_short_ids
 from rheo_leads.storage import jobfeed as jf
 from rheo_leads.storage import pipeline as p
@@ -119,7 +120,7 @@ def stage_of(
     if job["score"] is not None:
         return "scored"
     explanation = job["explanation"] or ""
-    if explanation.startswith(scoring.HELD_LINE):
+    if explanation.startswith((scoring.HELD_LINE, prefilter.HELD_LINE)):
         return "held"
     if explanation.startswith(scoring.UNDESCRIBED_LINE):
         return "needs_posting"
@@ -468,7 +469,8 @@ def view(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> ViewOutput:
     scoring_now = {
         r["opportunity_id"]
         for r in running
-        if r["purpose"] == model_calls.SCORING and r["opportunity_id"] is not None
+        if r["purpose"] in (model_calls.SCORING, model_calls.PREFILTER)
+        and r["opportunity_id"] is not None
     }
     position = {
         identifier: index + 1

@@ -9,6 +9,7 @@ const RECENT_SECONDS = 300;
 
 const PURPOSES: Record<string, string> = {
   scoring: "Score",
+  prefilter: "Jev pre-filter",
   analysis: "Proposal analysis",
   gate: "Accuracy check",
   draft: "Proposal draft",
@@ -142,6 +143,8 @@ export function statusLine(
     const purpose = str(status.purpose);
     if (purpose === "scoring")
       return { tone: "busy", text: `Scoring "${title}"${took}` };
+    if (purpose === "prefilter")
+      return { tone: "busy", text: `Pre-filtering "${title}" with Jev${took}` };
     if (purpose === "milestones")
       return { tone: "busy", text: `Pricing "${title}"${took}` };
     return {
@@ -247,7 +250,7 @@ export function stageChip(
     case "held":
       return {
         mark: "held",
-        title: "Held back by the client filters before scoring.",
+        title: "Held before full scoring. Review or promote this job.",
         tone: "plain",
       };
     case "closed":

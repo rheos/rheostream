@@ -165,6 +165,11 @@ transcript_retention_days = 90
 allowed_runtimes = ["claude_cli"]
 allowed_models = ["sonnet"]
 
+[runtime.jev]
+enabled = false
+credential_ref = ""
+model_id = "jev-latest"
+
 [runtime.claude_cli]
 executable = ""
 credential_kind = "login"
