@@ -251,7 +251,11 @@ def get_handler(
 EXTERNAL_ACTION_GET_DECLARATION: Final = OperationDeclaration(
     name=EXTERNAL_ACTION_GET,
     safety_class=SafetyClass.READ,
-    roles=frozenset({Role.OWNER, Role.MEMBER, Role.OPERATOR}),
+    # ``service`` for a module's own repair job, which reads the outcome of an
+    # action it staged under a restricted context naming this operation. A service
+    # context reaches only the operations its factory lists, so the role grants
+    # nothing to a context that does not also name the read.
+    roles=frozenset({Role.OWNER, Role.MEMBER, Role.OPERATOR, Role.SERVICE}),
     input_model=ExternalActionRef,
     output=ExternalActionRecord,
     idempotency=Idempotency.NONE,

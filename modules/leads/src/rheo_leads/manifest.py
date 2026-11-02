@@ -27,6 +27,17 @@ from rheo_leads.connections import OPERATIONS as CONNECTION_OPERATIONS
 from rheo_leads.connections import TOOLS as CONNECTION_TOOLS
 from rheo_leads.connections import read_connection, record_refusal
 from rheo_leads.contracts import CaptureInput
+from rheo_leads.current_links import (
+    LINK_CHANGED,
+    LINK_CONSUMER_ID,
+    RECONCILE_INTERVAL_SECONDS,
+    RECONCILE_JOB_KIND,
+    RECONCILE_MAX_ATTEMPTS,
+    RECONCILE_SCHEDULE,
+    ReconcilePayload,
+    on_link_changed,
+    reconcile_job,
+)
 from rheo_leads.events import CONSUMER_ID, DELIVERY_RECEIVED, EVENTS
 from rheo_leads.export import export_records, import_records
 from rheo_leads.intake.process import process_delivery
@@ -169,8 +180,20 @@ MANIFEST = ModuleManifest(
                 }
             ),
         ),
+        # Current is optional: with it absent no event arrives and nothing is lost,
+        # since the repair job reads the link again once Current is back.
+        ConsumerSubscription(
+            LINK_CONSUMER_ID, LINK_CHANGED, "leads", True, on_link_changed
+        ),
     ),
     jobs=(
+        JobKind(
+            name=RECONCILE_JOB_KIND,
+            input_model=ReconcilePayload,
+            handler=reconcile_job,
+            max_attempts=RECONCILE_MAX_ATTEMPTS,
+            cancellable=False,
+        ),
         JobKind(
             name=COLLECT_JOB_KIND,
             input_model=CollectPayload,
@@ -222,6 +245,14 @@ MANIFEST = ModuleManifest(
             interval_seconds=PROPOSE_INTERVAL_SECONDS,
             gate_setting=JOBSEARCH_KEY,
         ),
+        # Off until the first handoff to Current is staged, which turns it on.
+        Schedule(
+            name=RECONCILE_SCHEDULE,
+            job_kind=RECONCILE_JOB_KIND,
+            cron="*/15 * * * *",
+            enabled_by_default=False,
+            interval_seconds=RECONCILE_INTERVAL_SECONDS,
+        ),
     ),
     resolvers=tuple((name, resolve_record) for name in RECORD_TABLES),
     deletion_participants=(
@@ -233,7 +264,7 @@ MANIFEST = ModuleManifest(
         ),
     ),
     export=ExportDeclaration(
-        format_version=13,
+        format_version=14,
         schema_path="export.schema.json",
         exporter=export_records,
         importer=import_records,

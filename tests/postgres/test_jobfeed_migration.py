@@ -31,7 +31,7 @@ from postgres.test_module_upgrade import upgrade
 
 pytestmark = pytest.mark.postgres
 REVISION = "0009_jobfeed_collector"
-HEAD = "0018_invited_jobs"
+HEAD = "0020_current_handoff"
 NEW_TABLES = {
     "jobfeed_connection",
     "jobfeed_authorization",
@@ -55,6 +55,8 @@ PROPOSAL_TABLES = {
     "model_call",
     # 0016_jobfeed_runs
     "jobfeed_run",
+    # 0020_current_handoff
+    "current_link_cursor",
 }
 
 
@@ -180,6 +182,7 @@ def test_populated_0008_upgrades_additively_to_the_fresh_schema(
         undone = rewind_leads(uow.connection, "0008_attach_by_field")
         assert undone == (
             HEAD,
+            "0018_invited_jobs",
             "0017_proposal_separate_answers",
             "0016_jobfeed_runs",
             "0015_model_calls",

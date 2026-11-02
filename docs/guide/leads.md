@@ -111,12 +111,18 @@ assessments are never replaced.
 ### Handoffs are tracked, and safe to retry
 
 `leads.handoff.request` writes a handoff with its purpose, destination and a bounded
-snapshot of the payload, unique on the opportunity and an idempotency key. The same key
-with the same payload returns the same handoff; with a different payload it is refused.
-With no destination the handoff is recorded as `unavailable` and nothing happens anywhere.
-With one, the handoff goes `pending` and calls the destination's own operation, which is
-external class, needs its own approval, and writes its outcome back. Several intentional
-handoffs from one opportunity are several records. There is no `converted` flag.
+snapshot of the payload, unique on the opportunity and an idempotency key. It needs a
+qualification first, and records which one and whether its evidence has since changed.
+The same key with the same payload returns the same handoff; with a different payload it
+is refused. With no destination the handoff is recorded as `unavailable` and nothing
+happens anywhere. With Current as the destination, the handoff goes `pending` and asks
+you to approve one new Current item; nothing is created until you approve. If Current is
+off or unavailable, the handoff is recorded as `unavailable` and you can restage it once
+Current is back. A handoff that failed with no effect can be restaged too, each time with
+a new approval; one that succeeded, was refused, was cancelled or has an unknown outcome
+cannot. Leads remembers which Current project the item was filed under, even after the
+item is deleted. Several intentional handoffs from one opportunity are several records.
+There is no `converted` flag.
 
 ### Contact permission is its own record
 

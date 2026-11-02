@@ -1874,6 +1874,42 @@
               "type": "null"
             }
           ]
+        },
+        "attempt_count": {
+          "type": "integer"
+        },
+        "current_project_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_current_project_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "current_project_state": {
+          "type": "string"
+        },
+        "current_link_revision": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -1892,7 +1928,12 @@
         "requested_by_kind",
         "requested_by_id",
         "requested_at",
-        "resolved_at"
+        "resolved_at",
+        "attempt_count",
+        "current_project_ref",
+        "last_current_project_ref",
+        "current_project_state",
+        "current_link_revision"
       ],
       "additionalProperties": false
     },
@@ -2304,13 +2345,35 @@
         },
         "byte_length": {
           "type": "integer"
+        },
+        "qualification_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "qualification_stale": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "record_type",
         "handoff_id",
         "body",
-        "byte_length"
+        "byte_length",
+        "qualification_ref",
+        "qualification_stale"
       ],
       "additionalProperties": false
     },

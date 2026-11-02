@@ -278,6 +278,13 @@ def test_excluded_record_types_stay_out_of_lists_and_nested_rows(
 
 def test_a_handoff_s_outbound_payload_stays_out(intake: Intake) -> None:
     item = posting(intake)
+    ok(
+        intake,
+        "qualification.assess",
+        ref=item["ref"],
+        revision=item["revision"],
+        objective="Synthetic suitability check",
+    )
     handoff = ok(
         intake,
         "handoff.request",

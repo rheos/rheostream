@@ -63,7 +63,9 @@ approves it in the shell. A token may stage the request but can never approve it
 The operation is external class and keyed on `idempotency_key`. After approval, the core's
 continuation rebuilds the held caller, runs its guards again and writes the item through
 Current's one registered destination, `current`. The operation's own handler always
-refuses, so no other route creates anything.
+refuses, so no other route creates anything. Current's in-process destination has no
+provider reconciliation, so a person can resolve one of its unknown actions only to
+`cancelled`.
 
 The request carries a source reference, a title, a body, a priority, an area and a due
 date. It has no project field, because filing the work under a project is a person's

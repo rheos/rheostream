@@ -45,15 +45,66 @@ a person's judgment and reviewing prior assessments.
 
 Drafts are internal records. A handoff
 stores a bounded snapshot and idempotency binding to its exact body, destination and
-purpose; without a destination it records `unavailable`, creates no external effect and
-does not change the opportunity's disposition.
+purpose, and never changes the opportunity's stage or disposition. It needs a
+qualification: `leads.handoff.request` refuses `qualification_required` until the
+opportunity has one, records the latest one's ref in the snapshot, and records
+whether that qualification's evidence digest is stale. Stale is a warning only, and
+no score threshold applies. Without a destination it records `unavailable` with
+`no_destination` and creates no external effect.
+
+### Handing off to Current
+
+With `destination_ref` `current`, the payload is the item's `title`, `body`,
+`priority`, `area` and `due_on`; it may not name `destination_ref`, `source_ref` or
+`idempotency_key`, which Leads sets. In the same transaction as the handoff, Leads
+stages core's KEYED `current.item.create_external` under the requesting person's own
+context, so a person must approve it in the shell before Current creates anything.
+The core key of attempt *n* is `<handoff-ref>#<n>`, and Current's `source_ref` is the
+handoff ref on every attempt. The same idempotency key with the same request returns
+the same handoff, after copying core's outcome through `core.external_action.get`, so
+a lost response never stages twice; a changed payload, destination or purpose under a
+used key refuses `idempotency_key_reused`. A service context cannot stage.
+
+Current is optional. When it is absent, disabled, not ready or its destination is
+unavailable, the handoff is still recorded, as `unavailable` with
+`destination_unavailable`, and has no action, approval, job or effect.
+
+`leads.handoff.restage` stages the same handoff again under a new approval, with the
+attempt count the caller last read. Only four cases may restage: a request-time
+`destination_unavailable`, a core refusal `destination_unavailable_no_effect`, and a
+`failed` action (an exhausted `retryable_no_effect`, or a person's resolution to
+failed, both proven to have had no effect). Pending, succeeded, permanently refused,
+cancelled and unresolved handoffs refuse `handoff_not_restageable`; an effect whose
+outcome is unknown is unresolved and never restages. Each restage raises the attempt
+count and derives the next core key. `leads.handoff.list` pages an opportunity's
+handoffs, newest first, with their approval and action ids, item result, typed result
+detail and project projection; it never returns the payload or snapshot, and model
+views of `leads_get_handoff` withhold the snapshot.
+
+Leads keeps a minimal projection of Current's lasting source link on the handoff: the
+live project ref, the last project ref, the project state (`never_assigned`, `linked`,
+`cleared`, `deleted`) and the link revision. It never stores the item's state, Current
+content or availability. The `current.source_item_link.changed` consumer and the
+bounded `leads.current_links.reconcile` job copy only a strictly newer revision. The
+job, which the first staged handoff schedules every 15 minutes, runs two scans with
+one durable cursor each: pending handoffs, and unresolved ones whose core action still
+exists, read `core.external_action.get` first and reach `current.item.link_state`
+only after a proven success, so a person's later `core.operation.resolve` reaches
+Leads (a resolution to failed records `resolved_no_effect` and may restage), and
+succeeded handoffs read only `current.item.link_state`, so missed or reordered events and later
+assignments, moves, clears, item deletions and project deletions are repaired. Each
+scan pages strictly after its stored `(requested_at, id)` key, advances past every row
+it examined and wraps at the end. When Current is absent, disabled, denies the read
+or is not ready, the projection is kept as it was. The job runs as a restricted
+service context naming only those two reads, and Leads never imports Current or
+reads its tables.
 
 Permission records are explicit and scoped by party, purpose and channel. Withdrawal
 and suppression deny subsequent permission checks. Recallatron's existing eligibility
 check consumes the registered permission operation when installed. `ContactPermissionGuard`
 rechecks permission under the lifecycle lock at execution; a test-only recording sink
-proves a held action cannot execute after withdrawal. No production destination or
-external-action operation is registered in this slice.
+proves a held action cannot execute after withdrawal. Leads registers no destination
+or external-action operation of its own; its one external route is Current's.
 
 Observation and opportunity erasure require owner approval through core. Deleting an
 observation clears its intake payload/conflict bodies, retains a delivery tombstone,
@@ -79,8 +130,16 @@ before upgrading from a previous Leads schema; rollback means restoring that bac
 with the previous image, not downgrading the additive 0005_followup_reminders or
 0006_assessment_evidence_digest migrations. Restore preserves source identities,
 replaces only a fresh seed and strips deployment-local signing handles. The populated
-round-trip test also exercises Relationships through the real archive format. Signed website intake is available as described below. Import runners, email adapters,
-live source activation and the first external handoff destination remain separate work.
+round-trip test also exercises Relationships through the real archive format. Signed website intake is available as described below. Import runners, email adapters
+and live source activation remain separate work.
+
+Export format fourteen adds each handoff's attempt count, its Current project
+projection and the qualification its request was made against. A workspace export
+carries no core external action, so a handoff that was still pending restores as
+`unresolved` with `restored_unresolved`: nothing can prove whether its item was made,
+the repair job leaves it alone and it never restages; a new intent needs a new
+handoff. The repair scans' cursors are not exported; a restore that brings handoffs
+to Current turns the repair schedule on, so its successful handoffs are revisited.
 
 ## Job-search capability
 

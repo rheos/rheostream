@@ -16,6 +16,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    and_,
+    func,
+    or_,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
@@ -385,9 +388,92 @@ handoff = child(
     col("requested_by_id", Uuid, nullable=True),
     col("requested_at", DateTime(timezone=True)),
     col("resolved_at", DateTime(timezone=True), nullable=True),
+    # Migration 0020: how many core attempts this handoff has staged, and the
+    # minimal projection of Current's lasting source link. ``result_ref`` stays the
+    # created item. No item state, availability or event position is stored here.
+    Column("attempt_count", Integer, nullable=False, server_default="0"),
+    col("current_project_ref", nullable=True),
+    col("last_current_project_ref", nullable=True),
+    Column(
+        "current_project_state",
+        Text,
+        nullable=False,
+        server_default="never_assigned",
+    ),
+    col("current_link_revision", Integer, nullable=True),
 )
 UniqueConstraint(
     handoff.c.opportunity_id, handoff.c.idempotency_key, name="handoff_request_identity"
+)
+HANDOFF_STATES = (
+    "unavailable",
+    "pending",
+    "succeeded",
+    "failed",
+    "refused",
+    "cancelled",
+    "unresolved",
+)
+for _name, _check in (
+    (
+        "handoff_state_known",
+        "state IN (" + ",".join(f"'{s}'" for s in HANDOFF_STATES) + ")",
+    ),
+    (
+        "handoff_attempts",
+        "attempt_count >= 0 AND (attempt_count = 0) = (external_action_id IS NULL)",
+    ),
+    ("handoff_pending_staged", "state <> 'pending' OR external_action_id IS NOT NULL"),
+    ("handoff_success_result", "state <> 'succeeded' OR result_ref IS NOT NULL"),
+    (
+        "handoff_project_state",
+        "current_project_state IN ('never_assigned','linked','cleared','deleted')",
+    ),
+    (
+        "handoff_project_live",
+        "(current_project_state = 'linked') = (current_project_ref IS NOT NULL)",
+    ),
+    (
+        "handoff_project_history",
+        "current_project_state NOT IN ('cleared','deleted') "
+        "OR last_current_project_ref IS NOT NULL",
+    ),
+    (
+        "handoff_link_revision",
+        "current_link_revision IS NULL OR current_link_revision >= 1",
+    ),
+    (
+        "handoff_link_projection",
+        "current_link_revision IS NOT NULL OR (current_project_state = "
+        "'never_assigned' AND last_current_project_ref IS NULL)",
+    ),
+):
+    handoff.append_constraint(CheckConstraint(_check, name=_name))
+ACTION_ABSENT_DETAILS = ("restored_unresolved", "external_action_missing")
+"""Details of an unresolved handoff whose core action is known to be absent (a
+restore carries none, or a read proved it gone): rereading it can change nothing."""
+NONTERMINAL_SCAN = or_(
+    handoff.c.state == "pending",
+    and_(
+        handoff.c.state == "unresolved",
+        handoff.c.external_action_id.is_not(None),
+        func.coalesce(handoff.c.result_detail, "").not_in(ACTION_ABSENT_DETAILS),
+    ),
+)
+"""The settlement scan's rows: pending handoffs, and unresolved ones whose core
+action still exists, so a person's later ``core.operation.resolve`` reaches Leads."""
+# The two repair scans page in (requested_at, id) order over their own class.
+Index(
+    "handoff_nonterminal_scan",
+    handoff.c.requested_at,
+    handoff.c.id,
+    postgresql_where=NONTERMINAL_SCAN,
+)
+Index(
+    "handoff_succeeded_scan",
+    handoff.c.requested_at,
+    handoff.c.id,
+    postgresql_where=handoff.c.state == "succeeded",
 )
 handoff_snapshot = Table(
     "handoff_snapshot",
@@ -400,6 +486,32 @@ handoff_snapshot = Table(
     ),
     col("body", JSONB),
     col("byte_length", Integer),
+    # Migration 0020: the latest qualification a request was made against, and
+    # whether its evidence digest no longer matched. Null for older handoffs.
+    col("qualification_ref", nullable=True),
+    col("qualification_stale", Boolean, nullable=True),
+    CheckConstraint(
+        "(qualification_ref IS NULL) = (qualification_stale IS NULL)",
+        name="handoff_snapshot_qualification",
+    ),
+)
+current_link_cursor = Table(
+    "current_link_cursor",
+    metadata,
+    # One row per repair scan; the complete last-examined (requested_at, id) key.
+    Column("scan", Text, primary_key=True),
+    col("after_requested_at", DateTime(timezone=True), nullable=True),
+    col("after_id", Uuid, nullable=True),
+    Column("cycles", Integer, nullable=False, server_default="0"),
+    col("updated_at", DateTime(timezone=True)),
+    CheckConstraint(
+        "scan IN ('nonterminal','succeeded')", name="current_link_cursor_scan"
+    ),
+    CheckConstraint(
+        "(after_requested_at IS NULL) = (after_id IS NULL)",
+        name="current_link_cursor_key",
+    ),
+    CheckConstraint("cycles >= 0", name="current_link_cursor_cycles"),
 )
 contact_permission = Table(
     "contact_permission",

@@ -6,6 +6,7 @@ from typing import Annotated, Any, Final, Literal, Self
 from uuid import UUID
 
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -32,6 +33,13 @@ OpportunityRef = Annotated[
         description="The opportunity's short ID (8 or more hex characters, as the "
         "UI shows it) or its full reference, leads.opportunity:<uuid>."
     ),
+]
+HandoffRef = Annotated[
+    RecordRef,
+    BeforeValidator(
+        lambda v, info: _parse(v, info, "handoff"), json_schema_input_type=str
+    ),
+    PlainSerializer(lambda r: r.format(), return_type=str),
 ]
 ObservationRef = Annotated[
     RecordRef,
@@ -263,14 +271,158 @@ class AssessInput(RevisionInput):
 
 
 class HandoffInput(RevisionInput):
+    """One person's request to hand an opportunity on.
+
+    ``destination_ref`` names Current or nothing. With Current, ``payload`` is the
+    item's title, body, priority, area and due date, and core holds the request for
+    a person's approval; with nothing, the handoff is recorded locally only.
+    """
+
     purpose: ContextPurpose
-    destination_ref: str | None = Field(default=None, max_length=512)
+    destination_ref: Literal["current"] | None = None
     payload: dict[str, Any]
     idempotency_key: str = Field(min_length=1, max_length=256)
 
 
 class HandoffGet(Strict):
     handoff_id: UUID
+
+
+class HandoffRestage(Strict):
+    """Stage a permitted handoff again under a new approval.
+
+    ``attempt_count`` is the count the caller last read: a match stages the next
+    attempt, one higher answers a restage that already happened, anything else is
+    stale."""
+
+    handoff_id: UUID
+    attempt_count: int = Field(ge=0)
+
+
+class HandoffList(RefInput):
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+HandoffState = Literal[
+    "unavailable",
+    "pending",
+    "succeeded",
+    "failed",
+    "refused",
+    "cancelled",
+    "unresolved",
+]
+ProjectState = Literal["never_assigned", "linked", "cleared", "deleted"]
+
+
+class HandoffSummary(Strict):
+    """One handoff as its history shows it: identities, outcome and the minimal
+    Current project projection. Never the request body or its snapshot."""
+
+    ref: str
+    opportunity_ref: str
+    purpose: str
+    destination_ref: str | None
+    state: HandoffState
+    result_ref: str | None
+    result_detail: str | None
+    approval_id: UUID | None
+    external_action_id: UUID | None
+    attempt_count: int
+    qualification_ref: str | None
+    qualification_stale: bool | None
+    current_project_ref: str | None
+    last_current_project_ref: str | None
+    current_project_state: ProjectState
+    current_link_revision: int | None
+    requested_at: AwareDatetime
+    resolved_at: AwareDatetime | None
+
+
+class HandoffPage(Strict):
+    items: list[HandoffSummary]
+    next_offset: int | None
+
+
+class CurrentViewInput(Strict):
+    """The Leads-owned viewer bridge accepts no Current-selected input."""
+
+    handoff_ref: HandoffRef
+
+
+class CurrentViewHistory(Strict):
+    """Leads-owned handoff history, without stored Current refs or errors."""
+
+    ref: str
+    opportunity_ref: str
+    purpose: str
+    state: HandoffState
+    attempt_count: int
+    requested_at: AwareDatetime
+    resolved_at: AwareDatetime | None
+
+
+class CurrentItemContent(Strict):
+    """Display fields allowlisted from a successful ``current.item.get``."""
+
+    title: str
+    body: str
+    status: str
+    priority: str
+    area: str | None
+    due_on: date | None
+    snoozed_until: AwareDatetime | None
+    woke: bool
+    overdue: bool
+    blocked: bool
+    event_count: int
+    revision: int
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    closed_at: AwareDatetime | None
+
+
+class CurrentProjectContent(Strict):
+    """Display fields allowlisted from a successful ``current.project.get``."""
+
+    title: str
+    description: str
+    status: str
+    area: str | None
+    due_on: date | None
+    revision: int
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    item_counts: dict[str, int]
+
+
+class CurrentItemLive(Strict):
+    state: Literal["live"] = "live"
+    ref: str
+    content: CurrentItemContent
+
+
+class CurrentItemState(Strict):
+    state: Literal["deleted", "denied", "unavailable"]
+    message: str
+
+
+class CurrentProjectLive(Strict):
+    state: Literal["live"] = "live"
+    ref: str
+    content: CurrentProjectContent
+
+
+class CurrentProjectState(Strict):
+    state: Literal["never_assigned", "cleared", "deleted", "denied", "unavailable"]
+    message: str
+
+
+class CurrentView(Strict):
+    history: CurrentViewHistory
+    item: CurrentItemLive | CurrentItemState
+    project: CurrentProjectLive | CurrentProjectState
 
 
 class DraftInput(RevisionInput):
