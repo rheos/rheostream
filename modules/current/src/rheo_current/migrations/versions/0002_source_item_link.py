@@ -9,6 +9,8 @@ revision = "0002_source_item_link"
 down_revision = "0001_current"
 branch_labels = None
 depends_on = None
+# Adds one table and its index; nothing existing changes, so upgrades may run it.
+non_destructive_upgrade = True
 STATEMENTS = (
     """CREATE TABLE current.source_item_link (
 source_ref TEXT NOT NULL,

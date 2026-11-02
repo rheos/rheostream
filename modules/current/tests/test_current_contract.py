@@ -299,6 +299,7 @@ def test_source_item_link_migration_is_append_only_and_matches_metadata() -> Non
     }
     assert ast.literal_eval(assigned["revision"]) == "0002_source_item_link"
     assert ast.literal_eval(assigned["down_revision"]) == "0001_current"
+    assert ast.literal_eval(assigned["non_destructive_upgrade"]) is True
     statements = ast.literal_eval(assigned["STATEMENTS"])
     ddl = " ".join(" ".join(statements).split())
     # Only the one new table and its index: nothing 0001 created is altered.
