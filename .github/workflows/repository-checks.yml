@@ -267,28 +267,14 @@ jobs:
       # scripts/ci_pytest_shard.py keeps this shard's files and deselects the rest;
       # the five shards together select every collected test once. Loaded with -p
       # here only, so the suite's own pytest subprocesses still see everything.
-      # Within the shard, xdist spreads the tests over four workers (one per
-      # runner core), whole files together except the few heaviest (see the
-      # plugin). Each worker is its own pytest session with its own
+      # Within the shard, xdist spreads whole files over four workers (one per
+      # runner core); each worker is its own pytest session with its own
       # rheo_control_test_* database and data root, as two developers' runs are.
       - name: Pytest
         env:
           RHEO_TEST_SHARD: ${{ matrix.shard }}/5
           PYTHONPATH: scripts
-        run: uv run pytest -p ci_pytest_shard -n 4 --dist loadgroup --durations=10 --junitxml=/tmp/junit.xml
-      # TEMPORARY (#517): per-file seconds, to check the shard split. Removed before merge.
-      - name: Per-file timings
-        if: always()
-        run: |
-          python3 - <<'PY'
-          import collections, xml.etree.ElementTree as ET
-          t = collections.Counter(); n = collections.Counter()
-          for c in ET.parse("/tmp/junit.xml").iter("testcase"):
-              f = c.get("file") or c.get("classname", "").replace(".", "/") + ".py"
-              t[f] += float(c.get("time", 0)); n[f] += 1
-          for f, s in t.most_common():
-              print(f"FILETIME\t{f}\t{n[f]}\t{s:.2f}")
-          PY
+        run: uv run pytest -p ci_pytest_shard -n 4 --dist loadfile --durations=10
 
   python-criterion-31:
     name: Criterion 31
