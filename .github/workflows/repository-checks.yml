@@ -236,6 +236,17 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The service cluster is thrown away with the job, so it needs no crash
+      # safety. Each Postgres test creates and drops its own workspace database,
+      # and with fsync on every one of those waits on the disk. All three settings
+      # reload without a restart; nothing the suite asserts depends on them.
+      - name: Turn off durability on the throwaway CI cluster
+        run: >-
+          docker exec ${{ job.services.postgres.id }} psql -U rheo -d rheo -v ON_ERROR_STOP=1
+          -c "ALTER SYSTEM SET fsync = off"
+          -c "ALTER SYSTEM SET synchronous_commit = off"
+          -c "ALTER SYSTEM SET full_page_writes = off"
+          -c "SELECT pg_reload_conf()"
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
@@ -256,11 +267,14 @@ jobs:
       # scripts/ci_pytest_shard.py keeps this shard's files and deselects the rest;
       # the five shards together select every collected test once. Loaded with -p
       # here only, so the suite's own pytest subprocesses still see everything.
+      # Within the shard, xdist spreads whole files over four workers (one per
+      # runner core); each worker is its own pytest session with its own
+      # rheo_control_test_* database and data root, as two developers' runs are.
       - name: Pytest
         env:
           RHEO_TEST_SHARD: ${{ matrix.shard }}/5
           PYTHONPATH: scripts
-        run: uv run pytest -p ci_pytest_shard --durations=10
+        run: uv run pytest -p ci_pytest_shard -n 4 --dist loadfile --durations=10
 
   python-criterion-31:
     name: Criterion 31
@@ -291,6 +305,17 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The service cluster is thrown away with the job, so it needs no crash
+      # safety. Each Postgres test creates and drops its own workspace database,
+      # and with fsync on every one of those waits on the disk. All three settings
+      # reload without a restart; nothing the suite asserts depends on them.
+      - name: Turn off durability on the throwaway CI cluster
+        run: >-
+          docker exec ${{ job.services.postgres.id }} psql -U rheo -d rheo -v ON_ERROR_STOP=1
+          -c "ALTER SYSTEM SET fsync = off"
+          -c "ALTER SYSTEM SET synchronous_commit = off"
+          -c "ALTER SYSTEM SET full_page_writes = off"
+          -c "SELECT pg_reload_conf()"
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
@@ -369,6 +394,17 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The service cluster is thrown away with the job, so it needs no crash
+      # safety. Each Postgres test creates and drops its own workspace database,
+      # and with fsync on every one of those waits on the disk. All three settings
+      # reload without a restart; nothing the suite asserts depends on them.
+      - name: Turn off durability on the throwaway CI cluster
+        run: >-
+          docker exec ${{ job.services.postgres.id }} psql -U rheo -d rheo -v ON_ERROR_STOP=1
+          -c "ALTER SYSTEM SET fsync = off"
+          -c "ALTER SYSTEM SET synchronous_commit = off"
+          -c "ALTER SYSTEM SET full_page_writes = off"
+          -c "SELECT pg_reload_conf()"
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
