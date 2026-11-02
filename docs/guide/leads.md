@@ -124,6 +124,9 @@ cannot. Leads remembers which Current project the item was filed under, even aft
 item is deleted. Several intentional handoffs from one opportunity are several records.
 There is no `converted` flag.
 
+Maintainers can run this journey on a disposable synthetic stack; see
+[the acceptance stack](../testing/leads-current-acceptance.md).
+
 ### Contact permission is its own record
 
 Showing interest is not permission to contact. A grant names the person, the purpose, the

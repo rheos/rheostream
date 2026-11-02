@@ -46,6 +46,7 @@ from rheo_core.operations.continuation import (
 )
 from rheo_core.operations.dispatch import OperationOutcome
 from rheo_core.operations.idempotency_tables import external_action
+from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import register_resolver
 from rheo_core.settings import resolver as settings_resolver
@@ -58,7 +59,9 @@ from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.storage.work_tables import job, schedule
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import visit_workspace
+from rheo_current.storage import tables as current_tables
 from rheo_leads import MANIFEST, pipeline_common
+from rheo_leads import handoff_routing as routing_contract
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 from sqlalchemy import func, select, update
@@ -485,6 +488,32 @@ def staged(r: Routing, subject: str = "Synthetic inquiry", key: str = "one") -> 
     return r.handoff(opportunity, key)
 
 
+def listed_phase(
+    r: Routing, opportunity: Any, ctx: WorkspaceContext | None = None
+) -> str | None:
+    outcome = r.call("leads.handoff.list", ctx, ref=opportunity.ref)
+    assert outcome.ok, outcome
+    return outcome.result.items[0].action_phase
+
+
+def live_phase_rows(r: Routing) -> dict[str, list[dict[str, Any]]]:
+    tables = {
+        "leads_handoff": p.handoff,
+        "leads_handoff_snapshot": p.handoff_snapshot,
+        "core_external_action": external_action,
+        "current_item": current_tables.item,
+        "current_project": current_tables.project,
+        "current_source_item_link": current_tables.source_item_link,
+    }
+    with open_unit_of_work(r.ctx) as uow:
+        return {
+            name: [
+                dict(row) for row in uow.connection.execute(select(table)).mappings()
+            ]
+            for name, table in tables.items()
+        }
+
+
 # --- request: qualification, snapshot, staging -------------------------------------
 
 
@@ -558,6 +587,152 @@ def test_handoff_stages_one_held_attempt_and_leaves_stage_and_outcome(
                 schedule.c.name == "current_links_reconcile",
             )
         ).scalar_one()
+
+
+def test_handoff_list_reads_the_live_phase_without_reconciling(
+    routing: Routing, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opportunity = routing.opportunity("Live phase")
+    routing.qualify(opportunity)
+    result = routing.handoff(opportunity)
+    row = routing.row(result)
+
+    before = live_phase_rows(routing)
+    assert listed_phase(routing, opportunity) == "awaiting_approval"
+    assert live_phase_rows(routing) == before
+    assert routing.row(result)["state"] == "pending"
+
+    routing.approve(row["approval_id"])
+    queued = routing.action(row["external_action_id"])
+    assert queued["state"] == "pending" and queued["execution_job_id"] is not None
+    before = live_phase_rows(routing)
+    assert listed_phase(routing, opportunity) == "approved_queued"
+    assert live_phase_rows(routing) == before
+    assert routing.row(result)["state"] == "pending"
+
+    def busy(ctx: WorkspaceContext, uow: Any, data: Any) -> Any:
+        raise ExternalDestinationError(
+            ExternalFailureClass.RETRYABLE_NO_EFFECT,
+            "synthetic_busy",
+            "Current is busy",
+        )
+
+    routing.swap_destination(monkeypatch, execute=busy)
+    routing.run_worker()
+    assert routing.action(row["external_action_id"])["state"] == "executing"
+    before = live_phase_rows(routing)
+    assert listed_phase(routing, opportunity) == "executing"
+    assert live_phase_rows(routing) == before
+    assert routing.row(result)["state"] == "pending"
+
+
+def test_owner_and_authenticated_member_receive_the_live_phase(
+    routing: Routing,
+) -> None:
+    opportunity = routing.opportunity("Member phase")
+    routing.qualify(opportunity)
+    routing.handoff(opportunity)
+    account = add_member(
+        routing.i.cluster.backend,
+        routing.i.workspace,
+        Role.MEMBER,
+        display_name="Synthetic member",
+    )
+    member = context_for_harness(routing.i.workspace, account, Role.MEMBER)
+    assert isinstance(member, WorkspaceContext)
+
+    assert listed_phase(routing, opportunity) == "awaiting_approval"
+    assert listed_phase(routing, opportunity, member) == "awaiting_approval"
+
+
+class _MalformedAction:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+
+    def model_dump(self) -> dict[str, object]:
+        return self.payload
+
+
+def test_handoff_list_contains_bad_phase_reads_and_keeps_the_page(
+    routing: Routing, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opportunity = routing.opportunity("Phase isolation")
+    routing.qualify(opportunity)
+    good = routing.handoff(opportunity, "phase-good")
+    mismatch = routing.handoff(opportunity, "phase-mismatch")
+    malformed = routing.handoff(opportunity, "phase-malformed")
+    unavailable = routing.handoff(opportunity, "phase-unavailable")
+    missing = routing.handoff(opportunity, "phase-missing")
+    terminal = routing.handoff(opportunity, "phase-terminal")
+    local = routing.handoff(
+        opportunity,
+        "phase-local",
+        destination_ref=None,
+        payload={"note": "No destination"},
+    )
+    ids = {
+        name: routing.row(value)["external_action_id"]
+        for name, value in {
+            "good": good,
+            "mismatch": mismatch,
+            "malformed": malformed,
+            "unavailable": unavailable,
+            "missing": missing,
+            "terminal": terminal,
+        }.items()
+    }
+    routing.set_action(
+        ids["terminal"],
+        state="failed",
+        failure_class="retryable_no_effect",
+        error_code="retry_budget_exhausted",
+        terminal_at=datetime.now(UTC),
+    )
+    calls: list[UUID] = []
+    real = routing_contract.call_in_transaction
+
+    def phase_read(
+        ctx: WorkspaceContext, uow: Any, name: str, payload: dict[str, object]
+    ) -> Any:
+        assert name == "core.external_action.get"
+        action_id = UUID(str(payload["external_action_id"]))
+        calls.append(action_id)
+        if action_id == ids["unavailable"]:
+            raise RuntimeError("synthetic provider unavailable")
+        if action_id == ids["missing"]:
+            raise OperationRefused("not_found", "synthetic missing action")
+        if action_id == ids["malformed"]:
+            return _MalformedAction(
+                {"external_action_id": action_id, "state": "pending"}
+            )
+        if action_id == ids["mismatch"]:
+            return _MalformedAction(
+                {
+                    "external_action_id": ids["good"],
+                    "state": "pending",
+                    "execution_job_id": None,
+                }
+            )
+        return real(ctx, uow, name, payload)
+
+    monkeypatch.setattr(routing_contract, "call_in_transaction", phase_read)
+    page = routing.call("leads.handoff.list", ref=opportunity.ref, limit=7)
+    assert page.ok, page
+    by_ref = {item.ref: item.action_phase for item in page.result.items}
+    assert list(by_ref) == [
+        local.ref,
+        terminal.ref,
+        missing.ref,
+        unavailable.ref,
+        malformed.ref,
+        mismatch.ref,
+        good.ref,
+    ]
+    assert by_ref[local.ref] is None
+    assert by_ref[good.ref] == "awaiting_approval"
+    assert set(by_ref.values()) == {None, "unknown", "awaiting_approval"}
+    assert set(calls) == set(ids.values())
+    assert len(calls) == 6
 
 
 def test_a_service_context_cannot_stage_a_handoff(routing: Routing) -> None:

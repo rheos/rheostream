@@ -188,5 +188,10 @@
     "path": "tests/fixtures/existing_bearer/unconfigured_401.json",
     "origin": "synthetic",
     "how": "captured at e68a5c9 (no file outside tests/ differs from base dda9f5e): an unauthenticated tools/list POST through build_mcp_app answered 401 with a bare Bearer challenge; content length normalized"
+  },
+  {
+    "path": "tests/fixtures/leads-current-handoff.json",
+    "origin": "synthetic",
+    "how": "hand-authored Leads to Current handoff acceptance authority: fixture labels, evidence modes, automated test references and seed/recipe steps over an invented Northwind client and Avery Chen contact; no real people, accounts or workspace data"
   }
 ]

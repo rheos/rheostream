@@ -353,10 +353,16 @@ def handoff_list(
             c.HandoffSummary(
                 ref=ref("handoff", row["id"]),
                 opportunity_ref=ref("opportunity", row["opportunity_id"]),
+                action_phase=routing.live_action_phase(
+                    ctx,
+                    uow,
+                    row["state"],
+                    row["external_action_id"],
+                ),
                 **{
                     field: row[field]
                     for field in c.HandoffSummary.model_fields
-                    if field not in {"ref", "opportunity_ref"}
+                    if field not in {"ref", "opportunity_ref", "action_phase"}
                 },
             )
             for row in rows[: m.limit]

@@ -313,6 +313,12 @@ HandoffState = Literal[
     "cancelled",
     "unresolved",
 ]
+ActionPhase = Literal[
+    "awaiting_approval",
+    "approved_queued",
+    "executing",
+    "unknown",
+]
 ProjectState = Literal["never_assigned", "linked", "cleared", "deleted"]
 
 
@@ -325,6 +331,7 @@ class HandoffSummary(Strict):
     purpose: str
     destination_ref: str | None
     state: HandoffState
+    action_phase: ActionPhase | None
     result_ref: str | None
     result_detail: str | None
     approval_id: UUID | None

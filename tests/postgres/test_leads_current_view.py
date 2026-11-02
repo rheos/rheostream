@@ -9,6 +9,7 @@ from conftest import ClusterSession
 from rheo_contracts import Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness
 from rheo_core.boundary.factories import context_from_token
+from rheo_core.operations.idempotency_tables import external_action
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_current.storage import tables as current_tables
 from rheo_leads import handoff_views
@@ -26,6 +27,8 @@ from postgres.test_leads_current_links import (
 pytestmark = pytest.mark.postgres
 
 VIEW = "leads.handoff.current_view"
+LIST = "leads.handoff.list"
+ACTION_GET = "core.external_action.get"
 LINK = "current.item.link_state"
 ITEM = "current.item.get"
 PROJECT = "current.project.get"
@@ -260,4 +263,49 @@ def test_current_view_writes_neither_module(routing: Routing) -> None:
     )
     before = [rows(table) for table in tables]
     view(routing, result)
+    assert [rows(table) for table in tables] == before
+
+
+def test_narrowed_viewer_keeps_current_visible_when_phase_read_is_denied(
+    routing: Routing,
+) -> None:
+    pending_opportunity = routing.opportunity("Pending phase under a narrow token")
+    routing.qualify(pending_opportunity)
+    pending = routing.handoff(pending_opportunity, "narrow-pending")
+    pending_action = routing.row(pending)["external_action_id"]
+
+    delivered_handoff = delivered(routing)
+    project_ref = move_to_project(routing, delivered_handoff, "Visible project")
+    caller = restricted(routing, LIST, LINK, ITEM, PROJECT)
+    assert caller.operation_set == frozenset({LIST, VIEW, LINK, ITEM, PROJECT})
+
+    def rows(table: Any) -> list[dict[str, Any]]:
+        with open_unit_of_work(routing.ctx) as uow:
+            return [
+                dict(row) for row in uow.connection.execute(select(table)).mappings()
+            ]
+
+    tables = (
+        leads_tables.handoff,
+        leads_tables.handoff_snapshot,
+        external_action,
+        current_tables.item,
+        current_tables.project,
+        current_tables.source_item_link,
+    )
+    before = [rows(table) for table in tables]
+
+    denied = routing.call(ACTION_GET, caller, external_action_id=str(pending_action))
+    assert denied.state == "operation_not_permitted", denied
+    listed = routing.call(
+        LIST,
+        caller,
+        ref=pending_opportunity.ref,
+    )
+    assert listed.ok, listed
+    assert listed.result.items[0].action_phase == "unknown"
+    shown = view(routing, delivered_handoff, caller)
+    assert shown.item.state == "live"
+    assert shown.project.state == "live" and shown.project.ref == project_ref
+
     assert [rows(table) for table in tables] == before

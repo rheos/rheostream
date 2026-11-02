@@ -4,6 +4,7 @@ declarations that wire the consumer and the repair job."""
 
 import ast
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from rheo_core.operations.refusals import OperationRefused
@@ -12,6 +13,9 @@ from rheo_leads import current_links as links
 from rheo_leads import handoff_routing as r
 
 HANDOFF = "leads.handoff:00000000-0000-7000-8000-0000000000c1"
+ACTION_ID = UUID("00000000-0000-7000-8000-0000000000a1")
+NON_MAPPING_ACTION = r.ActionRead(None, missing=False)
+NON_MAPPING_ACTION.record = []  # type: ignore[assignment]
 
 ALLOWED = (
     # Request-time unavailable: a local handoff with no action, approval or job.
@@ -100,6 +104,103 @@ def test_handoff_payload_cannot_name_a_routing_field(reserved: str) -> None:
     with pytest.raises(OperationRefused) as refused:
         r.current_request(HANDOFF, 1, {"title": "x", reserved: "other"})
     assert refused.value.state == "input_invalid"
+
+
+@pytest.mark.parametrize(
+    ("record", "phase"),
+    [
+        (
+            {
+                "external_action_id": ACTION_ID,
+                "state": "pending",
+                "execution_job_id": None,
+            },
+            "awaiting_approval",
+        ),
+        (
+            {
+                "external_action_id": ACTION_ID,
+                "state": "pending",
+                "execution_job_id": UUID("00000000-0000-7000-8000-0000000000b1"),
+            },
+            "approved_queued",
+        ),
+        (
+            {
+                "external_action_id": ACTION_ID,
+                "state": "executing",
+                "execution_job_id": UUID("00000000-0000-7000-8000-0000000000b1"),
+            },
+            "executing",
+        ),
+    ],
+)
+def test_handoff_action_phase_allowlists_only_open_core_states(
+    record: dict[str, object], phase: str
+) -> None:
+    read = r.ActionRead(record, missing=False)
+    assert r.action_phase("pending", ACTION_ID, read) == phase
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        None,
+        r.ActionRead(None, missing=False),
+        r.ActionRead(None, missing=True),
+        r.ActionRead({"external_action_id": ACTION_ID}, missing=False),
+        r.ActionRead(
+            {
+                "external_action_id": ACTION_ID,
+                "state": "succeeded",
+                "execution_job_id": None,
+            },
+            missing=False,
+        ),
+        r.ActionRead(
+            {
+                "external_action_id": ACTION_ID,
+                "state": "new_open_state",
+                "execution_job_id": None,
+            },
+            missing=False,
+        ),
+        r.ActionRead(
+            {
+                "external_action_id": UUID("00000000-0000-7000-8000-0000000000a2"),
+                "state": "pending",
+                "execution_job_id": None,
+            },
+            missing=False,
+        ),
+        r.ActionRead(
+            {
+                "external_action_id": ACTION_ID,
+                "state": "pending",
+                "execution_job_id": "",
+            },
+            missing=False,
+        ),
+        r.ActionRead(
+            {
+                "external_action_id": ACTION_ID,
+                "state": "pending",
+                "execution_job_id": {"raw": "job"},
+            },
+            missing=False,
+        ),
+        NON_MAPPING_ACTION,
+    ],
+)
+def test_handoff_action_phase_fails_closed_for_uncertain_reads(
+    read: r.ActionRead | None,
+) -> None:
+    assert r.action_phase("pending", ACTION_ID, read) == "unknown"
+
+
+def test_handoff_action_phase_does_not_infer_from_ids_or_read_nonpending_rows() -> None:
+    assert r.action_phase("pending", None, None) == "unknown"
+    assert r.action_phase("succeeded", ACTION_ID, None) is None
 
 
 def _link(revision: int, **changes: object) -> dict[str, object]:

@@ -31,6 +31,7 @@ from rheo_core.work.schedules import ensure_module_schedule
 from sqlalchemy import update
 
 from rheo_leads.configuration import MODULE_ID
+from rheo_leads.pipeline_contracts import ActionPhase
 from rheo_leads.references import ref
 from rheo_leads.storage import pipeline as p
 
@@ -197,6 +198,55 @@ def read_action(ctx: WorkspaceContext, uow: UnitOfWork, action_id: UUID) -> Acti
     except OperationRefused as refused:
         return ActionRead(None, missing=refused.state == NOT_FOUND)
     return ActionRead(record.model_dump(), missing=False)
+
+
+def action_phase(
+    handoff_state: str,
+    action_id: UUID | None,
+    read: ActionRead | None,
+) -> ActionPhase | None:
+    """Allowlist the live open phase of one handoff without exposing core data."""
+    if handoff_state != "pending":
+        return None
+    if action_id is None or read is None or read.record is None:
+        return "unknown"
+    try:
+        record = read.record
+        published_action_id = record["external_action_id"]
+        if (
+            not isinstance(published_action_id, UUID)
+            or published_action_id != action_id
+        ):
+            return "unknown"
+        state = record["state"]
+        execution_job_id = record["execution_job_id"]
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return "unknown"
+    if execution_job_id is not None and not isinstance(execution_job_id, UUID):
+        return "unknown"
+    if state == "pending":
+        return "awaiting_approval" if execution_job_id is None else "approved_queued"
+    if state == "executing":
+        return "executing"
+    return "unknown"
+
+
+def live_action_phase(
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    handoff_state: str,
+    action_id: UUID | None,
+) -> ActionPhase | None:
+    """Read and derive one phase, containing any unreadable provider row."""
+    if handoff_state != "pending" or action_id is None:
+        return action_phase(handoff_state, action_id, None)
+    try:
+        read = read_action(ctx, uow, action_id)
+    except Exception:
+        # This is a viewer-only, fail-closed boundary. A provider failure or a
+        # malformed registered output affects this row only and never widens it.
+        read = None
+    return action_phase(handoff_state, action_id, read)
 
 
 def outcome_values(

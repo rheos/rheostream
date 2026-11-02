@@ -99,6 +99,10 @@ or is not ready, the projection is kept as it was. The job runs as a restricted
 service context naming only those two reads, and Leads never imports Current or
 reads its tables.
 
+The synthetic acceptance fixtures and disposable review stack for this journey are
+described in [the acceptance stack](../../docs/testing/leads-current-acceptance.md).
+They prepare a manual browser review and do not claim that it has passed.
+
 Permission records are explicit and scoped by party, purpose and channel. Withdrawal
 and suppression deny subsequent permission checks. Recallatron's existing eligibility
 check consumes the registered permission operation when installed. `ContactPermissionGuard`

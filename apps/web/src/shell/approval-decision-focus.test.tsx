@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { act, type ReactElement } from "react";
+import { createRoot, hydrateRoot, type Root } from "react-dom/client";
+import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -27,6 +28,31 @@ afterEach(async () => {
   container.remove();
 });
 
+/** Deliver `page` as server HTML, then hydrate it the way a document load does. */
+async function hydrateServerPage(page: ReactElement): Promise<{ host: HTMLDivElement; hydrated: Root }> {
+  const host = document.createElement("div");
+  host.innerHTML = renderToString(page);
+  document.body.append(host);
+  let hydrated!: Root;
+  await act(async () => {
+    hydrated = hydrateRoot(host, page);
+  });
+  // Let any post-hydration re-render and its effects settle before asserting.
+  await act(async () => {});
+  return { host, hydrated };
+}
+
+function ResolvedPage() {
+  return (
+    <>
+      <a href="#rheo-main">Skip to content</a>
+      <main id="rheo-main" tabIndex={-1}>
+        <ApprovalOutcomeHeading>Current item created</ApprovalOutcomeHeading>
+      </main>
+    </>
+  );
+}
+
 describe("approval decision focus transfer", () => {
   it("focuses the refreshed durable result heading after hydration", async () => {
     const refuse = async () => ({ state: "idle" as const, message: "" });
@@ -43,6 +69,39 @@ describe("approval decision focus transfer", () => {
     expect(heading?.textContent).toBe("Current item created");
     expect(heading?.getAttribute("tabindex")).toBe("-1");
     expect(document.activeElement).toBe(heading);
+  });
+
+  it("leaves focus on the document when a resolved approval page loads without a decision", async () => {
+    (document.activeElement as HTMLElement | null)?.blur();
+    const { host, hydrated } = await hydrateServerPage(<ResolvedPage />);
+
+    const heading = host.querySelector("h1");
+    expect(heading?.textContent).toBe("Current item created");
+    expect(heading?.getAttribute("tabindex")).toBe("-1");
+    expect(document.activeElement).not.toBe(heading);
+    expect(document.activeElement).toBe(document.body);
+
+    await act(async () => hydrated.unmount());
+    host.remove();
+  });
+
+  it("focuses the outcome heading when a decision replaces a hydrated review in place", async () => {
+    const refuse = async () => ({ state: "idle" as const, message: "" });
+    const review = <ApprovalDecisionForms refuse={refuse} />;
+    const { host, hydrated } = await hydrateServerPage(review);
+    host.querySelector("button")!.focus();
+
+    // The decision's refresh swaps the review for the durable result on the client.
+    await act(async () => {
+      hydrated.render(<ResolvedPage />);
+    });
+
+    const heading = host.querySelector("h1");
+    expect(heading?.textContent).toBe("Current item created");
+    expect(document.activeElement).toBe(heading);
+
+    await act(async () => hydrated.unmount());
+    host.remove();
   });
 
   it("focuses an action failure summary while retaining live-alert semantics", async () => {

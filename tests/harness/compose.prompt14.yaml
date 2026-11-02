@@ -1,0 +1,88 @@
+services:
+  postgres:
+    ports: !reset []
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  core:
+    image: ${RHEO_PROMPT14_CORE_IMAGE:?set by tests/harness/prompt14.sh}
+    ports:
+      - "${RHEO_PROMPT14_CORE_PORT:-8000}:8000"
+    environment:
+      RHEO__modules__installed: ${RHEO_PROMPT14_MODULES:-relationships,leads,current}
+      # The authority Core prints into every absolute link (the web tier reads
+      # routing config from Core). base_host stays port-free; without this the
+      # links name port 80 while the browser is served by the front below.
+      RHEO__routing__public_host: localhost:${RHEO_PROMPT14_WEB_PORT:-3000}
+    volumes:
+      - rheodata:/var/lib/rheo-stream
+      - ../tests:/app/tests:ro
+
+  # Declared for the build and the ownership proof only. prompt14.sh never starts
+  # it: the seed runs every worker visit itself, so approved-queued and executing
+  # fixtures stay durable for the audit.
+  worker:
+    image: ${RHEO_PROMPT14_CORE_IMAGE:?set by tests/harness/prompt14.sh}
+    environment:
+      RHEO__modules__installed: ${RHEO_PROMPT14_MODULES:-relationships,leads,current}
+    volumes:
+      - rheodata:/var/lib/rheo-stream
+      - ../tests:/app/tests:ro
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    image: ${RHEO_PROMPT14_WEB_IMAGE:?set by tests/harness/prompt14.sh}
+    depends_on:
+      core:
+        condition: service_healthy
+    environment:
+      RHEO_PROFILE: development
+      RHEO_INTERNAL_SECRET: rheo_dev_only_internal_secret
+      RHEO_CORE_INTERNAL_API_URL: http://core:8100
+      RHEO_CORE_INTERNAL_URL: http://core:8000
+      RHEO_CORE_PUBLIC_URL: http://core:8000
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/healthz', {signal: AbortSignal.timeout(4000)}).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
+
+  # The single-origin front a real deployment's reverse proxy provides: /auth/* to
+  # core, everything else to web, so the browser on host port 3000 reaches the
+  # ordinary /auth endpoints. Same web image, Node built-ins only.
+  front:
+    image: ${RHEO_PROMPT14_WEB_IMAGE:?set by tests/harness/prompt14.sh}
+    depends_on:
+      web:
+        condition: service_healthy
+    command: ["node", "/harness/front_proxy.mjs"]
+    volumes:
+      - ../tests/harness:/harness:ro
+    ports:
+      - "${RHEO_PROMPT14_WEB_PORT:-3000}:3000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/healthz', {signal: AbortSignal.timeout(4000)}).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  pgdata:
+    name: ${RHEO_PROMPT14_PROJECT:?}_pgdata
+    labels:
+      dev.rheo.prompt14.project: ${RHEO_PROMPT14_PROJECT:?}
+  rheodata:
+    name: ${RHEO_PROMPT14_PROJECT:?}_rheodata
+    labels:
+      dev.rheo.prompt14.project: ${RHEO_PROMPT14_PROJECT:?}

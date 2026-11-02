@@ -155,6 +155,18 @@ export function formInput(
       assessment: { ...assessment, author: "human" },
     };
   }
+  if (operation === "leads.handoff.request") {
+    return {
+      ...base,
+      payload: {
+        title: values.title ?? "",
+        body: values.body ?? "",
+        priority: values.priority ?? "",
+        area: (values.area ?? "").trim() || null,
+        due_on: (values.due_on ?? "").trim() || null,
+      },
+    };
+  }
   return { ...base, ...values };
 }
 export function ActionForm({
