@@ -1127,7 +1127,6 @@ function QualificationHandoffSlot({
   shell,
   resource,
   qualified,
-  section,
   opportunityRef,
   revision,
   title,
@@ -1136,7 +1135,6 @@ function QualificationHandoffSlot({
   shell: ShellApi;
   resource: Promise<HandoffSnapshot>;
   qualified: boolean;
-  section: boolean;
   opportunityRef: string;
   revision: unknown;
   title: string;
@@ -1155,19 +1153,11 @@ function QualificationHandoffSlot({
       title={title}
     />
   );
-  const body = (
+  return (
     <>
       {stale ? <QualificationStaleWarning /> : null}
       {content}
     </>
-  );
-  return section ? (
-    <section className={styles.section}>
-      <h2>Qualification handoff</h2>
-      {body}
-    </section>
-  ) : (
-    body
   );
 }
 
@@ -1215,7 +1205,11 @@ export async function detail({ shell, query }: ScreenProps) {
     result.state === "ok"
       ? await read(shell, "leads.qualification.list", { ref: envelope.ref })
       : null;
-  const opportunityRef = result.state === "ok" ? str(envelope.ref) : null;
+  // Job-search opportunities never hand off to Current, so they read no handoffs.
+  const isJob =
+    result.state === "ok" && record.preset_id === JOBSEARCH_PRESET_ID;
+  const opportunityRef =
+    result.state === "ok" && !isJob ? str(envelope.ref) : null;
   const handoffOffset = handoffPageOffset(query.handoff_offset);
   const handoffHistoryResource = loadHandoffSnapshot(
     shell,
@@ -1238,10 +1232,9 @@ export async function detail({ shell, query }: ScreenProps) {
     ? assessmentStale(qualification, record, envelope.revision)
     : false;
   // A job-search opportunity gets the job header: its card projection, read once.
-  const jobResult =
-    result.state === "ok" && record.preset_id === JOBSEARCH_PRESET_ID
-      ? await read(shell, "leads.ui.queue", { ref: envelope.ref })
-      : null;
+  const jobResult = isJob
+    ? await read(shell, "leads.ui.queue", { ref: envelope.ref })
+    : null;
   const job = jobResult ? items(jobResult)[0] : undefined;
   const proposalResult = job
     ? await read(shell, "leads.jobproposal.get", { ref: envelope.ref })
@@ -1287,20 +1280,6 @@ export async function detail({ shell, query }: ScreenProps) {
           back={shell.href("queue")}
         />
       ) : null}
-      {result.state === "ok" && record.preset_id === JOBSEARCH_PRESET_ID ? (
-        <Suspense fallback={null}>
-          <QualificationHandoffSlot
-            shell={shell}
-            resource={handoffSummaryResource}
-            qualified={Boolean(record.qualification)}
-            section
-            opportunityRef={str(envelope.ref)}
-            revision={envelope.revision}
-            title={str(record.title) || "Opportunity"}
-            stale={qualificationIsStale}
-          />
-        </Suspense>
-      ) : null}
       {job && proposal ? (
         <ProposalWorkflow
           submit={shell.submit}
@@ -1316,7 +1295,7 @@ export async function detail({ shell, query }: ScreenProps) {
       ) : (
         <>
           <RecordFor
-            job={record.preset_id === JOBSEARCH_PRESET_ID}
+            job={isJob}
             shell={shell}
             record={record}
             base={base}
@@ -1597,7 +1576,6 @@ export async function detail({ shell, query }: ScreenProps) {
                         shell={shell}
                         resource={handoffSummaryResource}
                         qualified
-                        section={false}
                         opportunityRef={str(envelope.ref)}
                         revision={envelope.revision}
                         title={str(record.title) || "Opportunity"}
@@ -1804,24 +1782,26 @@ export async function detail({ shell, query }: ScreenProps) {
             </aside>
             </div>
           </RecordFor>
-          <Suspense
-            fallback={
-              <CurrentHandoffHistory
+          {isJob ? null : (
+            <Suspense
+              fallback={
+                <CurrentHandoffHistory
+                  shell={shell}
+                  result={null}
+                  views={new Map()}
+                  opportunityRef={str(envelope.ref)}
+                  offset={handoffOffset}
+                />
+              }
+            >
+              <HandoffHistorySlot
                 shell={shell}
-                result={null}
-                views={new Map()}
+                resource={handoffHistoryResource}
                 opportunityRef={str(envelope.ref)}
                 offset={handoffOffset}
               />
-            }
-          >
-            <HandoffHistorySlot
-              shell={shell}
-              resource={handoffHistoryResource}
-              opportunityRef={str(envelope.ref)}
-              offset={handoffOffset}
-            />
-          </Suspense>
+            </Suspense>
+          )}
         </>
       )}
     </Frame>
