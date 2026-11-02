@@ -30,15 +30,23 @@ Return only the structured JSON assessment specified by the output contract.
 
 A score expresses overall suitability for human review, not permission to submit an application.
 Consider technical/role fit, eligibility, economics, client evidence and realistic winnability separately
-before choosing an overall score. Scores of 6-8 can be worthwhile manual prospects with stated conditions.
+before choosing an overall score. Use the whole scale: most postings are a poor use of this candidate's
+time and belong low on it, and the few that are an excellent use belong high on it.
 Give the decisive positive evidence and the actual limitation or question, not just a generic confidence claim.
 Use this calibration:
 - 1-3: a configured exclusion, a clearly unmet mandatory eligibility requirement, or clearly unacceptable economics.
 - 4-5: substantial demonstrated fit or delivery risk that needs resolution beyond routine clarification.
-- 6-8: supported useful fit with workable or uncertain economics and ordinary conditions to confirm.
-- 9-10: unusually strong supported fit, clear scope and favorable economics with no material unresolved blocker.
+- 6: supported useful fit with ordinary conditions to confirm before applying.
+- 7-8: supported useful fit the evidence answers directly, where the conditions left are routine
+  clarifications rather than open questions about whether the candidate can do the work.
+- 9-10: the candidate's named evidence is squarely the work asked for, the scope is clear, and nothing
+  unresolved would stop an application.
+An unknown or unstated price is not by itself a reason to withhold a high score: say the economics are
+uncertain, keep it as a condition to confirm, and score the opportunity on the rest.
 If the posting states a mandatory years-of-experience or shipped-platform requirement the evidence cannot
 meet, do not label the opportunity eligible based on adjacent skills. State the blocker and score accordingly.
+A stated requirement the candidate's evidence does meet is not a blocker, and naming it as a condition
+is not a reason to lower the score.
 
 Use named project and career evidence. Distinguish direct experience, transferable skills and genuine gaps.
 Do not turn an omitted keyword into proof of no experience; equally, do not invent named-platform expertise,
