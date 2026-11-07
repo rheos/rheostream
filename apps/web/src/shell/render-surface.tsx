@@ -20,10 +20,10 @@ import type { RoutingConfig } from "@/lib/routing/config";
 import { recordHref } from "@/lib/routing/record-href";
 import {
   approvalHref,
-  approvalLoginHref,
   homeHref,
-  loginHref,
   logoutAction,
+  postLoginReturn,
+  restartSignInHref,
   switcherAction,
 } from "@/lib/routing/links";
 import { loadRoutingConfig } from "@/lib/routing/load";
@@ -265,19 +265,41 @@ function StatusPanel({ heading, children }: { heading: string; children: ReactNo
   );
 }
 
+/** The page this request asked for, as the absolute URL `/auth/restart` returns to. */
+function currentPage(config: RoutingConfig, request: SurfaceRequest): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(request.query)) {
+    if (value !== undefined) {
+      params.set(key, value);
+    }
+  }
+  const search = params.toString();
+  return `${config.scheme}://${request.host}${request.pathname}${search ? `?${search}` : ""}`;
+}
+
+/**
+ * This panel only shows behind a cookie core refused (the middleware redirects a
+ * request with none), and only this host can clear it. So sign-in goes through
+ * `/auth/restart` here rather than straight to the identity host, which would sign in
+ * and leave the dead cookie in place (#528).
+ */
 function sessionStatus(
   config: RoutingConfig,
   session: SignedOut,
+  request: SurfaceRequest,
   approval: string | undefined = undefined,
 ): ReactNode {
   if (session.state === "unavailable") {
     return <p className={panel.line}>session: unavailable</p>;
   }
-  const signIn = approval === undefined ? loginHref(config) : approvalLoginHref(config, approval);
+  const returnTarget =
+    approval === undefined
+      ? currentPage(config, request)
+      : (approvalHref(config, approval) ?? postLoginReturn(config));
   return (
     <>
       <p className={panel.line}>session: signed out ({session.refusal})</p>
-      <a className={panel.action} href={signIn ?? loginHref(config)}>
+      <a className={panel.action} href={restartSignInHref(config, returnTarget)}>
         {approval === undefined ? "Sign in" : "Sign in to continue"}
       </a>
     </>
@@ -344,6 +366,7 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
               sessionStatus(
                 decision.config,
                 decision.session,
+                request,
                 approvalRoute ? request.query.approval_id : undefined,
               )
             )}

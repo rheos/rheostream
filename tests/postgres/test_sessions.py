@@ -665,6 +665,229 @@ async def test_a_grant_with_a_mismatched_nonce_cookie_is_invalid_grant(
     assert resp.json() == {"state": INVALID_GRANT}
 
 
+# --- #528: a dead session cookie on an application host -----------------------
+
+
+_RESTART_PAGE = "/dashboard?tab=open"
+
+
+def _hosts_for(mode: str) -> tuple[str, str]:
+    """``(application host, identity host)``: one and the same in path mode."""
+    return (BASE_HOST, BASE_HOST) if mode == "path" else (SHELL_HOST, IDENTITY_HOST)
+
+
+def _kill_session(cluster: ClusterSession, session_id: UUID, how: str) -> None:
+    values = (
+        {"expires_at": datetime.now(UTC) - timedelta(seconds=5)}
+        if how == "expired"
+        else {"revoked_at": datetime.now(UTC)}
+    )
+    with cluster.backend.control_engine.begin() as connection:
+        connection.execute(
+            control_tables.session.update()
+            .where(control_tables.session.c.id == session_id)
+            .values(**values)
+        )
+
+
+def _hold_session_cookie(
+    client: httpx.AsyncClient, account_id: UUID, host: str
+) -> UUID:
+    """A session with a secret on ``host``, whose cookie this browser now holds."""
+    row = create_session(account_id)
+    secret = mint_host_secret(row.id, host)
+    client.cookies.set(SESSION_COOKIE, secret.hex(), domain=host)
+    return row.id
+
+
+@pytest.mark.parametrize("mode", ["path", "subdomain"])
+@pytest.mark.parametrize("how", ["expired", "revoked"])
+async def test_restart_clears_a_dead_cookie_and_returns_to_the_same_page(
+    mode: str,
+    how: str,
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    owner_account_id: UUID,
+) -> None:
+    _set_routing_mode(monkeypatch, mode)
+    host, _identity = _hosts_for(mode)
+    async with _client() as client:
+        session_id = _hold_session_cookie(client, owner_account_id, host)
+        _kill_session(cluster, session_id, how)
+        resp = await client.get(
+            f"https://{host}/auth/restart",
+            params={"return": f"https://{host}{_RESTART_PAGE}"},
+        )
+    assert resp.status_code == 302
+    assert resp.headers["location"] == _RESTART_PAGE
+    cleared = _cookie_headers(resp, SESSION_COOKIE)
+    assert len(cleared) == 1
+    assert _cookie_value(cleared[0]) == ""
+    _assert_cookie_attrs(cleared[0])
+
+
+async def test_restart_never_clears_a_live_cookie(
+    monkeypatch: pytest.MonkeyPatch, cluster: ClusterSession, owner_account_id: UUID
+) -> None:
+    """It is a GET, so anyone can link to it: a live session must survive that."""
+    _set_routing_mode(monkeypatch, "subdomain")
+    async with _client() as client:
+        session_id = _hold_session_cookie(client, owner_account_id, SHELL_HOST)
+        resp = await client.get(
+            f"https://{SHELL_HOST}/auth/restart",
+            params={"return": f"https://{SHELL_HOST}{_RESTART_PAGE}"},
+        )
+    assert resp.status_code == 302
+    assert resp.headers["location"] == _RESTART_PAGE
+    assert _cookie_headers(resp, SESSION_COOKIE) == []
+    with cluster.backend.control_engine.connect() as connection:
+        revoked_at = connection.execute(
+            select(control_tables.session.c.revoked_at).where(
+                control_tables.session.c.id == session_id
+            )
+        ).scalar_one()
+    assert revoked_at is None
+
+
+@pytest.mark.parametrize(
+    "return_target",
+    [
+        f"https://{IDENTITY_HOST}/",  # an application host, but not this one
+        "https://elsewhere.test/",
+        "/dashboard",
+        "",
+    ],
+)
+async def test_restart_refuses_a_return_that_is_not_this_host(
+    return_target: str,
+    monkeypatch: pytest.MonkeyPatch,
+    cluster: ClusterSession,
+    owner_account_id: UUID,
+) -> None:
+    _set_routing_mode(monkeypatch, "subdomain")
+    async with _client() as client:
+        session_id = _hold_session_cookie(client, owner_account_id, SHELL_HOST)
+        _kill_session(cluster, session_id, "expired")
+        resp = await client.get(
+            f"https://{SHELL_HOST}/auth/restart", params={"return": return_target}
+        )
+    assert resp.status_code == 400
+    assert resp.json() == {"state": INVALID_RETURN}
+    assert resp.headers.get_list("set-cookie") == []
+
+
+@pytest.mark.parametrize(
+    "return_target",
+    [
+        f"https://{SHELL_HOST}//evil.test/x",
+        f"https://{SHELL_HOST}///evil.test/x",
+        f"https://{SHELL_HOST}/\\evil.test/x",
+        f"https://{SHELL_HOST}/\t/evil.test/x",
+        # Python reads this host as the shell's; a browser reads it as evil.test.
+        f"https://evil.test\\@{SHELL_HOST}/x",
+    ],
+)
+async def test_restart_cannot_be_turned_into_an_open_redirect(
+    return_target: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_routing_mode(monkeypatch, "subdomain")
+    async with _client() as client:
+        resp = await client.get(
+            f"https://{SHELL_HOST}/auth/restart", params={"return": return_target}
+        )
+    assert resp.status_code == 302
+    location = resp.headers["location"]
+    assert location.startswith("/")
+    assert not location.startswith(("//", "/\\", "/%5C", "/%5c"))
+    assert urlsplit(location).netloc == ""
+
+
+async def test_continue_cannot_be_turned_into_an_open_redirect(
+    monkeypatch: pytest.MonkeyPatch, cluster: ClusterSession, owner_account_id: UUID
+) -> None:
+    """The identity host's same-host branch redirects to ``return``'s path, so a path
+    of ``//evil.test`` must not come out as a scheme-relative ``Location``."""
+    _set_routing_mode(monkeypatch, "subdomain")
+    async with _client() as client:
+        _hold_session_cookie(client, owner_account_id, IDENTITY_HOST)
+        resp = await client.get(
+            f"https://{IDENTITY_HOST}/auth/continue",
+            params={"return": f"https://{IDENTITY_HOST}//evil.test/x"},
+        )
+    assert resp.status_code == 302
+    assert not resp.headers["location"].startswith("//")
+
+
+async def test_dead_cookie_with_a_live_identity_session_ends_signed_in_on_the_page(
+    monkeypatch: pytest.MonkeyPatch, cluster: ClusterSession, owner_account_id: UUID
+) -> None:
+    """The whole way out, the case the flagship hit: the identity host is fine, the
+    module host holds a dead cookie. Steps the web middleware does are spelled out."""
+    _set_routing_mode(monkeypatch, "subdomain")
+    target = f"https://{SHELL_HOST}{_RESTART_PAGE}"
+    async with _client() as client:
+        dead = _hold_session_cookie(client, owner_account_id, SHELL_HOST)
+        _kill_session(cluster, dead, "expired")
+        live = _hold_session_cookie(client, owner_account_id, IDENTITY_HOST)
+
+        restart = await client.get(
+            f"https://{SHELL_HOST}/auth/restart", params={"return": target}
+        )
+        assert restart.status_code == 302
+        # The jar now holds an empty value, which the middleware treats as no cookie:
+        # it mints a nonce and redirects to the identity host.
+        assert not client.cookies.get(SESSION_COOKIE, domain=SHELL_HOST)
+        nonce = f"nonce-{uuid7().hex}"
+        client.cookies.set(CONTINUE_COOKIE, nonce, domain=SHELL_HOST)
+        grant = await client.get(
+            f"https://{IDENTITY_HOST}/auth/continue",
+            params={"return": target, "nonce": nonce},
+        )
+        assert grant.status_code == 302
+        consumed = await client.get(
+            f"https://{SHELL_HOST}/auth/continue",
+            params={"code": _code_of(grant.headers["location"]), "return": target},
+        )
+    assert consumed.status_code == 302
+    assert consumed.headers["location"] == _RESTART_PAGE
+    fresh = _cookie_value(_cookie_headers(consumed, SESSION_COOKIE)[0])
+    assert _session_id_for_secret(cluster, fresh, SHELL_HOST) == live
+
+
+async def test_dead_cookie_with_a_dead_identity_session_reaches_the_provider(
+    monkeypatch: pytest.MonkeyPatch, cluster: ClusterSession, owner_account_id: UUID
+) -> None:
+    """No loop when everything is dead: the browser reaches sign-in, carrying the
+    page, and the callback brings it back there."""
+    _set_routing_mode(monkeypatch, "subdomain")
+    subject = f"restart-{uuid7().hex[:12]}"
+    identity = _bind_identity(cluster, owner_account_id, subject=subject)
+    target = f"https://{SHELL_HOST}{_RESTART_PAGE}"
+    async with _client() as client:
+        for host in (SHELL_HOST, IDENTITY_HOST):
+            dead = _hold_session_cookie(client, owner_account_id, host)
+            _kill_session(cluster, dead, "expired")
+
+        restart = await client.get(
+            f"https://{SHELL_HOST}/auth/restart", params={"return": target}
+        )
+        assert restart.status_code == 302
+        hop = await client.get(
+            f"https://{IDENTITY_HOST}/auth/continue",
+            params={"return": target, "nonce": "any-nonce"},
+        )
+        assert hop.status_code == 302
+        login_location = urlsplit(hop.headers["location"])
+        assert login_location.path == "/auth/login"
+        assert dict(parse_qsl(login_location.query))["return"] == target
+        with _signed_in_as(identity):
+            callback = await _login_and_callback(
+                client, host=IDENTITY_HOST, return_target=target
+            )
+    assert callback.status_code == 302
+    assert callback.headers["location"] == target
+
+
 # --- B18: cross-host logout resolves session_revoked -------------------------
 
 
