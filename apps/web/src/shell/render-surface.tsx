@@ -29,7 +29,7 @@ import {
 import { loadRoutingConfig } from "@/lib/routing/load";
 import { resolveRequest, type ResolvedRequest } from "@/lib/routing/resolve";
 import { urlFor } from "@/lib/routing/url-for";
-import { activeWorkspaceName, type SessionResult } from "@/lib/session";
+import { activeWorkspaceName, isDeadSessionRefusal, type SessionResult } from "@/lib/session";
 import { MODULES } from "@/modules.generated";
 import {
   composeNavigation,
@@ -279,9 +279,11 @@ function currentPage(config: RoutingConfig, request: SurfaceRequest): string {
 
 /**
  * This panel only shows behind a cookie core refused (the middleware redirects a
- * request with none), and only this host can clear it. So sign-in goes through
- * `/auth/restart` here rather than straight to the identity host, which would sign in
- * and leave the dead cookie in place (#528).
+ * request with none). A dead session's cookie can only be cleared from this host, so
+ * sign-in goes through `/auth/restart` here rather than straight to the identity host,
+ * which would sign in and leave that cookie in place (#528). A live session pointed at
+ * a workspace it can no longer open is not dead, and `/auth/restart` rightly leaves it
+ * alone, so that one gets sign-out, and signing back in picks a workspace again.
  */
 function sessionStatus(
   config: RoutingConfig,
@@ -291,6 +293,17 @@ function sessionStatus(
 ): ReactNode {
   if (session.state === "unavailable") {
     return <p className={panel.line}>session: unavailable</p>;
+  }
+  if (!isDeadSessionRefusal(session.refusal)) {
+    return (
+      <>
+        <p className={panel.line}>session: signed out ({session.refusal})</p>
+        <p className={panel.detail}>
+          This session can no longer open its workspace. Sign out, then sign in again.
+        </p>
+        <LogoutForm action={logoutAction(config)} />
+      </>
+    );
   }
   const returnTarget =
     approval === undefined

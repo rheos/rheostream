@@ -162,6 +162,25 @@ describe("an unauthenticated request in path mode", () => {
   });
 });
 
+describe("a session cookie core has already cleared", () => {
+  // `/auth/restart` clears by overwriting with an empty value, not by expiring. If this
+  // counted as a cookie, the page would stay signed out and sign-in would do nothing (#528).
+  it("counts as no cookie, so the host starts the continue hop", async () => {
+    const middleware = await middlewareWith(SUBDOMAIN_CONFIG);
+    const response = await middleware(
+      requestFor("https://leads.example.test/jobs", {
+        headers: { host: "leads.example.test" },
+        cookie: "rheo_session=",
+      }),
+    );
+
+    const target = new URL(response.headers.get("location") as string);
+    expect(target.host).toBe("auth.example.test");
+    expect(target.pathname).toBe("/auth/continue");
+    expect(target.searchParams.get("return")).toBe("https://leads.example.test/jobs");
+  });
+});
+
 describe("requests the middleware passes through", () => {
   it("passes a request carrying a session cookie straight through", async () => {
     const middleware = await middlewareWith(SUBDOMAIN_CONFIG);
