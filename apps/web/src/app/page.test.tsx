@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CoreHealthResult } from "@/lib/core-health";
 import type { RoutingConfig } from "@/lib/routing/config";
-import { homeHref, loginHref, logoutAction, switcherAction } from "@/lib/routing/links";
+import { homeHref, logoutAction, restartSignInHref, switcherAction } from "@/lib/routing/links";
 import type { RoutingConfigResult } from "@/lib/routing/load";
 import type { SessionResult } from "@/lib/session";
 
@@ -138,7 +138,9 @@ describe("shell home page", () => {
     seams.session = { state: "unauthenticated", refusal: "session_expired" };
     const html = await render();
     expect(html).toContain("session: signed out (session_expired)");
-    const href = loginHref(CONFIG).replaceAll("&", "&amp;");
+    // The same host, back to this page: only this host can clear its dead cookie (#528).
+    const page = `${CONFIG.scheme}://circuit.example.test/`;
+    const href = restartSignInHref(CONFIG, page).replaceAll("&", "&amp;");
     expect(html).toMatch(new RegExp(`<a [^>]*href="${escapeRegExp(href)}"[^>]*>Sign in</a>`));
     expect(html).not.toContain("data-switcher-action");
     expect(html).not.toContain("Sign out");

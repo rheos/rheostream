@@ -106,6 +106,18 @@ async function render(request: Parameters<typeof renderSurface>[0]): Promise<str
   return renderToStaticMarkup(await renderSurface(request));
 }
 
+/** The signed-out panel's link, with the HTML escaping of its `&` undone. */
+function signInHref(html: string, label: string): string {
+  const href = html.match(new RegExp(`href="([^"]+)"[^>]*>${label}<`))?.[1];
+  expect(href).toBeDefined();
+  return href!.replaceAll("&amp;", "&");
+}
+
+/** The `return` a same-host `/auth/restart?...` link carries. */
+function returnOf(href: string): string {
+  return new URLSearchParams(href.split("?")[1]).get("return") ?? "";
+}
+
 function answer(body: unknown, statusCode = 200): Response {
   return new Response(JSON.stringify(body), { status: statusCode });
 }
@@ -239,6 +251,44 @@ describe("module screens through the real composition", () => {
     expect(html).not.toContain('type="search"');
     expect(html).not.toMatch(NAV);
   });
+
+  // #528: this panel only shows behind a dead cookie, and only the host holding that
+  // cookie can clear it, so the way out must stay here and come back to this page.
+  it("restarts sign-in on this host and returns to this exact page", async () => {
+    seams.session = { state: "unauthenticated", refusal: "session_expired" };
+    const request = moduleRequest("/search", { q: "kinds of tea" });
+    const html = await render(request);
+    const href = signInHref(html, "Sign in");
+    expect(href.startsWith("/auth/restart?")).toBe(true);
+    expect(returnOf(href)).toBe(
+      `${ROUTED.scheme}://${request.host}${request.pathname}?q=kinds+of+tea`,
+    );
+  });
+
+  // A live session core refuses is not dead, so `/auth/restart` would leave it alone and
+  // the link would do nothing. Sign-out is the way forward for these.
+  it.each(["membership_missing", "workspace_unavailable"])(
+    "offers sign-out, not a sign-in that cannot help, for %s",
+    async (refusal) => {
+      seams.session = { state: "unauthenticated", refusal };
+      const html = await render(moduleRequest("/search"));
+      expect(html).toContain(`session: signed out (${refusal})`);
+      expect(html).toContain(">Sign out</button>");
+      expect(html).not.toContain("Sign in");
+      expect(html).not.toContain("/auth/restart");
+      expect(html).not.toContain('type="search"');
+    },
+  );
+
+  it.each(["session_missing", "session_expired", "session_revoked"])(
+    "offers the sign-in restart, not sign-out, for %s",
+    async (refusal) => {
+      seams.session = { state: "unauthenticated", refusal };
+      const html = await render(moduleRequest("/search"));
+      expect(signInHref(html, "Sign in").startsWith("/auth/restart?")).toBe(true);
+      expect(html).not.toContain(">Sign out</button>");
+    },
+  );
 });
 
 describe("the shell-owned approval route", () => {
@@ -253,13 +303,24 @@ describe("the shell-owned approval route", () => {
     seams.session = { state: "unauthenticated", refusal: "session_expired" };
     const html = await render(APPROVAL_REQUEST);
     expect(html).toContain("Sign in to continue");
-    const href = html.match(/href="([^"]+)"[^>]*>Sign in to continue/)?.[1];
-    expect(href).toBeDefined();
-    const login = new URL(href!);
-    const returnTo = new URL(login.searchParams.get("return")!);
+    const href = signInHref(html, "Sign in to continue");
+    expect(href.startsWith("/auth/restart?")).toBe(true);
+    const returnTo = new URL(returnOf(href));
+    expect(returnTo.host).toBe(APPROVAL_REQUEST.host);
     expect(returnTo.pathname.endsWith("/approvals/detail")).toBe(true);
     expect(returnTo.searchParams.get("approval_id")).toBe(APPROVAL_ID);
     expect(seams.calls).not.toContain("core.approval.preview");
+  });
+
+  it("returns a junk approval id to the shell root, not to the id it was given", async () => {
+    seams.session = { state: "unauthenticated", refusal: "session_expired" };
+    const html = await render({
+      ...APPROVAL_REQUEST,
+      query: { approval_id: "https://evil.test/x" },
+    });
+    const href = signInHref(html, "Sign in to continue");
+    expect(returnOf(href)).toBe(urlFor(ROUTED, "shell", "/"));
+    expect(href).not.toContain("evil.test");
   });
 
   it("keeps no-workspace sessions fully outside approval content", async () => {

@@ -7,12 +7,12 @@ import type { RoutingConfig } from "@/lib/routing/config";
 import {
   approvalHref,
   approvalId,
-  approvalLoginHref,
   callbackUrl,
   continueHref,
   loginHref,
   logoutAction,
   postLoginReturn,
+  restartSignInHref,
   switcherAction,
 } from "@/lib/routing/links";
 
@@ -103,6 +103,15 @@ describe(`links in ${MODE} mode`, () => {
     }
   });
 
+  it("keeps the sign-in restart on the current host, carrying the page (#528)", () => {
+    // Bare path for the same reason as logout: the dead cookie it clears is
+    // host-only, so an absolute URL on the identity host could never reach it.
+    const target = "https://leads.example.test/jobs?stage=review";
+    const href = restartSignInHref(CONFIG, target);
+    expect(href.startsWith("/auth/restart?")).toBe(true);
+    expect(new URLSearchParams(href.split("?")[1]).get("return")).toBe(target);
+  });
+
   it("builds an absolute continue hop on the identity host", () => {
     const href = continueHref(CONFIG, {
       returnTarget: "https://circuit.example.test/reports",
@@ -150,18 +159,7 @@ describe("links across both modes", () => {
     for (const value of ["", "not-an-id", "/approvals/detail", "https://evil.test/x"]) {
       expect(approvalId(value)).toBeNull();
       expect(approvalHref(CONFIGS.path, value)).toBeNull();
-      expect(approvalLoginHref(CONFIGS.path, value)).toBeNull();
     }
-  });
-
-  it("returns signed-out people to that exact bounded approval URL", () => {
-    const href = approvalLoginHref(CONFIGS.subdomain, APPROVAL_ID);
-    expect(href).not.toBeNull();
-    const login = new URL(href!);
-    expect(login.host).toBe("auth.example.test");
-    expect(login.searchParams.get("return")).toBe(
-      approvalHref(CONFIGS.subdomain, APPROVAL_ID),
-    );
   });
 
   it("puts the sign-in link on a different host than the shell in subdomain mode", () => {

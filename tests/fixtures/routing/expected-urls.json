@@ -8,6 +8,7 @@
   { "mode": "path", "surface": "mcp", "path": "/", "expected": "https://example.test/mcp/" },
   { "mode": "path", "identity_path": true, "path": "/continue", "expected": "/auth/continue" },
   { "mode": "path", "identity_path": true, "path": "/logout", "expected": "/auth/logout" },
+  { "mode": "path", "identity_path": true, "path": "/restart", "expected": "/auth/restart" },
   { "mode": "path", "identity_path": true, "path": "/session/workspace", "expected": "/auth/session/workspace" },
   { "mode": "path", "application_hosts": ["example.test"] },
 
@@ -20,6 +21,7 @@
   { "mode": "subdomain", "surface": "mcp", "path": "/", "expected": "https://mcp.example.test/" },
   { "mode": "subdomain", "identity_path": true, "path": "/continue", "expected": "/auth/continue" },
   { "mode": "subdomain", "identity_path": true, "path": "/logout", "expected": "/auth/logout" },
+  { "mode": "subdomain", "identity_path": true, "path": "/restart", "expected": "/auth/restart" },
   { "mode": "subdomain", "identity_path": true, "path": "/session/workspace", "expected": "/auth/session/workspace" },
   { "mode": "subdomain", "application_hosts": ["auth.example.test", "circuit.example.test"] }
 ]

@@ -392,11 +392,19 @@ reverse proxy cannot strip what is sent to a different server. This specificatio
   implementation (criterion 22); login CSRF in path mode is covered by the OAuth `state` cookie
   ([the identity-provider boundary](#the-identity-provider-boundary-d6-fr-3)).
 - Logout on any host revokes the session row; every other host's secret now resolves to a
-  revoked session and its cookie is cleared on its next request.
+  revoked session.
+- A dead cookie (expired or revoked session) on an application host passes the web tier, which
+  only checks that a cookie is present, and gets the signed-out panel. Its sign-in link is
+  `GET /auth/restart?return=<this page>` on that same host, because a host-only cookie can only be
+  cleared from its own host: the route refuses a `return` naming any other host with
+  `invalid_return`, clears the cookie only if its session is dead, and redirects to the return
+  path, where the steps above run as for a request with no cookie. A live session that core refuses
+  because it can no longer open its workspace gets sign-out on that panel instead.
 
 CSRF: the `/auth/*` POSTs check `Origin` against the routing configuration's host set and refuse
-`origin_not_allowed` otherwise; they are the only state-changing browser requests today, and any
-Next.js server action or route handler the web tier later adds for a state change does the same.
+`origin_not_allowed` otherwise; apart from `GET /auth/restart`, which needs no such check because
+it only forgets a cookie whose session is already dead, they are the only state-changing browser
+requests today, and any Next.js server action or route handler the web tier later adds for a state change does the same.
 The `api` and `mcp` surfaces accept no cookie, so they need no CSRF defence. CORS: no
 `Access-Control-Allow-Origin` is emitted anywhere; `api.cors_origins` (a deployment setting,
 empty) is reserved for a later second front end and is not declared yet. The first-party web tier
