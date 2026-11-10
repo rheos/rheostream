@@ -95,6 +95,7 @@ OPTIONAL_FIELDS = frozenset(
         "execution_guards",
         "destinations",
         "keyed_compatibility",
+        "package_sets",
     }
 )
 
@@ -220,8 +221,9 @@ def test_the_model_carries_ratified_and_external_execution_fields() -> None:
         "execution_guards",
         "destinations",
         "keyed_compatibility",
+        "package_sets",
     }
-    assert len(ModuleManifest.model_fields) == 28
+    assert len(ModuleManifest.model_fields) == 29
 
 
 def test_only_explicit_optional_and_default_empty_fields_are_optional() -> None:
@@ -927,6 +929,17 @@ def _completion_manifest(
             authorization_completion=completion,
         )
     )
+
+
+def test_package_sets_defaults_to_default_and_takes_only_the_two_values() -> None:
+    """``explicit_only`` keeps every named package set off the module (see
+    ``rheo_core.tokens.sets``); nothing else is a value."""
+    assert ModuleManifest(**_fields()).package_sets == "default"
+    opt_in = ModuleManifest(**_fields(package_sets="explicit_only"))
+    assert opt_in.package_sets == "explicit_only"
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        ModuleManifest(**_fields(package_sets="read_only"))
+    assert "package_sets" in _locations(excinfo.value)
 
 
 def test_no_authorization_completion_is_allowed() -> None:

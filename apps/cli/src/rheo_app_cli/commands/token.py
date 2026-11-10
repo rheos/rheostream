@@ -63,7 +63,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[
     issue = commands.add_parser("issue", help="mint a token; prints the raw value once")
     issue.add_argument("--account", required=True, type=UUID, metavar="ACCOUNT_ID")
     issue.add_argument("--workspace", required=True, type=UUID, metavar="WORKSPACE_ID")
-    issue.add_argument("--set", dest="set_name", required=True, metavar="NAME")
+    issue.add_argument(
+        "--set",
+        dest="set_name",
+        required=True,
+        metavar="NAME",
+        help="read_only, agent_default, cli_full, alert_writer, or "
+        "module_read:<module_id> for an explicit_only module",
+    )
     issue.add_argument("--kind", required=True, choices=["cli", "mcp"])
     issue.add_argument(
         "--discover",

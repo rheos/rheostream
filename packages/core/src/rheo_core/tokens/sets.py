@@ -17,6 +17,15 @@ The fourth is enumerated on purpose, so it cannot grow when an operation is adde
   ``current.item.close_by_source``, intersected with the registered names. It is
   the token an external service holds to open and close alert items in Current.
 
+**A module whose manifest says ``package_sets = "explicit_only"`` is outside all
+four.** Each evaluator subtracts every operation such a module registered
+(:func:`explicit_only_operations`), so no rule-set issuance, no existing set name and
+no connector grant (``agent_default``, bounded by role) reaches it, whatever the
+module adds later. The one named set that does is ``module_read:<module_id>``
+(:func:`module_read`): that module's ``READ`` operations and nothing else, resolved
+only for a loaded ``explicit_only`` module, so the operator command, which takes only
+a set name, can issue the opt-in. :func:`package_set` resolves both kinds of name.
+
 :class:`ToolRegistry` is also the MCP facade's tool table
 (``apps/mcp/src/rheo_app_mcp/tools.py`` lists exactly what this registry holds --
 one declaration site, read from both directions, so the façade and this module's
@@ -76,6 +85,7 @@ case-by-case.
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Final
 from uuid import UUID
 
@@ -547,7 +557,8 @@ def register_core_tools(
 
 def read_only() -> frozenset[str]:
     """Every registered operation of ``SafetyClass.READ``, except the
-    discover-then-call grant (see :data:`DISCOVER_THEN_CALL_OPERATION`)."""
+    discover-then-call grant (see :data:`DISCOVER_THEN_CALL_OPERATION`) and any
+    ``explicit_only`` module's."""
     from rheo_core.operations.registry import REGISTRY  # deferred, see docstring
 
     names: set[str] = set()
@@ -556,7 +567,7 @@ def read_only() -> frozenset[str]:
         assert registered is not None  # names() and lookup() share one table
         if registered.declaration.safety_class is SafetyClass.READ:
             names.add(name)
-    return frozenset(names)
+    return frozenset(names) - explicit_only_operations()
 
 
 def agent_default() -> frozenset[str]:
@@ -567,20 +578,30 @@ def agent_default() -> frozenset[str]:
     because ``register`` refused it -- names no operation here. The
     discover-then-call grant is subtracted: the three tools naming it are the one
     mode switch, and a set that carried it would flip every ``agent_default`` token
-    into that mode.
+    into that mode. An ``explicit_only`` module's operations are subtracted too, so
+    its tools never reach a set every agent token and connector grant is cut from.
     """
     from rheo_core.operations.registry import REGISTRY  # deferred, see docstring
 
     declared = frozenset(tool.operation for tool in TOOL_REGISTRY.declarations())
-    return (declared & REGISTRY.names()) - {DISCOVER_THEN_CALL_OPERATION}
+    return (
+        (declared & REGISTRY.names())
+        - {DISCOVER_THEN_CALL_OPERATION}
+        - explicit_only_operations()
+    )
 
 
 def cli_full() -> frozenset[str]:
-    """Every registered operation except :data:`NON_TOKEN_ISSUABLE` and the
-    discover-then-call grant."""
+    """Every registered operation except :data:`NON_TOKEN_ISSUABLE`, the
+    discover-then-call grant and any ``explicit_only`` module's."""
     from rheo_core.operations.registry import REGISTRY  # deferred, see docstring
 
-    return REGISTRY.names() - NON_TOKEN_ISSUABLE - {DISCOVER_THEN_CALL_OPERATION}
+    return (
+        REGISTRY.names()
+        - NON_TOKEN_ISSUABLE
+        - {DISCOVER_THEN_CALL_OPERATION}
+        - explicit_only_operations()
+    )
 
 
 ALERT_WRITER_OPERATIONS: Final[frozenset[str]] = frozenset(
@@ -601,7 +622,71 @@ def alert_writer() -> frozenset[str]:
     """
     from rheo_core.operations.registry import REGISTRY  # deferred, see docstring
 
-    return ALERT_WRITER_OPERATIONS & REGISTRY.names()
+    return (ALERT_WRITER_OPERATIONS & REGISTRY.names()) - explicit_only_operations()
+
+
+def explicit_only_modules() -> frozenset[str]:
+    """The loaded modules whose manifest says ``package_sets = "explicit_only"``.
+
+    Read from the loader's table at call time, never stored, like the sets
+    themselves. A module reaches the operation registry only through the loader,
+    which records its manifest in the same step, so every registered module
+    operation has its manifest here.
+    """
+    from rheo_core.modules.loader import loaded_manifests  # deferred, see docstring
+
+    return frozenset(
+        module_id
+        for module_id, manifest in loaded_manifests().items()
+        if manifest.package_sets == "explicit_only"
+    )
+
+
+def explicit_only_operations() -> frozenset[str]:
+    """Every registered operation owned by an ``explicit_only`` module, which every
+    named package set except that module's own ``module_read`` subtracts."""
+    from rheo_core.operations.registry import REGISTRY  # deferred, see docstring
+
+    modules = explicit_only_modules()
+    if not modules:
+        return frozenset()
+    names: set[str] = set()
+    for name in REGISTRY.names():
+        registered = REGISTRY.lookup(name)
+        assert registered is not None  # names() and lookup() share one table
+        if registered.module_id in modules:
+            names.add(name)
+    return frozenset(names)
+
+
+MODULE_READ_PREFIX: Final = "module_read:"
+"""``module_read:<module_id>`` names the opt-in set of one ``explicit_only`` module."""
+
+
+def module_read(module_id: str) -> frozenset[str]:
+    """Every registered ``READ`` operation of ``module_id``, when it is a loaded
+    ``explicit_only`` module; empty for any other module, so a default module's
+    reads come only through ``read_only`` and its role bound, as before."""
+    from rheo_core.operations.registry import REGISTRY  # deferred, see docstring
+
+    if module_id not in explicit_only_modules():
+        return frozenset()
+    names: set[str] = set()
+    for name in REGISTRY.names() - {DISCOVER_THEN_CALL_OPERATION}:
+        registered = REGISTRY.lookup(name)
+        assert registered is not None  # names() and lookup() share one table
+        if (
+            registered.module_id == module_id
+            and registered.declaration.safety_class is SafetyClass.READ
+        ):
+            names.add(name)
+    return frozenset(names)
+
+
+def explicit_only_reads() -> frozenset[str]:
+    """Every loaded ``explicit_only`` module's :func:`module_read` set, together:
+    what the operator command's permitted set adds so it can issue one of them."""
+    return frozenset().union(*(module_read(m) for m in explicit_only_modules()))
 
 
 PACKAGE_SETS: Final[dict[str, Callable[[], frozenset[str]]]] = {
@@ -612,3 +697,17 @@ PACKAGE_SETS: Final[dict[str, Callable[[], frozenset[str]]]] = {
 }
 """Name -> evaluator, for ``issue.py``'s named-set resolution (``rheo token issue
 --set <name>``). Each callable evaluates against the process-wide ``REGISTRY``."""
+
+
+def package_set(name: str) -> Callable[[], frozenset[str]] | None:
+    """The evaluator a set name names: one of :data:`PACKAGE_SETS`, or
+    ``module_read:<module_id>`` for a loaded ``explicit_only`` module. ``None`` for
+    anything else, a ``module_read`` of a default or unknown module included."""
+    evaluator = PACKAGE_SETS.get(name)
+    if evaluator is not None:
+        return evaluator
+    if name.startswith(MODULE_READ_PREFIX):
+        module_id = name.removeprefix(MODULE_READ_PREFIX)
+        if module_id in explicit_only_modules():
+            return partial(module_read, module_id)
+    return None

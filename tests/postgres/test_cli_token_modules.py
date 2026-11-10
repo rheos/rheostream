@@ -24,25 +24,40 @@ in the session. Each table is swapped for a copy (or a fresh instance) through
 
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from importlib.metadata import EntryPoint
+from typing import Final
 from uuid import UUID
 
 import pytest
 from conftest import ClusterSession
-from harness.modules import install
+from harness.modules import install, manifest, publish
+from pydantic import BaseModel, ConfigDict
 from rheo_app_cli.main import main
+from rheo_contracts import (
+    AuditSpec,
+    Idempotency,
+    OperationDeclaration,
+    Role,
+    SafetyClass,
+    ToolDeclaration,
+    WorkspaceContext,
+)
 from rheo_core.audit import sink as sink_module
 from rheo_core.deletion.registry import OwnedDeletionRegistry
+from rheo_core.modules import ENTRY_POINT_GROUP, discovered
 from rheo_core.modules import loader as loader_module
 from rheo_core.operations.registry import REGISTRY
 from rheo_core.redaction.registry import RenderingRegistry
 from rheo_core.refs.resolver import RESOLVERS
 from rheo_core.settings.schema import REGISTRY as SETTINGS_REGISTRY
 from rheo_core.settings.schema import SettingsRegistry
+from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.control_plane import (
     get_access_token,
     list_access_token_operations,
 )
-from rheo_core.tokens.sets import TOOL_REGISTRY
+from rheo_core.tokens.issue import connector_operations
+from rheo_core.tokens.sets import PACKAGE_SETS, TOOL_REGISTRY
 
 pytestmark = pytest.mark.postgres
 
@@ -204,3 +219,179 @@ def test_a_module_the_allowlist_does_not_name_stays_out(
     stored = _stored_operations(cluster, err)
     assert "core.workspace.status" in stored
     assert not {name for name in stored if name.startswith(f"{RECALLATRON}.")}
+
+
+# --- explicit_only modules: no named package set reaches them ---------------------
+
+VAULT: Final = "vault_probe"
+VAULT_GET: Final = f"{VAULT}.entry.get"
+VAULT_LIST: Final = f"{VAULT}.entry.list"
+VAULT_ADD: Final = f"{VAULT}.entry.add"
+
+
+class _VaultInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+
+class _VaultOutput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+
+def _vault_handler(
+    ctx: WorkspaceContext, uow: UnitOfWork, model_input: _VaultInput
+) -> _VaultOutput:
+    raise AssertionError("token issuance never dispatches a module operation")
+
+
+class _VaultSink:
+    def record(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+def _vault_operation(
+    name: str, safety_class: SafetyClass
+) -> tuple[OperationDeclaration, object]:
+    return (
+        OperationDeclaration(
+            name=name,
+            safety_class=safety_class,
+            roles=frozenset({Role.OWNER}),
+            input_model=_VaultInput,
+            output=_VaultOutput,
+            idempotency=Idempotency.NONE,
+            audit=None
+            if safety_class is SafetyClass.READ
+            else AuditSpec(subject_field=None),
+        ),
+        _vault_handler,
+    )
+
+
+def _vault_tool(
+    name: str, operation: str, safety_class: SafetyClass
+) -> ToolDeclaration:
+    return ToolDeclaration(
+        name=name,
+        safety_class=safety_class,
+        operation=operation,
+        input_model=_VaultInput,
+    )
+
+
+VAULT_MANIFEST: Final = manifest(
+    VAULT,
+    package_sets="explicit_only",
+    operations=(
+        _vault_operation(VAULT_GET, SafetyClass.READ),
+        _vault_operation(VAULT_LIST, SafetyClass.READ),
+        _vault_operation(VAULT_ADD, SafetyClass.MUTATE),
+    ),
+    tools=(
+        _vault_tool(f"{VAULT}_get", VAULT_GET, SafetyClass.READ),
+        _vault_tool(f"{VAULT}_add", VAULT_ADD, SafetyClass.MUTATE),
+    ),
+    audit_sink=_VaultSink(),
+)
+"""A fabricated opt-in module: two reads (one with a tool), one mutate with a tool.
+Owner-only, so an owner's role reaches every operation and only the set decides."""
+
+
+@pytest.fixture
+def vault_beside_current(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Discovery sees the real Current and the fabricated opt-in module, and the
+    deployment allows both, so the command loads both."""
+    current = [entry for entry in discovered() if entry.name == CURRENT]
+    assert current
+    publish(
+        monkeypatch,
+        *current,
+        EntryPoint(
+            name=VAULT, value=f"{__name__}:VAULT_MANIFEST", group=ENTRY_POINT_GROUP
+        ),
+    )
+    install(monkeypatch, CURRENT, VAULT)
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "vault_beside_current")
+@pytest.mark.parametrize(
+    ("set_name", "kind"),
+    [("read_only", "cli"), ("cli_full", "cli"), ("agent_default", "mcp")],
+)
+def test_no_named_package_set_reaches_an_explicit_only_module(
+    capsys: pytest.CaptureFixture[str],
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+    set_name: str,
+    kind: str,
+) -> None:
+    code, _, err = _issue(
+        capsys, workspace, owner_account_id, set_name=set_name, kind=kind
+    )
+
+    assert code == 0, err
+    stored = _stored_operations(cluster, err)
+    assert "current.item.get" in stored  # the default module beside it still counts
+    assert not {name for name in stored if name.startswith(f"{VAULT}.")}
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "vault_beside_current")
+def test_every_set_evaluator_and_the_connector_grant_skip_it(
+    capsys: pytest.CaptureFixture[str],
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """Every evaluator, ``alert_writer`` included, and the snapshot an OAuth connector
+    grant takes, which is ``agent_default`` bounded by the member's role."""
+    code, _, err = _issue(
+        capsys, workspace, owner_account_id, set_name="read_only", kind="cli"
+    )
+    assert code == 0, err  # the command loaded both modules into this process
+    assert {VAULT_GET, VAULT_LIST, VAULT_ADD} <= REGISTRY.names()
+
+    for name, evaluator in PACKAGE_SETS.items():
+        assert not {op for op in evaluator() if op.startswith(f"{VAULT}.")}, name
+    granted = connector_operations(Role.OWNER)
+    assert "current.item.get" in granted
+    assert not {op for op in granted if op.startswith(f"{VAULT}.")}
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "vault_beside_current")
+def test_module_read_issues_exactly_the_opt_in_modules_reads(
+    capsys: pytest.CaptureFixture[str],
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """The operator command takes only a named set, so the opt-in is one: its reads,
+    tool or not, and nothing else, not even the core's own reads."""
+    code, out, err = _issue(
+        capsys, workspace, owner_account_id, set_name=f"module_read:{VAULT}", kind="mcp"
+    )
+
+    assert code == 0, err
+    assert out.startswith("rheo_mcp_")
+    assert _stored_operations(cluster, err) == {VAULT_GET, VAULT_LIST}
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "vault_beside_current")
+@pytest.mark.parametrize("module_id", [CURRENT, "absent_probe", ""])
+def test_module_read_refuses_a_default_or_unknown_module(
+    capsys: pytest.CaptureFixture[str],
+    workspace: UUID,
+    owner_account_id: UUID,
+    module_id: str,
+) -> None:
+    """``module_read`` exists for opt-in modules only: a default module is already
+    reached by the rule sets, and an unknown one names nothing."""
+    code, out, err = _issue(
+        capsys,
+        workspace,
+        owner_account_id,
+        set_name=f"module_read:{module_id}",
+        kind="mcp",
+    )
+
+    assert code == 1
+    assert out == ""
+    assert err.startswith("set_not_issuable"), err

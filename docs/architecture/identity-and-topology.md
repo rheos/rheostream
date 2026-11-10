@@ -133,7 +133,7 @@ rechecked from `control.membership` at every presentation):
 | Issuing authority | Its permitted set | What `core.token.issue` does |
 | --- | --- | --- |
 | A web session | Every operation whose declared roles include the account's role in the target workspace. | Expands the named package set against the registry, intersects with that set, strips the non-token-issuable set, refuses `set_empty` if nothing remains, and snapshots the rest. A member's `cli_full` is therefore the member's full set, not the owner's. |
-| The operator command | The package sets, for the target account. | May name only a package set (never an explicit list); expands it, intersects with the operations the target account's role permits, strips the non-token-issuable set, and snapshots. `--discover` adds `core.tool.call` to the expansion ([discover-then-call](runtime-and-mcp.md#discover-then-call)). |
+| The operator command | The package sets, plus the `read` operations of every `explicit_only` module (so `module_read:<module_id>` can be issued), for the target account. | May name only a package set (never an explicit list); expands it, intersects with the operations the target account's role permits, strips the non-token-issuable set, and snapshots. `--discover` adds `core.tool.call` to the expansion ([discover-then-call](runtime-and-mcp.md#discover-then-call)). |
 | The core's `runtime` package, for a run | The permitted set of the actor that started the run: that actor's own token snapshot when it is a token, or the role-permitted set when it is an account. | Takes the explicit list of operations the run's permitted tools name, intersects with that set, strips the non-token-issuable set, and snapshots; a run can therefore never reach past the person or token that started it, however the operation's tool needs are declared. |
 | A connector grant (`connector`) | The `agent_default` set, for the approving account's role in the workspace chosen on the consent page. | Not `core.token.issue`: `issue_connector_token` computes `(agent_default & role-permitted) - non-token-issuable - {core.tool.call}`, the bound an operator issuance of `agent_default` gets minus the discover grant, refuses `set_empty` if nothing remains, and snapshots it once with `set_name = agent_default`. A refresh never re-snapshots, so a later role change narrows it only through the role recheck at presentation. |
 
@@ -150,6 +150,16 @@ registry at issuance the same way:
 | `agent_default` | Every operation named by a registered MCP tool ([tool set](runtime-and-mcp.md#the-mcp-facade)). | The reads, drafts, and mutates a tool exposes, plus the request right for the three deletion tools' `core.record.delete`; by construction no configuration, token, grant, or approval operation, because none has a tool. |
 | `cli_full` | Every registered operation except the non-token-issuable set. | Everything the account's role permits, including configuration operations for an owner, minus the six operations no token may carry. |
 | `alert_writer` | Exactly `current.item.create` and `current.item.close_by_source`, enumerated on purpose so the set never grows when an operation is added. | The two Current writes an external alert writer needs (a probe, a guardrail, a form): open an item and close it by its source pair. Issued per writer as a `cli` token by the operator command. Empty when Current is not installed, so issuance refuses `set_empty`. |
+
+A module can opt out of all four. A manifest that declares `package_sets = "explicit_only"` has
+every one of its operations subtracted from each set, so no existing token, no rule-set issuance
+and no connector grant (which is `agent_default`) ever reaches it, whatever it adds later. The one
+set that does is `module_read:<module_id>`: that module's `read` operations and nothing else,
+resolved only for a loaded `explicit_only` module and refused `set_not_issuable` for any other.
+It is how the operator command, which takes only a set name, issues the opt-in
+(`rheo token issue --set module_read:<module_id> --kind mcp`); the operator's permitted set holds
+those reads for that reason, never the module's writes. A session issuer can still name the
+module's operations in an explicit list its role permits.
 
 None of the four contains `core.tool.call`, the discover-then-call grant: each rule subtracts it
 and `alert_writer` does not name it, so it reaches a snapshot only when an issuance asks for it

@@ -16,11 +16,12 @@ docstring describes in full).
 ``issue``'s pipeline: resolve the issuing authority from ``ctx`` (a session
 issuer's permitted set is every operation whose declared roles include the
 account's role in the target workspace; an operator issuer's permitted set is
-the union of the three rule-based package sets, intersected with the *target
-account's* role in the target workspace, since an operator context carries no
-role of its own that means anything here; the fourth set, the enumerated
-``alert_writer``, needs no place in that union because ``cli_full`` already holds
-both of its operations) -> expand the named set or the
+the union of the three rule-based package sets and every ``explicit_only``
+module's reads, intersected with the *target account's* role in the target
+workspace, since an operator context carries no role of its own that means
+anything here; the fourth set, the enumerated ``alert_writer``, needs no place in
+that union because ``cli_full`` already holds both of its operations) -> expand the
+named set (``sets.package_set``, ``module_read:<module_id>`` included) or the
 explicit list -> intersect with the issuer's permitted set -> strip
 :data:`~rheo_core.tokens.policy.NON_TOKEN_ISSUABLE` (an **explicit** list naming
 one of the ten is refused ``SET_NOT_ISSUABLE`` naming the operation; a **named
@@ -72,9 +73,11 @@ from rheo_core.tokens.format import mint
 from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
 from rheo_core.tokens.sets import (
     DISCOVER_THEN_CALL_OPERATION,
-    PACKAGE_SETS,
+    MODULE_READ_PREFIX,
     agent_default,
     cli_full,
+    explicit_only_reads,
+    package_set,
     read_only,
 )
 
@@ -198,8 +201,14 @@ def _expand(model_input: TokenIssueInput) -> frozenset[str]:
         return requested
     set_name = model_input.set_name
     assert set_name is not None
-    resolver = PACKAGE_SETS.get(set_name)
+    resolver = package_set(set_name)
     if resolver is None:
+        if set_name.startswith(MODULE_READ_PREFIX):
+            raise OperationRefused(
+                SET_NOT_ISSUABLE,
+                f"{set_name!r} names no loaded module whose package_sets is "
+                "explicit_only",
+            )
         raise OperationRefused(SET_NOT_ISSUABLE, f"unknown package set {set_name!r}")
     return resolver()
 
@@ -227,7 +236,8 @@ def _issuer_permitted_set(
     test harness's ``context_for_harness``) issues only for its own account,
     with every operation ``ctx.role`` could ever be granted. An operator issuer
     names the target account explicitly and is bounded by the union of the
-    three rule-based package sets *for that account's own role* in this workspace, since
+    three rule-based package sets and the ``explicit_only`` modules' reads *for that
+    account's own role* in this workspace, since
     ``Role.OPERATOR`` itself carries no membership-shaped permission here.
     """
     if ctx.actor.kind is ActorKind.ACCOUNT:
@@ -255,9 +265,16 @@ def _issuer_permitted_set(
             )
         # The grant is outside every named set by construction, so it joins the
         # union here: it is the one operation a ``--discover`` issuance adds, and it
-        # grants nothing a call through it is not already judged against.
+        # grants nothing a call through it is not already judged against. An
+        # ``explicit_only`` module's reads are outside the three rule sets for the
+        # same reason and join it too, so ``module_read:<module_id>``, the one set
+        # that names them, can be issued; its writes never join.
         package_union = (
-            read_only() | agent_default() | cli_full() | {DISCOVER_THEN_CALL_OPERATION}
+            read_only()
+            | agent_default()
+            | cli_full()
+            | explicit_only_reads()
+            | {DISCOVER_THEN_CALL_OPERATION}
         )
         return (
             target_account_id,

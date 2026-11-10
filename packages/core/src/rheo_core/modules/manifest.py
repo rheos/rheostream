@@ -41,7 +41,7 @@ import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Annotated, Final, Protocol, Self, TypeVar
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, Self, TypeVar
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from pydantic import (
@@ -1205,6 +1205,15 @@ class ModuleManifest(BaseModel):
     has one: one of this module's own operations, declared for the owner alone (see
     :func:`check_authorization_completion`). ``None`` for every module without a
     connector authorization flow."""
+    package_sets: Literal["default", "explicit_only"] = "default"
+    """Whether the named package sets reach this module's operations.
+
+    ``default``: ``read_only``, ``agent_default`` and ``cli_full`` take them by their
+    rules. ``explicit_only``: no named package set ever does, so no existing token,
+    rule-set issuance or connector grant reaches the module. A token reaches it only
+    by naming it: ``module_read:<module_id>`` (its ``READ`` operations, the one set the
+    operator command can issue for it) or an explicit operation list a session
+    issuer's own role permits (``rheo_core.tokens.sets``)."""
 
     @model_validator(mode="after")
     def _check_invariants(self) -> Self:
