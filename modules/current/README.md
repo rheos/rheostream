@@ -144,9 +144,10 @@ those reads.
 The service role on create, update and set_status is for a module job that keeps its
 own reminder items in Current. It calls them in-process through `call_in_transaction`,
 with a restricted service context from core's boundary factory that names exactly the
-operations it may run, so a refusal rolls back the job's whole transaction. A service
-context still cannot close by source, comment, change dependencies, or touch projects,
-areas or deletes.
+operations it may run. A refusal raises `OperationRefused`; a job that lets it
+propagate has its whole transaction rolled back by the worker, while one that catches
+it and returns keeps whatever it already wrote. A service context still cannot close
+by source, comment, change dependencies, or touch projects, areas or deletes.
 
 Updates are compare-and-set on the revision and answer `record_stale` when it moved on.
 A null or omitted update field stays as it is; `clear` names the optional fields to
