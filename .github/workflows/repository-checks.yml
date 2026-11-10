@@ -76,6 +76,24 @@ jobs:
               /opt/claude/bin/claude --version
             ' | tee /tmp/claude-cli-version.txt
           grep -q '^2\.1\.257 ' /tmp/claude-cli-version.txt
+      # #533: statement parsers shell out to pdftotext, so it must run in the
+      # built image with no network. The step also reports the image's size and
+      # the packages the apt layer adds over the slim base, with their installed
+      # size, so a later change to that line shows what it costs.
+      - name: pdftotext runs offline in the core image
+        run: |
+          docker run --rm --network none rheo-core sh -c 'pdftotext -v 2>&1' \
+            | tee /tmp/pdftotext-version.txt
+          grep -q '^pdftotext version ' /tmp/pdftotext-version.txt
+          echo "core image size: $(docker image inspect -f '{{.Size}}' rheo-core) bytes"
+          base=$(sed -n 's/^FROM //p' Dockerfile)
+          docker run --rm "$base" dpkg-query -W -f '${Package}\n' \
+            | sort > /tmp/base-packages.txt
+          docker run --rm --network none rheo-core \
+            dpkg-query -W -f '${Package}\t${Installed-Size}\n' \
+            | sort > /tmp/core-packages.txt
+          echo "packages over $base (name, installed KiB):"
+          join -t "$(printf '\t')" -v 1 /tmp/core-packages.txt /tmp/base-packages.txt
       - name: Build the web image
         run: docker build -t rheo-web -f apps/web/Dockerfile .
       # A web image that builds is not yet one that serves: `next start` must
