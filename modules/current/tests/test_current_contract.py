@@ -420,6 +420,26 @@ def test_close_by_source_is_a_member_mutate_with_its_tool() -> None:
     }
 
 
+def test_only_create_update_and_set_status_admit_the_service_role_to_write() -> None:
+    """A module job files and moves its own reminder items in-process with a
+    restricted service context; no other Current write is open to a service."""
+    service_writes = {
+        d.name
+        for d, _ in OPERATIONS
+        if d.safety_class is not SafetyClass.READ and Role.SERVICE in d.roles
+    }
+    assert service_writes == {
+        "current.item.create",
+        "current.item.update",
+        "current.item.set_status",
+    }
+    for declaration, _ in OPERATIONS:
+        if declaration.name in service_writes:
+            assert declaration.roles == frozenset(
+                {Role.OWNER, Role.MEMBER, Role.SERVICE}
+            )
+
+
 def test_close_tool_states_its_own_refusals_and_the_rest_keep_the_suffix() -> None:
     descriptions = {t.name: t.description for t in MANIFEST.tools}
     close = descriptions[CLOSE_TOOL]

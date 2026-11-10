@@ -28,9 +28,12 @@ from rheo_core.deletion.tables import deletion_record
 from rheo_core.events import ConsumerRegistry
 from rheo_core.operations import dispatch, register_core_operations
 from rheo_core.operations.dispatch import OperationOutcome
+from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.tool_facade import call_registered_tool
+from rheo_core.operations.transaction import call_in_transaction
 from rheo_core.refs import uuid7
 from rheo_core.refs.resolver import register_resolver
+from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_tables import audit_record, outbox_event
 from rheo_current import MANIFEST
@@ -809,3 +812,72 @@ def test_close_by_source_refuses_service_and_operator_callers(
         assert close(caller).state == "role_not_permitted"
     member = current.as_role(Role.MEMBER, "member-close")
     assert closed(close(member))[0]
+
+
+SERVICE_ITEM_WRITES = frozenset(
+    {
+        "current.item.create",
+        "current.item.get",
+        "current.item.update",
+        "current.item.set_status",
+    }
+)
+
+
+def test_a_service_context_writes_items_in_its_own_transaction(
+    current: Current,
+) -> None:
+    """A module job holding core's restricted service context, granted exactly
+    create, get, update and set_status, runs them in-process through
+    ``call_in_transaction``: it files a sourced item, folds a repeat into it, edits
+    it and moves it, all in its own transaction. Every other Current write still
+    refuses the service role, even when the context names it."""
+    widened = SERVICE_ITEM_WRITES | {
+        "current.item.close_by_source",
+        "current.item.comment",
+        "current.project.create",
+    }
+    with open_unit_of_work(current.ctx) as uow:
+        service = context_for_event_consumer(
+            current.workspace, uow, request_id=uuid7(), operation_names=widened
+        )
+    assert isinstance(service, WorkspaceContext) and service.role is Role.SERVICE
+
+    with open_unit_of_work(service) as outer:
+        # The view the worker hands a job handler: same connection, sealed.
+        job = HandlerUnitOfWork(outer, consumers=current.consumers)
+
+        def call(name: str, **payload: Any) -> Any:
+            return call_in_transaction(
+                service,
+                job,
+                "current." + name,
+                payload,
+                registry=current.surfaces.operations,
+            )
+
+        created = call("item.create", title="Synthetic bill due", **PROBE)
+        assert created.action == "created" and created.item is not None
+        ref = created.item.ref
+        repeat = call("item.create", title="Synthetic bill due", **PROBE)
+        assert repeat.action == "grouped" and repeat.item.ref == ref
+        edited = call(
+            "item.update", ref=ref, revision=repeat.item.revision, body="Pay it."
+        )
+        moved = call(
+            "item.set_status", ref=ref, revision=edited.revision, status="waiting"
+        )
+        assert call("item.get", ref=ref).revision == moved.revision
+        for name, payload in (
+            ("item.close_by_source", PAIR),
+            ("item.comment", {"ref": ref, "body": "A service note."}),
+            ("project.create", {"title": "Synthetic project"}),
+        ):
+            with pytest.raises(OperationRefused) as refused:
+                call(name, **payload)
+            assert refused.value.state == "role_not_permitted", name
+        outer.commit()
+
+    item = current.get(ref)
+    assert (item.status, item.body) == ("waiting", "Pay it.")
+    assert current.count(t.item) == 1
