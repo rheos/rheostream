@@ -147,7 +147,8 @@ with a restricted service context from core's boundary factory that names exactl
 operations it may run. A refusal raises `OperationRefused`; a job that lets it
 propagate has its whole transaction rolled back by the worker, while one that catches
 it and returns keeps whatever it already wrote. A service context still cannot close
-by source, comment, change dependencies, or touch projects, areas or deletes.
+by source, comment, change dependencies, create or edit projects or areas, or delete.
+It may still set an item's area or project on create and update, as any writer can.
 
 Updates are compare-and-set on the revision and answer `record_stale` when it moved on.
 A null or omitted update field stays as it is; `clear` names the optional fields to
