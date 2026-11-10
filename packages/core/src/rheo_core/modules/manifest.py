@@ -1209,8 +1209,10 @@ class ModuleManifest(BaseModel):
     """Whether the named package sets reach this module's operations.
 
     ``default``: ``read_only``, ``agent_default`` and ``cli_full`` take them by their
-    rules. ``explicit_only``: no named package set ever does, so no existing token,
-    rule-set issuance or connector grant reaches the module. A token reaches it only
+    rules. ``explicit_only``: no named package set ever does, so no rule-set
+    issuance or connector grant snapshotted while it is loaded reaches the module
+    (snapshots never change: set it from the module's first release, or revoke the
+    tokens issued before switching it). A token reaches it only
     by naming it: ``module_read:<module_id>`` (its ``READ`` operations, the one set the
     operator command can issue for it) or an explicit operation list a session
     issuer's own role permits (``rheo_core.tokens.sets``)."""

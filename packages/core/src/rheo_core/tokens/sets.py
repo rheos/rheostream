@@ -20,8 +20,11 @@ The fourth is enumerated on purpose, so it cannot grow when an operation is adde
 **A module whose manifest says ``package_sets = "explicit_only"`` is outside all
 four.** Each evaluator subtracts every operation such a module registered
 (:func:`explicit_only_operations`), so no rule-set issuance, no existing set name and
-no connector grant (``agent_default``, bounded by role) reaches it, whatever the
-module adds later. The one named set that does is ``module_read:<module_id>``
+no connector grant (``agent_default``, bounded by role) taken after it loads reaches
+it, whatever the module adds later. A snapshot never changes, so this is a property
+of a module that is ``explicit_only`` from its first load; switching a loaded
+``default`` module over leaves earlier snapshots holding what they held until they
+are revoked. The one named set that does is ``module_read:<module_id>``
 (:func:`module_read`): that module's ``READ`` operations and nothing else, resolved
 only for a loaded ``explicit_only`` module, so the operator command, which takes only
 a set name, can issue the opt-in. :func:`package_set` resolves both kinds of name.
