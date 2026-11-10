@@ -124,12 +124,12 @@ those reads.
 
 | Operation | Class | Roles | MCP tool |
 | --- | --- | --- | --- |
-| `current.item.create` | mutate | owner, member | `current_create` |
+| `current.item.create` | mutate | owner, member, service | `current_create` |
 | `current.item.get`, `current.item.list` | read | owner, member, service | `current_get`, `current_list` |
 | `current.item.link_state` | read | owner, member, service | none |
 | `current.item.create_external` | external, keyed | owner, member (stage only) | none |
-| `current.item.update` | mutate | owner, member | `current_update` |
-| `current.item.set_status` | mutate | owner, member | `current_status` |
+| `current.item.update` | mutate | owner, member, service | `current_update` |
+| `current.item.set_status` | mutate | owner, member, service | `current_status` |
 | `current.item.close_by_source` | mutate | owner, member | `current_close_by_source` |
 | `current.item.comment` | mutate | owner, member | `current_comment` |
 | `current.dependency.add`, `.remove` | mutate | owner, member | `current_add_dependency`, `current_remove_dependency` |
@@ -140,6 +140,13 @@ those reads.
 | `current.area.create`, `.update` | mutate | owner | none |
 | `current.summary.get` | read | owner, member, service | `current_summary` |
 | `core.record.delete` on `current.item`, `current.project` | destructive | owner | `current_delete_item`, `current_delete_project` |
+
+The service role on create, update and set_status is for a module job that keeps its
+own reminder items in Current. It calls them in-process through `call_in_transaction`,
+with a restricted service context from core's boundary factory that names exactly the
+operations it may run, so a refusal rolls back the job's whole transaction. A service
+context still cannot close by source, comment, change dependencies, or touch projects,
+areas or deletes.
 
 Updates are compare-and-set on the revision and answer `record_stale` when it moved on.
 A null or omitted update field stays as it is; `clear` names the optional fields to
