@@ -141,10 +141,11 @@ those reads.
 | `current.summary.get` | read | owner, member, service | `current_summary` |
 | `core.record.delete` on `current.item`, `current.project` | destructive | owner | `current_delete_item`, `current_delete_project` |
 
-The service role on create, update and set_status is for a module job that keeps its
-own reminder items in Current. It calls them in-process through `call_in_transaction`,
-with a restricted service context from core's boundary factory that names exactly the
-operations it may run. A refusal raises `OperationRefused`; a job that lets it
+The service role on create, update and set_status lets a module job write items
+in-process through `call_in_transaction`, with a restricted service context from core's
+boundary factory. That context's operation set is the only bound: a service context
+granted these operations can create, edit and move any Current item, not only items it
+created. A refusal raises `OperationRefused`; a job that lets it
 propagate has its whole transaction rolled back by the worker, while one that catches
 it and returns keeps whatever it already wrote. A service context still cannot close
 by source, comment, change dependencies, create or edit projects or areas, or delete.
