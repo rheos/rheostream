@@ -1115,6 +1115,30 @@ def check_schedules(
 _OWNER_ONLY: Final = frozenset({Role.OWNER})
 
 
+def check_explicit_only_tools(
+    package_sets: str,
+    *,
+    tools: Sequence[ToolDeclaration],
+    declarations: Mapping[str, OperationDeclaration],
+) -> None:
+    """An ``explicit_only`` module's tools name only its own operations. Raises
+    ``ValueError`` with fixed text.
+
+    A module tool may name a core operation (the deletion tools do). The facade
+    offers a tool to any token whose snapshot holds the tool's operation, so an
+    opt-in module's tool naming a core operation would reach every token another
+    module's tool already grants that operation to, past the opt-in.
+    """
+    if package_sets != "explicit_only":
+        return
+    for tool in tools:
+        if tool.operation not in declarations:
+            raise ValueError(
+                f"tools: {tool.name!r} names {tool.operation!r}; an explicit_only "
+                "module's tools must name its own operations"
+            )
+
+
 def check_authorization_completion(
     name: str | None, *, declarations: Mapping[str, OperationDeclaration]
 ) -> None:
@@ -1428,5 +1452,8 @@ class ModuleManifest(BaseModel):
         )
         check_authorization_completion(
             self.authorization_completion, declarations=declarations
+        )
+        check_explicit_only_tools(
+            self.package_sets, tools=self.tools, declarations=declarations
         )
         return self

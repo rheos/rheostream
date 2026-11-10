@@ -28,6 +28,7 @@ from rheo_contracts import (
     OperationDeclaration,
     Role,
     SafetyClass,
+    ToolDeclaration,
 )
 from rheo_contracts.refs import RESERVED_MODULE_SEGMENT
 from rheo_core.audit import CORE_AUDIT_SINK
@@ -940,6 +941,39 @@ def test_package_sets_defaults_to_default_and_takes_only_the_two_values() -> Non
     with pytest.raises(pydantic.ValidationError) as excinfo:
         ModuleManifest(**_fields(package_sets="read_only"))
     assert "package_sets" in _locations(excinfo.value)
+
+
+@pytest.mark.parametrize("package_sets", ["default", "explicit_only"])
+def test_only_an_explicit_only_module_refuses_a_tool_naming_a_core_operation(
+    package_sets: Literal["default", "explicit_only"],
+) -> None:
+    """A module tool may name a core operation (the deletion tools do), and the
+    facade offers it to any token holding that operation, which would carry an
+    opt-in module's tool past the opt-in."""
+    own = f"{MODULE_ID}.entry.add"
+    fields = _fields(
+        package_sets=package_sets,
+        operations=((_owned_operation(own, frozenset({Role.OWNER})), _probe_handler),),
+        tools=(
+            ToolDeclaration(
+                name=f"{MODULE_ID}_add",
+                safety_class=SafetyClass.MUTATE,
+                operation=own,
+                input_model=_ProbeInput,
+            ),
+            ToolDeclaration(
+                name=f"{MODULE_ID}_delete",
+                safety_class=SafetyClass.DESTRUCTIVE,
+                operation="core.record.delete",
+                input_model=_ProbeInput,
+            ),
+        ),
+    )
+    if package_sets == "default":
+        assert len(ModuleManifest(**fields).tools) == 2
+        return
+    with pytest.raises(pydantic.ValidationError, match="must name its own operations"):
+        ModuleManifest(**fields)
 
 
 def test_no_authorization_completion_is_allowed() -> None:
