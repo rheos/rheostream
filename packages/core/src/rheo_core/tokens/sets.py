@@ -24,10 +24,13 @@ no connector grant (``agent_default``, bounded by role) taken after it loads rea
 it, whatever the module adds later. A snapshot never changes, so this is a property
 of a module that is ``explicit_only`` from its first load; switching a loaded
 ``default`` module over leaves earlier snapshots holding what they held until they
-are revoked. The one named set that does is ``module_read:<module_id>``
-(:func:`module_read`): that module's ``READ`` operations and nothing else, resolved
-only for a loaded ``explicit_only`` module, so the operator command, which takes only
-a set name, can issue the opt-in. :func:`package_set` resolves both kinds of name.
+are revoked. The one named set that reaches it is ``module_read:<module_id>``
+(:func:`module_read`): that module's ``READ`` operations and nothing else,
+resolved only for a registered ``explicit_only`` module, so the operator command,
+which takes only a set name, can issue the opt-in. :func:`package_set` resolves both
+kinds of name. The opt-out is read from the registration itself
+(:attr:`RegisteredOperation.explicit_only`, set by the loader), never from the
+loader's manifest table, so clearing or half-filling that table fails closed.
 
 :class:`ToolRegistry` is also the MCP facade's tool table
 (``apps/mcp/src/rheo_app_mcp/tools.py`` lists exactly what this registry holds --
@@ -629,35 +632,35 @@ def alert_writer() -> frozenset[str]:
 
 
 def explicit_only_modules() -> frozenset[str]:
-    """The loaded modules whose manifest says ``package_sets = "explicit_only"``.
+    """The modules whose registered operations carry ``explicit_only``.
 
-    Read from the loader's table at call time, never stored, like the sets
-    themselves. A module reaches the operation registry only through the loader,
-    which records its manifest in the same step, so every registered module
-    operation has its manifest here.
+    Read from the operation registry, the same table every set evaluates, never
+    from the loader's manifest table: an operation records its module's
+    ``package_sets`` choice when it is registered, so nothing that clears or
+    partly fills the loader's table (``reset_surfaces``, a load that failed part
+    way) can make a registered opt-in operation count as default.
     """
-    from rheo_core.modules.loader import loaded_manifests  # deferred, see docstring
+    from rheo_core.operations.registry import REGISTRY  # deferred, see docstring
 
-    return frozenset(
-        module_id
-        for module_id, manifest in loaded_manifests().items()
-        if manifest.package_sets == "explicit_only"
-    )
+    modules: set[str] = set()
+    for name in REGISTRY.names():
+        registered = REGISTRY.lookup(name)
+        assert registered is not None  # names() and lookup() share one table
+        if registered.explicit_only:
+            modules.add(registered.module_id)
+    return frozenset(modules)
 
 
 def explicit_only_operations() -> frozenset[str]:
-    """Every registered operation owned by an ``explicit_only`` module, which every
-    named package set except that module's own ``module_read`` subtracts."""
+    """Every registered operation of an ``explicit_only`` module, which every named
+    package set except that module's own ``module_read`` subtracts."""
     from rheo_core.operations.registry import REGISTRY  # deferred, see docstring
 
-    modules = explicit_only_modules()
-    if not modules:
-        return frozenset()
     names: set[str] = set()
     for name in REGISTRY.names():
         registered = REGISTRY.lookup(name)
         assert registered is not None  # names() and lookup() share one table
-        if registered.module_id in modules:
+        if registered.explicit_only:
             names.add(name)
     return frozenset(names)
 
@@ -667,19 +670,18 @@ MODULE_READ_PREFIX: Final = "module_read:"
 
 
 def module_read(module_id: str) -> frozenset[str]:
-    """Every registered ``READ`` operation of ``module_id``, when it is a loaded
-    ``explicit_only`` module; empty for any other module, so a default module's
-    reads come only through ``read_only`` and its role bound, as before."""
+    """Every registered ``READ`` operation of ``module_id`` that carries
+    ``explicit_only``; empty for a default module, so a default module's reads come
+    only through ``read_only`` and its role bound, as before."""
     from rheo_core.operations.registry import REGISTRY  # deferred, see docstring
 
-    if module_id not in explicit_only_modules():
-        return frozenset()
     names: set[str] = set()
     for name in REGISTRY.names() - {DISCOVER_THEN_CALL_OPERATION}:
         registered = REGISTRY.lookup(name)
         assert registered is not None  # names() and lookup() share one table
         if (
             registered.module_id == module_id
+            and registered.explicit_only
             and registered.declaration.safety_class is SafetyClass.READ
         ):
             names.add(name)
@@ -687,7 +689,7 @@ def module_read(module_id: str) -> frozenset[str]:
 
 
 def explicit_only_reads() -> frozenset[str]:
-    """Every loaded ``explicit_only`` module's :func:`module_read` set, together:
+    """Every registered ``explicit_only`` module's :func:`module_read` set, together:
     what the operator command's permitted set adds so it can issue one of them."""
     return frozenset().union(*(module_read(m) for m in explicit_only_modules()))
 
@@ -704,7 +706,7 @@ PACKAGE_SETS: Final[dict[str, Callable[[], frozenset[str]]]] = {
 
 def package_set(name: str) -> Callable[[], frozenset[str]] | None:
     """The evaluator a set name names: one of :data:`PACKAGE_SETS`, or
-    ``module_read:<module_id>`` for a loaded ``explicit_only`` module. ``None`` for
+    ``module_read:<module_id>`` for a registered ``explicit_only`` module. ``None`` for
     anything else, a ``module_read`` of a default or unknown module included."""
     evaluator = PACKAGE_SETS.get(name)
     if evaluator is not None:

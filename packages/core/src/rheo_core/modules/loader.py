@@ -871,7 +871,12 @@ def _register(
     against. ``module-contract.md``'s discovery step 4 records the same.
     """
     for declaration, handler in manifest.operations:
-        registry.register(declaration, handler, origin=manifest.module_id)
+        registry.register(
+            declaration,
+            handler,
+            origin=manifest.module_id,
+            explicit_only=manifest.package_sets == "explicit_only",
+        )
     for guard_registration in manifest.execution_guards:
         guards.register(guard_registration, origin=manifest.module_id)
     for destination_registration in manifest.destinations:

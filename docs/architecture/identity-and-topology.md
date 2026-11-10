@@ -152,13 +152,18 @@ registry at issuance the same way:
 | `alert_writer` | Exactly `current.item.create` and `current.item.close_by_source`, enumerated on purpose so the set never grows when an operation is added. | The two Current writes an external alert writer needs (a probe, a guardrail, a form): open an item and close it by its source pair. Issued per writer as a `cli` token by the operator command. Empty when Current is not installed, so issuance refuses `set_empty`. |
 
 A module can opt out of all four. A manifest that declares `package_sets = "explicit_only"` has
-every one of its operations subtracted from each set, so no rule-set issuance and no connector
-grant (which is `agent_default`) snapshotted while it is loaded reaches it, whatever it adds later.
+every one of its own operations subtracted from each set, so no rule-set issuance and no connector
+grant (which is `agent_default`) snapshotted while it is loaded reaches those operations, whatever
+the module adds later. The opt-out covers the module's own operations only: core operations that
+act on any module's records (`core.record.delete`, `core.audit.list`, `core.workspace.export`)
+keep their own sets and roles, so a module that must stay out of them keeps its records out of
+their reach. The flag travels with each registered operation, so the sets never depend on the
+loader's manifest table.
 A snapshot never changes, so the opt-out is complete for a module that declares it from its first
 release; switching a loaded `default` module over leaves the tokens issued before it holding what
-they held, and those are revoked by hand. The one
-set that does is `module_read:<module_id>`: that module's `read` operations and nothing else,
-resolved only for a loaded `explicit_only` module and refused `set_not_issuable` for any other.
+they held, and those are revoked by hand. The one named set that reaches it is
+`module_read:<module_id>`: that module's `read` operations and nothing else, resolved only for a
+registered `explicit_only` module and refused `set_not_issuable` for any other.
 It is how the operator command, which takes only a set name, issues the opt-in
 (`rheo token issue --set module_read:<module_id> --kind mcp`); the operator's permitted set holds
 those reads for that reason, never the module's writes. A session issuer can still name the

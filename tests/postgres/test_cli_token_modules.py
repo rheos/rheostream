@@ -57,7 +57,7 @@ from rheo_core.storage.control_plane import (
     list_access_token_operations,
 )
 from rheo_core.tokens.issue import connector_operations
-from rheo_core.tokens.sets import PACKAGE_SETS, TOOL_REGISTRY
+from rheo_core.tokens.sets import PACKAGE_SETS, TOOL_REGISTRY, package_set
 
 pytestmark = pytest.mark.postgres
 
@@ -354,6 +354,32 @@ def test_every_set_evaluator_and_the_connector_grant_skip_it(
     granted = connector_operations(Role.OWNER)
     assert "current.item.get" in granted
     assert not {op for op in granted if op.startswith(f"{VAULT}.")}
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "vault_beside_current")
+def test_the_opt_out_travels_with_the_registration_not_the_loaders_table(
+    capsys: pytest.CaptureFixture[str],
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """Forgetting the loaded manifests (``reset_surfaces``, or a load that stopped
+    part way) leaves the operations registered. They must still count as opt-in:
+    the sets read the flag the registration carries, so this fails closed."""
+    code, _, err = _issue(
+        capsys, workspace, owner_account_id, set_name="read_only", kind="cli"
+    )
+    assert code == 0, err
+    loader_module.reset_surfaces()
+    assert VAULT not in loader_module.loaded_manifests()
+    assert {VAULT_GET, VAULT_LIST, VAULT_ADD} <= REGISTRY.names()
+
+    for name, evaluator in PACKAGE_SETS.items():
+        assert not {op for op in evaluator() if op.startswith(f"{VAULT}.")}, name
+    assert not {
+        op for op in connector_operations(Role.OWNER) if op.startswith(f"{VAULT}.")
+    }
+    opt_in = package_set(f"module_read:{VAULT}")
+    assert opt_in is not None and opt_in() == {VAULT_GET, VAULT_LIST}
 
 
 @pytest.mark.usefixtures("isolated_process_tables", "vault_beside_current")

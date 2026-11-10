@@ -1234,12 +1234,13 @@ class ModuleManifest(BaseModel):
 
     ``default``: ``read_only``, ``agent_default`` and ``cli_full`` take them by their
     rules. ``explicit_only``: no named package set ever does, so no rule-set
-    issuance or connector grant snapshotted while it is loaded reaches the module
-    (snapshots never change: set it from the module's first release, or revoke the
-    tokens issued before switching it). A token reaches it only
-    by naming it: ``module_read:<module_id>`` (its ``READ`` operations, the one set the
-    operator command can issue for it) or an explicit operation list a session
-    issuer's own role permits (``rheo_core.tokens.sets``)."""
+    issuance or connector grant snapshotted while it is loaded reaches the module's
+    own operations; core operations on its records keep their own sets. Snapshots
+    never change, so set it from the module's first release, or revoke the tokens
+    issued before switching it. A token reaches its operations only by naming them:
+    ``module_read:<module_id>`` (its ``READ`` operations, the one set the operator
+    command can issue for it) or an explicit operation list a session issuer's own
+    role permits (``rheo_core.tokens.sets``)."""
 
     @model_validator(mode="after")
     def _check_invariants(self) -> Self:

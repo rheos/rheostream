@@ -206,7 +206,7 @@ def _expand(model_input: TokenIssueInput) -> frozenset[str]:
         if set_name.startswith(MODULE_READ_PREFIX):
             raise OperationRefused(
                 SET_NOT_ISSUABLE,
-                f"{set_name!r} names no loaded module whose package_sets is "
+                f"{set_name!r} names no registered module whose package_sets is "
                 "explicit_only",
             )
         raise OperationRefused(SET_NOT_ISSUABLE, f"unknown package set {set_name!r}")
