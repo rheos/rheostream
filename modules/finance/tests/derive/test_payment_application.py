@@ -466,7 +466,7 @@ def test_two_bills_issued_and_due_on_the_same_days_that_both_fit_are_a_question(
 
     paying.derive()
 
-    assert applied(paying) == [Applied("confirm", Decimal("206.40"), True)]
+    assert applied(paying) == [Applied("confirm", Decimal("219.29"), True)]
 
 
 def test_of_two_bills_that_fit_the_older_is_paid(paying: Ledger) -> None:
@@ -636,7 +636,7 @@ def test_payment_apply_places_a_payment_the_rules_left_to_the_owner(
 
 
 def test_a_notice_names_its_payment_in_a_decision(paying: Ledger) -> None:
-    bills(paying, ("isp", "206.40", D(2033, 6, 1), D(2033, 6, 21)))
+    bills(paying, ("isp", "219.29", D(2033, 6, 1), D(2033, 6, 21)))
     filed = notice(paying, JUNE, printed="Sample ISP")
     paying.derive()
     assert figures(paying, "bill-2033-06")[3] == "paid"
@@ -649,7 +649,7 @@ def test_a_notice_names_its_payment_in_a_decision(paying: Ledger) -> None:
     paying.derive()
 
     assert figures(paying, "bill-2033-06")[3] == "open"
-    assert applied(paying) == [Applied("payment_unapply", Decimal("206.40"), False)]
+    assert applied(paying) == [Applied("payment_unapply", Decimal("219.29"), False)]
 
 
 def test_an_unapply_naming_an_obligation_bars_an_older_apply_to_it(
@@ -676,7 +676,7 @@ def test_an_unapply_naming_an_obligation_bars_an_older_apply_to_it(
 
 
 def test_a_decision_applies_no_payment_in_another_currency(paying: Ledger) -> None:
-    bills(paying, ("isp", "206.40", D(2033, 6, 1), D(2033, 6, 21)))
+    bills(paying, ("isp", "219.29", D(2033, 6, 1), D(2033, 6, 21)))
     filed = notice(paying, JUNE, currency="USD")
     paying.derive()
 
@@ -688,17 +688,17 @@ def test_a_decision_applies_no_payment_in_another_currency(paying: Ledger) -> No
     )
     paying.derive()
 
-    assert applied(paying) == [Applied("confirm", Decimal("206.40"), True)]
+    assert applied(paying) == [Applied("confirm", Decimal("219.29"), True)]
     assert figures(paying, "bill-2033-06")[3] == "open"
 
 
 def test_an_unapply_clears_a_payment_in_another_currency(paying: Ledger) -> None:
     """The confirm credit is a question the owner can answer: the unapply takes the
     payment off the rules, although an apply on it is refused."""
-    bills(paying, ("isp", "206.40", D(2033, 6, 1), D(2033, 6, 21)))
+    bills(paying, ("isp", "219.29", D(2033, 6, 1), D(2033, 6, 21)))
     filed = notice(paying, JUNE, currency="USD")
     paying.derive()
-    assert applied(paying) == [Applied("confirm", Decimal("206.40"), True)]
+    assert applied(paying) == [Applied("confirm", Decimal("219.29"), True)]
 
     decide(
         paying,
@@ -707,7 +707,7 @@ def test_an_unapply_clears_a_payment_in_another_currency(paying: Ledger) -> None
     )
     paying.derive()
 
-    assert applied(paying) == [Applied("payment_unapply", Decimal("206.40"), False)]
+    assert applied(paying) == [Applied("payment_unapply", Decimal("219.29"), False)]
     assert figures(paying, "bill-2033-06")[3] == "open"
 
 
@@ -934,7 +934,7 @@ def test_a_card_payment_before_the_earliest_statement_has_no_target(
 
     (credit,) = paying.conn.execute(select(payment_application)).all()
     assert (credit.reason, credit.bound_on) == ("no_target", D(2033, 2, 21))
-    assert figures(paying, N) == (0, Decimal("623.06"), Decimal("25.80"), "open")
+    assert figures(paying, N) == (0, Decimal("784.32"), Decimal("25.80"), "open")
 
 
 @pytest.mark.parametrize(
@@ -1066,7 +1066,7 @@ def test_a_payment_left_to_the_owner_is_not_counted_as_applied_for_fr_21(
 # --- arrangements: a finished one stops setting the bills -----------------------------
 
 
-LATER_ON = D(2034, 5, 15)
+LATER_ON = D(2029, 5, 15)
 
 
 def power(
@@ -1087,8 +1087,8 @@ def power(
     ledger.manual(PAYEES_FILE, "boxwood,Our power,vendor,SAMPLE POWER,,")
     ledger.manual(
         ARRANGEMENTS_FILE,
-        "plan,boxwood,2029-01-21,1,38.22,2029-04-01,bill-2034-02",
-        "plan,boxwood,2029-01-21,2,61.92,2029-05-01,bill-2034-02",
+        "plan,boxwood,2029-01-21,1,38.22,2029-04-01,bill-2029-02",
+        "plan,boxwood,2029-01-21,2,61.92,2029-05-01,bill-2029-02",
     )
     ledger.file("boxwood/a.pdf", boxwood_bill("January 26, 2029", "February 16, 2029"))
     ledger.file(
@@ -1110,7 +1110,7 @@ def power(
     )
 
 
-PAID_UP = ((D(2034, 3, 26), "51.60"), (D(2034, 4, 26), "61.92"))
+PAID_UP = ((D(2029, 3, 26), "51.60"), (D(2029, 4, 26), "61.92"))
 
 
 def test_a_bill_issued_while_the_arrangement_ran_keeps_owing_its_current_charges(
@@ -1124,13 +1124,13 @@ def test_a_bill_issued_while_the_arrangement_ran_keeps_owing_its_current_charges
 
     found = owed(ledger)
     assert {label: found[label].status for label in found} == {
-        "bill-2034-02": "superseded",
-        "bill-2034-03": "open",
+        "bill-2029-02": "superseded",
+        "bill-2029-03": "open",
         "inst-plan-1": "paid",
         "inst-plan-2": "paid",
     }
-    assert found["bill-2034-02"].arrangement_ref == "plan"
-    assert found["bill-2034-03"].amount_due == Decimal("333.84")
+    assert found["bill-2029-02"].arrangement_ref == "plan"
+    assert found["bill-2029-03"].amount_due == Decimal("333.84")
 
 
 def test_a_bill_issued_after_the_last_instalment_owes_its_arrears_again(
@@ -1142,20 +1142,20 @@ def test_a_bill_issued_after_the_last_instalment_owes_its_arrears_again(
 
     found = owed(ledger)
     assert {label: found[label].status for label in found} == {
-        "bill-2034-02": "superseded",
-        "bill-2034-03": "superseded",
-        "bill-2034-06": "open",
-        "arrears-2034-05": "open",
+        "bill-2029-02": "superseded",
+        "bill-2029-03": "superseded",
+        "bill-2029-06": "open",
+        "arrears-2029-05": "open",
         "inst-plan-1": "paid",
         "inst-plan-2": "paid",
     }
-    assert found["bill-2034-06"].amount_due == Decimal("264.44")
-    assert found["arrears-2034-05"].amount_due == Decimal("103.20")
+    assert found["bill-2029-06"].amount_due == Decimal("264.44")
+    assert found["arrears-2029-05"].amount_due == Decimal("103.20")
 
 
 @pytest.mark.parametrize(
     ("issued", "governed"),
-    [(D(2034, 5, 6), True), (D(2034, 5, 7), False)],
+    [(D(2029, 5, 6), True), (D(2029, 5, 7), False)],
     ids=["early_days after the last payment", "a day later"],
 )
 def test_a_bill_cut_within_early_days_of_the_last_instalment_stays_governed(
@@ -1170,11 +1170,11 @@ def test_a_bill_cut_within_early_days_of_the_last_instalment_stays_governed(
 
     found = owed(ledger)
     if governed:
-        assert found["bill-2034-06"].amount_due == Decimal("333.84")
-        assert "arrears-2034-05" not in found
+        assert found["bill-2029-06"].amount_due == Decimal("333.84")
+        assert "arrears-2029-05" not in found
     else:
-        assert found["bill-2034-06"].amount_due == Decimal("264.44")
-        assert found["arrears-2034-05"].status == "open"
+        assert found["bill-2029-06"].amount_due == Decimal("264.44")
+        assert found["arrears-2029-05"].status == "open"
 
 
 def test_a_last_instalment_overpaid_just_before_a_new_bill_settles(
@@ -1186,9 +1186,9 @@ def test_a_last_instalment_overpaid_just_before_a_new_bill_settles(
     on the second round: the derive completes, and nothing is owed twice."""
     power(
         ledger,
-        (D(2034, 3, 26), "38.22"),
-        (D(2034, 5, 8), "333.84"),
-        (D(2034, 5, 9), "67.08"),
+        (D(2029, 3, 26), "38.22"),
+        (D(2029, 5, 8), "333.84"),
+        (D(2029, 5, 9), "67.08"),
         later_bill=True,
     )
 
@@ -1196,19 +1196,19 @@ def test_a_last_instalment_overpaid_just_before_a_new_bill_settles(
 
     found = owed(ledger)
     assert {label: found[label].status for label in found} == {
-        "bill-2034-02": "superseded",
-        "bill-2034-03": "superseded",
-        "bill-2034-06": "paid",
+        "bill-2029-02": "superseded",
+        "bill-2029-03": "superseded",
+        "bill-2029-06": "paid",
         "inst-plan-1": "paid",
         "inst-plan-2": "paid",
     }
     assert applied(ledger) == [
-        Applied("bill-2034-06", Decimal("333.84"), True),
+        Applied("bill-2029-06", Decimal("333.84"), True),
         Applied("excess", Decimal("5.00"), True),
         Applied("inst-plan-1", Decimal("38.22"), True),
         Applied("inst-plan-2", Decimal("61.92"), True),
     ]
-    assert stage15_apply.finished_arrangements(ledger.uow) == {"plan": D(2034, 5, 9)}
+    assert stage15_apply.finished_arrangements(ledger.uow) == {"plan": D(2029, 5, 9)}
     assert not any(row.arrangement_unsettled for row in found.values())
 
 
@@ -1223,25 +1223,25 @@ def test_a_finish_that_moves_a_payment_off_the_plan_keeps_it_active_and_says_so(
     power(ledger, *PAID_UP, later_bill=True)
     ledger.ctx = dataclasses.replace(ledger.ctx, snapshot_provider=txn_snapshot)
     ledger.derive()
-    assert owed(ledger)["arrears-2034-05"].status == "open"
+    assert owed(ledger)["arrears-2029-05"].status == "open"
     moved = decide(
         ledger,
         "payment_apply",
-        target_ref=line_ref(ledger, D(2034, 4, 26)),
-        obligation_ref=obligation_ref(ledger, "arrears-2034-05"),
+        target_ref=line_ref(ledger, D(2029, 4, 26)),
+        obligation_ref=obligation_ref(ledger, "arrears-2029-05"),
     )
 
     ledger.derive()
 
     found = owed(ledger)
     assert {label: found[label].status for label in found} == {
-        "bill-2034-02": "superseded",
-        "bill-2034-03": "superseded",
-        "bill-2034-06": "open",
+        "bill-2029-02": "superseded",
+        "bill-2029-03": "superseded",
+        "bill-2029-06": "open",
         "inst-plan-1": "paid",
         "inst-plan-2": "paid",
     }
-    assert found["bill-2034-06"].amount_due == Decimal("333.84")
+    assert found["bill-2029-06"].amount_due == Decimal("333.84")
     assert applied(ledger) == [
         Applied("inst-plan-1", Decimal("38.22"), True),
         Applied("inst-plan-2", Decimal("61.92"), True),
@@ -1315,7 +1315,7 @@ def test_the_arrangements_an_application_finishes_are_settled_after_a_derive(
     ledger.derive()
     rows = sorted(repr(tuple(row)) for row in ledger.conn.execute(select(obligation)))
 
-    assert stage15_apply.finished_arrangements(ledger.uow) == {"plan": D(2034, 4, 26)}
+    assert stage15_apply.finished_arrangements(ledger.uow) == {"plan": D(2029, 4, 26)}
     ledger.derive()
     assert (
         sorted(repr(tuple(row)) for row in ledger.conn.execute(select(obligation)))
@@ -1327,12 +1327,12 @@ def test_the_arrangements_an_application_finishes_are_settled_after_a_derive(
 def test_an_arrangement_with_an_instalment_unpaid_still_sets_the_bills(
     ledger: Ledger, later_bill: bool
 ) -> None:
-    power(ledger, (D(2034, 3, 26), "38.22"), later_bill=later_bill)
+    power(ledger, (D(2029, 3, 26), "38.22"), later_bill=later_bill)
 
     ledger.derive()
 
     found = owed(ledger)
-    newest = "bill-2034-06" if later_bill else "bill-2034-03"
+    newest = "bill-2029-06" if later_bill else "bill-2029-03"
     assert not [label for label in found if label.startswith("arrears")]
     assert found[newest].amount_due == Decimal("333.84")
     assert (found["inst-plan-1"].status, found["inst-plan-2"].status) == (
@@ -1353,4 +1353,4 @@ def test_a_paid_up_arrangement_of_twelve_finishes_on_its_last_payment(
 
     paying.derive()
 
-    assert stage15_apply.finished_arrangements(paying.uow) == {"plan": D(2034, 5, 21)}
+    assert stage15_apply.finished_arrangements(paying.uow) == {"plan": D(2034, 5, 20)}

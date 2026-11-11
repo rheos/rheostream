@@ -58,7 +58,7 @@ from .test_resolution import CHEQUING, register, spending
 from .test_reversals import export
 from .test_transfer_edges import BILL_PAYMENT
 
-DAY = D(2059, 6, 16)
+DAY = D(2057, 6, 6)
 SAMPLE_PARTY = uuid.UUID("99999999-0000-4000-8000-000000000001")
 
 

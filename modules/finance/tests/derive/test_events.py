@@ -60,7 +60,7 @@ def ids(ledger: Ledger, kind: str) -> set[uuid.UUID]:
 
 def test_grace_boundary_uses_local_day_without_data_change(ledger: Ledger) -> None:
     statement(ledger)
-    fake = clock(ledger, "2054-02-21T14:59:00")  # local 21 February, 23:59
+    fake = clock(ledger, "2055-07-18T14:59:00")  # local 18 July, 23:59
     ledger.derive()
     assert not ids(ledger, STATEMENT_OVERDUE)
     before = fingerprint(ledger.uow, ledger.ctx)
@@ -78,14 +78,14 @@ def test_grace_boundary_uses_local_day_without_data_change(ledger: Ledger) -> No
     assert set(ledger.conn.scalars(select(notice.c.key))) == first_notices
     assert ledger.conn.scalar(
         select(event.c.occurred_on).where(event.c.type == STATEMENT_OVERDUE)
-    ) == D(2054, 2, 22)
+    ) == D(2055, 7, 19)
 
 
 def test_rebuild_restores_event_ids_and_retains_notice_delivery_state(
     ledger: Ledger,
 ) -> None:
     statement(ledger)
-    fake = clock(ledger, "2054-02-22T12:00:00")
+    fake = clock(ledger, "2055-07-19T12:00:00")
     ledger.derive()
     expected = set(ledger.conn.scalars(select(event.c.id)))
     first_seen = fake.now_utc()
@@ -106,7 +106,7 @@ def test_rebuild_restores_event_ids_and_retains_notice_delivery_state(
 
 def test_availability_fallback_uses_global_default_lag(ledger: Ledger) -> None:
     statement(ledger)
-    fake = clock(ledger, "2054-02-16T14:59:00")
+    fake = clock(ledger, "2055-07-13T14:59:00")
     ledger.derive()
     assert not ids(ledger, STATEMENT_AVAILABLE)
     fake.advance(dt.timedelta(minutes=1))
@@ -115,7 +115,7 @@ def test_availability_fallback_uses_global_default_lag(ledger: Ledger) -> None:
     assert not ids(ledger, STATEMENT_OVERDUE)
     assert ledger.conn.scalar(
         select(event.c.occurred_on).where(event.c.type == STATEMENT_AVAILABLE)
-    ) == D(2054, 2, 17)
+    ) == D(2055, 7, 14)
     assert (
         statement_ready_text("Sample daily")
         == "Sample daily statement is ready to download"
@@ -124,8 +124,8 @@ def test_availability_fallback_uses_global_default_lag(ledger: Ledger) -> None:
 
 def test_ready_notice_is_immediate_and_deduplicates_fallback(ledger: Ledger) -> None:
     statement(ledger)
-    fake = clock(ledger, "2054-02-15T12:00:00")
-    fact = StatementReady(account_id("chequing"), D(2054, 2, 15), D(2054, 2, 15))
+    fake = clock(ledger, "2055-07-12T12:00:00")
+    fact = StatementReady(account_id("chequing"), D(2055, 7, 12), D(2055, 7, 12))
 
     def ready(_uow: object) -> tuple[StatementReady, ...]:
         return (fact, fact)
@@ -188,9 +188,9 @@ def test_new_period_document_stops_missing_statement_events(ledger: Ledger) -> N
 @pytest.mark.parametrize(
     "cadence,expected",
     [
-        ("monthly", D(2054, 2, 17)),
-        ("quarterly", D(2054, 4, 17)),
-        ("yearly", D(2055, 1, 17)),
+        ("monthly", D(2055, 7, 14)),
+        ("quarterly", D(2055, 9, 14)),
+        ("yearly", D(2056, 6, 14)),
     ],
 )
 def test_calendar_cadences_and_configured_lag(
@@ -369,7 +369,7 @@ def test_split_intermediate_negative_balance_is_not_an_overdrawn_spell(
 
 def test_notice_output_does_not_dirty_the_input_fingerprint(ledger: Ledger) -> None:
     statement(ledger)
-    clock(ledger, "2054-02-22T12:00:00")
+    clock(ledger, "2055-07-19T12:00:00")
     before = fingerprint(ledger.uow, ledger.ctx)
     ledger.derive()
     after = fingerprint(ledger.uow, ledger.ctx)
@@ -434,8 +434,8 @@ def test_same_day_native_parser_spells_preserve_cardinality(
     # Separate recoveries on the same date must remain separate, even when both
     # printed dates are equal. The last negative run has no recovery yet.
     repeat = (
-        "23 DEC SAMPLE CREDIT  390.88  195.44\n"
-        "23 DEC SAMPLE DEBIT AGAIN  390.88  -195.44\n"
+        "23 MAY SAMPLE CREDIT  390.88  195.44\n"
+        "23 MAY SAMPLE DEBIT AGAIN  390.88  -195.44\n"
     )
     withdrawals = 423 * (closed_spells + 1)
     deposits = 423 * closed_spells
@@ -446,13 +446,13 @@ def test_same_day_native_parser_spells_preserve_cardinality(
         f"195.44  {withdrawals}.00  {deposits}.00  -195.44\n\n"
         "ALDER DAILY CHEQUING No 999000000022\n"
         "ALDER START FIGURE  195.44\n"
-        "23 DEC SAMPLE DEBIT  390.88  -195.44\n" + repeat * closed_spells
+        "23 MAY SAMPLE DEBIT  390.88  -195.44\n" + repeat * closed_spells
     )
     parsed = alder_statement(layout)
     assert parsed.failed_checks == 0
     spells = parsed.accounts[0].overdrawn
-    expected = [(D(2053, 12, 23), D(2053, 12, 23))] * closed_spells + [
-        (D(2053, 12, 23), None)
+    expected = [(D(2055, 5, 23), D(2055, 5, 23))] * closed_spells + [
+        (D(2055, 5, 23), None)
     ]
     assert [(spell.start, spell.end) for spell in spells] == expected
     ledger.chequing()
@@ -482,9 +482,9 @@ def test_forward_spell_migration_preserves_legacy_cache(ledger: Ledger) -> None:
         "ALDER DAILY CHEQUING No 999000000022  195.44  781.76  390.88  -195.44\n\n"
         "ALDER DAILY CHEQUING No 999000000022\n"
         "ALDER START FIGURE  195.44\n"
-        "23 DEC SAMPLE DEBIT  390.88  -195.44\n"
-        "23 DEC SAMPLE CREDIT  390.88  195.44\n"
-        "24 DEC SAMPLE DEBIT AGAIN  390.88  -195.44\n"
+        "23 MAY SAMPLE DEBIT  390.88  -195.44\n"
+        "23 MAY SAMPLE CREDIT  390.88  195.44\n"
+        "24 MAY SAMPLE DEBIT AGAIN  390.88  -195.44\n"
     )
     source = ledger.file("alder/2055-06-12.pdf", actual)
     ledger.derive()
@@ -505,8 +505,8 @@ def test_forward_spell_migration_preserves_legacy_cache(ledger: Ledger) -> None:
         select(parsed_overdrawn).order_by(parsed_overdrawn.c.spell_no)
     ).all()
     assert [(row.spell_no, row.start_date, row.end_date) for row in cached] == [
-        (1, D(2053, 12, 23), D(2053, 12, 23)),
-        (2, D(2053, 12, 24), None),
+        (1, D(2055, 5, 23), D(2055, 5, 23)),
+        (2, D(2055, 5, 24), None),
     ]
     assert {row.document_id for row in cached} == {source}
     assert ledger.conn.scalar(select(func.count()).select_from(overdrawn_spell)) == 0

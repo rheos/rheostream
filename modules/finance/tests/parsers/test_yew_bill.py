@@ -56,7 +56,7 @@ class Setup:
         register_accounts(
             self.uow,
             self.data,
-            ManualAccount("mobile", "yew line", "bill_vendor", (number,)),
+            ManualAccount("mobile", "Yew", "bill_vendor", (number,)),
         )
 
     def file(self, text: str) -> uuid.UUID:
@@ -177,8 +177,8 @@ def test_a_bill_whose_last_four_two_accounts_hold_is_ambiguous(setup: Setup) -> 
     register_accounts(
         setup.uow,
         setup.data,
-        ManualAccount("mobile", "yew line", "bill_vendor", (NUMBER,)),
-        ManualAccount("home", "yew line", "bill_vendor", ("999100123",)),
+        ManualAccount("mobile", "Yew", "bill_vendor", (NUMBER,)),
+        ManualAccount("home", "Yew", "bill_vendor", ("999100123",)),
     )
     doc = setup.file(bill_text())
 
@@ -196,8 +196,8 @@ def test_a_mixed_group_never_puts_the_bill_on_the_account_left_standing(
     register_accounts(
         setup.uow,
         setup.data,
-        ManualAccount("mobile", "yew line", "bill_vendor", ("999100123", "XXXXX0123")),
-        ManualAccount("home", "yew line", "bill_vendor", (NUMBER, "999000456")),
+        ManualAccount("mobile", "Yew", "bill_vendor", ("999100123", "XXXXX0123")),
+        ManualAccount("home", "Yew", "bill_vendor", (NUMBER, "999000456")),
     )
     doc = setup.file(bill_text())
 

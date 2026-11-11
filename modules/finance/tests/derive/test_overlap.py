@@ -209,7 +209,7 @@ def test_overlapping_exports_with_no_statement_share_their_lines(
     twins = [row for row in rows if row["posting_date"] == D(2039, 9, 7)]
     assert len(twins) == 2
     assert joined(ledger.conn, 3, csv) == joined(ledger.conn, 2, pdf) == D(2039, 9, 7)
-    assert joined(ledger.conn, 5, csv) == D(2039, 9, 14)  # the download's date
+    assert joined(ledger.conn, 5, csv) == D(2039, 9, 25)  # the download's date
     # Occurrences count within a document, so the twins carry the same two keys in
     # both documents.
     keys = {

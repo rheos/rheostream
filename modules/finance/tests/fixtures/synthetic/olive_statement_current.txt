@@ -51,7 +51,7 @@ Olive On   Detail   Outgo   Income   Running
 28 Oct 54   Olive Monthly Fee   5.98   6,393.77
 28 Oct 54   Olive Interest Paid   4.13   6,397.90
 
-Olive Out And In Totals   $5,820.29   $1,033.75
+Olive Out And In Totals   $13,197.91   $6,851.72
    -
 
 OLIVE NEST

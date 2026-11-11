@@ -52,7 +52,7 @@ def test_public_ledger_stays_offline_with_unavailable_current_credentials(
 
     monkeypatch.setattr(docextract_adapter, "pdf_text", read_as_text)
     own.ctx = replace(own.ctx, settings=current_context.settings)
-    with_settings(own, '[finance.reminders]\nmin_due_date = "2046-01-01"\n')
+    with_settings(own, '[finance.reminders]\nmin_due_date = "2033-01-01"\n')
     statement_n(own)
     own.derive()
     catalogue.load_all()
@@ -126,7 +126,7 @@ def test_cas_field_race_preserves_ack_until_all_desired_fields_converge(
         assert isinstance(ref, str)
         item = current_stub.items[ref]
         if field == "due_on":
-            item["due_on"] = "2047-05-20"
+            item["due_on"] = "2063-05-23"
         else:
             item["priority"] = "low"
         item["revision"] += 1
@@ -175,7 +175,7 @@ def test_public_rebuild_preserves_current_delivery_state_without_dirtying_ledger
 
     monkeypatch.setattr(docextract_adapter, "pdf_text", read_as_text)
     own.ctx = replace(own.ctx, settings=current_context.settings)
-    with_settings(own, '[finance.reminders]\nmin_due_date = "2046-01-01"\n')
+    with_settings(own, '[finance.reminders]\nmin_due_date = "2033-01-01"\n')
     statement_n(own)
     own.derive()
     catalogue.load_all()
@@ -235,7 +235,7 @@ def test_public_preview_crosses_midnight_with_fixed_state_and_refuses_old_code(
 ) -> None:
     add(owner_conn)
     clock = FakeClock(
-        dt.datetime(2047, 5, 18, 23, 59, tzinfo=current_context.settings.timezone)
+        dt.datetime(2063, 5, 21, 23, 59, tzinfo=current_context.settings.timezone)
     )
     ctx = replace(current_context, role=Role.OWNER, clock=clock)
     monkeypatch.setattr(current, "SystemClock", lambda: clock)
@@ -260,7 +260,7 @@ def test_public_preview_crosses_midnight_with_fixed_state_and_refuses_old_code(
     assert item.key == acknowledged[0].source_ref
     assert item.due_on == acknowledged[0].last_due_on
     assert dict(item.fields) == {
-        "floor": "2047-01-01",
+        "floor": "2063-01-01",
         "status": "open",
         "title": acknowledged[0].last_title,
     }
@@ -326,7 +326,7 @@ def test_public_current_preview_data_changes_alter_digest_and_code(
             update(obligation).values(threshold_remaining=Decimal("16.59"))
         )
     elif change == "due":
-        owner_conn.execute(update(obligation).values(due_date=dt.date(2047, 5, 20)))
+        owner_conn.execute(update(obligation).values(due_date=dt.date(2063, 5, 23)))
     else:
         owner_conn.execute(update(obligation).values(status="superseded"))
     changed = public_preview(ctx)
@@ -344,7 +344,7 @@ def test_public_current_preview_rendered_clock_text_keeps_digest_when_membership
 ) -> None:
     add(owner_conn)
     clock = FakeClock(
-        dt.datetime(2047, 5, 16, 12, tzinfo=current_context.settings.timezone)
+        dt.datetime(2063, 5, 19, 12, tzinfo=current_context.settings.timezone)
     )
     ctx = replace(current_context, role=Role.OWNER, clock=clock)
     monkeypatch.setattr(current, "SystemClock", lambda: clock)
@@ -369,9 +369,9 @@ def test_preview_lists_changes_and_floor_without_sending_and_refuses_unset_floor
     add(owner_conn)
     monkeypatch.setattr(current, "SystemClock", lambda: current_context.clock)
     (preview,) = current.preview_builder(UnitOfWork(owner_conn))
-    assert preview.key == "finance:sample-utility:bill-2047-05"
-    assert preview.due_on == dt.date(2047, 5, 18)
-    assert dict(preview.fields)["floor"] == "2047-01-01"
+    assert preview.key == "finance:sample-utility:bill-2063-05"
+    assert preview.due_on == dt.date(2063, 5, 21)
+    assert dict(preview.fields)["floor"] == "2063-01-01"
     assert dict(preview.fields)["status"] == "open"
     assert current_stub.requests == []
     current.sync_reminders(current_context)
@@ -467,7 +467,7 @@ def test_stub_rejects_unexpected_create_fields_without_hiding_them(
             "Content-Type": "application/json",
         },
         body=json.dumps(
-            {**first, "source_ref": "finance:sample-extra:bill-2047-05", "wake": True}
+            {**first, "source_ref": "finance:sample-extra:bill-2063-05", "wake": True}
         ).encode(),
     )
     assert response.status == 422
@@ -501,7 +501,7 @@ def test_stub_seen_fingerprint_is_noop_and_new_fingerprint_reopens_done(
         )
         assert response.status == 200
 
-    create({**first, "title": "Changed incoming title", "due_on": "2047-07-01"})
+    create({**first, "title": "Changed incoming title", "due_on": "2063-07-01"})
     assert item["status"] == "done" and item["title"] == first["title"]
     create({**first, "fingerprint": "new-fingerprint"})
     assert current_stub.items[item["ref"]]["status"] == "open"
@@ -528,7 +528,7 @@ def test_committed_claim_visible_before_create_and_recovery_with_fresh_root(
                 and state["state"] == "post_pending"
                 and bool(state["create_title"])
                 and bool(state["create_body"])
-                and state["create_due_on"] == dt.date(2047, 5, 18)
+                and state["create_due_on"] == dt.date(2063, 5, 21)
             )
 
     current_stub.before_create = inspect_claim
@@ -681,14 +681,14 @@ def test_actual_invoice_payment_deletion_closes_current_item(
     assert isinstance(ledger, Ledger)
     from tests.derive.test_payment_application import with_settings
 
-    with_settings(ledger, '[finance.reminders]\nmin_due_date = "2047-01-01"\n')
+    with_settings(ledger, '[finance.reminders]\nmin_due_date = "2063-01-01"\n')
     ledger.file(INVOICE, invoice())
     ledger.derive()
     unpaid(ledger, DUE_ON)
     ledger.derive()
     assert len(debts(ledger)) == 1
     current.sync_reminders(ledger.ctx)
-    payments(ledger, ("2046/12/31", CONTRACTOR, "705.93"))
+    payments(ledger, ("2062/12/31", CONTRACTOR, "705.93"))
     ledger.derive()
     assert debts(ledger) == []
     current_stub.requests.clear()
@@ -709,7 +709,7 @@ def test_invoice_vendor_registration_closes_old_identity_and_creates_new_once(
     assert isinstance(ledger, Ledger)
     from tests.derive.test_payment_application import with_settings
 
-    with_settings(ledger, '[finance.reminders]\nmin_due_date = "2047-01-01"\n')
+    with_settings(ledger, '[finance.reminders]\nmin_due_date = "2063-01-01"\n')
     open_invoice(ledger)
     unpaid(ledger, DUE_ON)
     ledger.derive()
@@ -740,12 +740,12 @@ def test_card_minimum_paid_on_its_due_date_keeps_next_period_open(
 
     assert isinstance(own, Ledger)
     own.ctx = replace(own.ctx, settings=current_context.settings)
-    with_settings(own, '[finance.reminders]\nmin_due_date = "2046-01-01"\n')
+    with_settings(own, '[finance.reminders]\nmin_due_date = "2033-01-01"\n')
     statement_n(own)
     own.derive()
     current.sync_reminders(own.ctx)
     assert len(current_stub.items) == 1
-    minimum = paid_card(dt.date(2046, 3, 23), "26.12")
+    minimum = paid_card(dt.date(2033, 3, 25), "26.12")
     card_export(own, minimum)
     own.derive()
     current.sync_reminders(own.ctx)
@@ -856,7 +856,7 @@ def test_unchanged_desired_keeps_owner_edits_and_sends_no_writes(
         {
             "title": "Owner edited",
             "status": "done",
-            "due_on": "2047-06-01",
+            "due_on": "2063-06-01",
             "priority": "low",
         }
     )
@@ -886,12 +886,12 @@ def test_due_and_priority_desired_changes_converge_once(
     current.sync_reminders(current_context)
     current_stub.requests.clear()
     if field == "due":
-        owner_conn.execute(update(obligation).values(due_date=dt.date(2047, 5, 20)))
+        owner_conn.execute(update(obligation).values(due_date=dt.date(2063, 5, 23)))
     else:
         from rheo_finance.clock import FakeClock
 
         current_context = replace(
-            current_context, clock=FakeClock(dt.datetime(2047, 6, 1, tzinfo=dt.UTC))
+            current_context, clock=FakeClock(dt.datetime(2063, 6, 1, tzinfo=dt.UTC))
         )
     current.sync_reminders(current_context)
     assert current_stub.operations(writes=True) == ["update"]
@@ -1010,7 +1010,7 @@ def test_earlier_ack_survives_later_source_failure(
 ) -> None:
     add(owner_conn, slug="sample-alpha")
     add(owner_conn, slug="sample-zeta")
-    current_stub.refuse_source_ref = "finance:sample-zeta:bill-2047-05"
+    current_stub.refuse_source_ref = "finance:sample-zeta:bill-2063-05"
     assert current.sync_reminders(current_context).state == "failed"
     first, last = rows(owner_conn)
     assert first.state == "open" and first.last_success_at is not None
@@ -1068,10 +1068,10 @@ def test_create_once_partial_full_and_returned_payment(
     assert "wake" not in item and "snoozed_until" not in item
     assert item["body"].splitlines() == [
         "Type: bill-due",
-        "Who/what: Sample Utility, bill-2047-05",
-        "Amount/detail: 35.20 CAD",
-        "Date: due 2047-05-18",
-        "Period-key: finance:sample-utility:bill-2047-05",
+        "Who/what: Sample Utility, bill-2063-05",
+        "Amount/detail: 33.27 CAD",
+        "Date: due 2063-05-21",
+        "Period-key: finance:sample-utility:bill-2063-05",
         "Note: tracked by Float; paid or settled items are closed automatically",
     ]
     owner_conn.execute(update(obligation).values(threshold_remaining=Decimal("15.56")))
@@ -1083,7 +1083,7 @@ def test_create_once_partial_full_and_returned_payment(
     current.sync_reminders(current_context)
     assert item["status"] == "done"
     owner_conn.execute(
-        update(obligation).values(threshold_remaining=Decimal("35.20"), status="open")
+        update(obligation).values(threshold_remaining=Decimal("33.27"), status="open")
     )
     current.sync_reminders(current_context)
     assert current_stub.items[item["ref"]]["status"] == "open"
@@ -1109,7 +1109,7 @@ def test_successful_desired_omissions_close_previously_synced_items(
         current_context = replace(
             current_context,
             settings=parse_settings(
-                '[finance.reminders]\nmin_due_date = "2047-06-01"\n'
+                '[finance.reminders]\nmin_due_date = "2063-06-01"\n'
             ),
         )
     else:

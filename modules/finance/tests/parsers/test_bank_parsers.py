@@ -159,7 +159,7 @@ def test_the_current_layout_ties_out_per_account(setup: Setup) -> None:
         Decimal("12744.09"), Decimal("6397.90"),
     )  # fmt: skip
     assert (chequing.total_debits, chequing.total_credits) == (
-        Decimal("5820.29"), Decimal("1033.75"),
+        Decimal("13197.91"), Decimal("6851.72"),
     )  # fmt: skip
     nest = by_account[account_id("olive-nest")]
     assert (nest.opening, nest.closing, nest.tied_out) == (

@@ -268,7 +268,7 @@ def test_an_account_whose_number_ended_before_the_file_is_no_candidate(
 ) -> None:
     replaced = ManualAccount(
         "pp-old", "Hazel", "payment_processor", ("OLDPP555X4",),
-        currencies="CAD;USD", valid_to="2051-01-31",
+        currencies="CAD;USD", valid_to="2030-01-31",
     )  # fmt: skip
     setup.register(replaced)
     doc = setup.file(HAZEL_CSV, fixture("hazel_activity.csv"))

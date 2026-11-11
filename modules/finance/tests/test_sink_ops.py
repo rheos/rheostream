@@ -53,8 +53,8 @@ if TYPE_CHECKING:
     from tests.finance_support import StubServer
 
 SINK = "current"
-T0 = dt.datetime(2041, 1, 16, 12, 0, tzinfo=dt.UTC)  # make_context's fake clock
-DUE = dt.date(2041, 1, 26)
+T0 = dt.datetime(2063, 1, 18, 12, 0, tzinfo=dt.UTC)  # make_context's fake clock
+DUE = dt.date(2063, 1, 28)
 WAKE_DAYS = 5
 TICKETS = ("POST", "/api/tickets")
 MakeContext = Callable[[Role], FinanceContext]
@@ -99,7 +99,7 @@ class TicketPreview:
         return [
             PreviewItem(
                 kind="ticket",
-                key="bill:999-water:2041-01",
+                key="bill:999-water:2063-01",
                 amount=self.amount,
                 currency="CAD",
                 due_on=DUE,
@@ -199,13 +199,13 @@ def test_a_preview_at_two_clock_times_has_one_digest_and_an_amount_change_anothe
     owner: FinanceContext, provider: TicketSink, builder: TicketPreview
 ) -> None:
     early = get_preview(owner)
-    fake_clock(owner).set(dt.datetime(2041, 1, 23, 18, 30, tzinfo=dt.UTC))
+    fake_clock(owner).set(dt.datetime(2063, 1, 25, 18, 30, tzinfo=dt.UTC))
     late = get_preview(owner)
 
     # The text a person reads moved with the clock: the "as of" line and the wake.
     assert early.text != late.text
-    assert "as of 2041-01-16" in early.text and "as of 2041-01-23" in late.text
-    assert "wakes 2041-01-21 08:00" in early.text
+    assert "as of 2063-01-18" in early.text and "as of 2063-01-25" in late.text
+    assert "wakes 2063-01-23 08:00" in early.text
     assert "wake passed" in late.text and "wakes" not in late.text
     assert "due in 10 day(s)" in early.text and "due in 3 day(s)" in late.text
     # The digest did not.
@@ -760,7 +760,7 @@ def test_preview_full_prints_the_items(
     assert main(["sink", "preview", SINK]) == 0
     out = capsys.readouterr().out
     assert out.startswith("finance sink preview current: 1 item(s) pending;")
-    assert "- ticket bill:999-water:2041-01: 136.17 CAD; due 2041-01-26" in out
+    assert "- ticket bill:999-water:2063-01: 136.17 CAD; due 2063-01-28" in out
     assert "- POST /api/tickets" in out
     assert chr(0x2014) not in out
 

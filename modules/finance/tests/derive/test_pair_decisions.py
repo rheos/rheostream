@@ -469,16 +469,16 @@ def test_a_pair_of_a_fiat_and_a_crypto_line_is_inert(crypto_ledger: Ledger) -> N
         WALLET,
         f"MOVE at={at(1)} asset=ethereum qty=0.5 type=Received hint=1",
     )
-    ledger.cash(f"exchange,{D(2055, 6, 19)},612.45,CAD,SAMPLE SALE 99963,")
+    ledger.cash(f"exchange,{D(2057, 6, 6)},612.45,CAD,SAMPLE SALE 99963,")
     ledger.derive()
     before = states(ledger)
-    assert before[(D(2055, 6, 19), Decimal("-0.5"))] == ("paired", "own_transfer")
+    assert before[(D(2057, 6, 6), Decimal("-0.5"))] == ("paired", "own_transfer")
 
     decide(
         ledger,
         "pair",
-        key_ref(ledger, D(2055, 6, 19), "-0.5"),
-        key_ref(ledger, D(2055, 6, 19), "612.45"),
+        key_ref(ledger, D(2057, 6, 6), "-0.5"),
+        key_ref(ledger, D(2057, 6, 6), "612.45"),
     )
     ledger.derive()
 
@@ -516,7 +516,7 @@ def test_a_pair_decision_resolves_an_ambiguous_crypto_transfer(
     decision_id = decide(
         ledger,
         "pair",
-        key_ref(ledger, D(2055, 6, 19), "-0.5"),
+        key_ref(ledger, D(2057, 6, 6), "-0.5"),
         format_ref("finance", "txn", first.id),
     )
     ledger.derive()
@@ -554,8 +554,8 @@ def test_a_pair_joins_two_crypto_lines_with_no_candidate(
     decision_id = decide(
         ledger,
         "pair",
-        key_ref(ledger, D(2055, 6, 19), "0.3"),
-        key_ref(ledger, D(2055, 6, 19), "-0.5"),
+        key_ref(ledger, D(2057, 6, 6), "0.3"),
+        key_ref(ledger, D(2057, 6, 6), "-0.5"),
     )
     ledger.derive()
 
@@ -586,7 +586,7 @@ def test_a_one_line_pair_keeps_a_withdrawal_one_sided(crypto_ledger: Ledger) -> 
     ledger.derive()
     assert kinds(ledger) == [("own_transfer", False)] * 2
 
-    decision_id = decide(ledger, "pair", key_ref(ledger, D(2055, 6, 19), "-0.5"))
+    decision_id = decide(ledger, "pair", key_ref(ledger, D(2057, 6, 6), "-0.5"))
     ledger.derive()
 
     assert kinds(ledger) == [("own_one_sided", True)]
@@ -1322,8 +1322,8 @@ def test_a_pair_of_a_withdrawal_to_an_own_address_and_another_deposit_is_two_sid
     decision_id = decide(
         ledger,
         "pair",
-        key_ref(ledger, D(2055, 6, 19), "-0.5"),
-        key_ref(ledger, D(2055, 6, 19), "0.3"),
+        key_ref(ledger, D(2057, 6, 6), "-0.5"),
+        key_ref(ledger, D(2057, 6, 6), "0.3"),
     )
     ledger.derive()
 
@@ -1393,7 +1393,7 @@ def test_a_one_line_pair_resolves_through_its_line_key(crypto_ledger: Ledger) ->
     ledger.derive()
     assert edges(ledger, "own_one_sided") == [(True, None)]
 
-    decision_id = decide(ledger, "pair", added_ref(ledger, D(2055, 6, 19), "-0.5"))
+    decision_id = decide(ledger, "pair", added_ref(ledger, D(2057, 6, 6), "-0.5"))
     ledger.derive()
 
     assert edges(ledger, "own_one_sided") == [(True, basis(decision_id))]

@@ -216,29 +216,29 @@ def test_each_file_is_registered_with_its_hash_issuer_kind_format_and_status(
          "filed", "transcription"),
         ("_mail/example.org/2044-08-01-9999abcd.eml", "_mail", "email", "eml",
          "filed", "none"),
-        ("guava/2044-06-30.csv", "guava", "trading_export", "csv", "filed", "none"),
-        ("teak/teak.pos.2044-05-01.json", "teak",
-         "holdings_snapshot", "json", "filed", "none"),
-        ("teak/teak.log.2044-05-01.json", "teak", "export", "json",
+        ("alder/2044-01-31.pdf", "alder", "statement", "pdf", "filed", "none"),
+        ("alder/api/2044-01-31-list.json", "alder", "api_response", "json",
          "filed", "none"),
-        ("cra/2043-t4.pdf", "cra", "cra_slip", "pdf", "filed", "none"),
+        ("alder/export-2044-01.csv", "alder", "export",
+         "csv", "filed", "none"),
         ("boxwood/2044-03-01-bill.jpeg", "boxwood", "image", "jpeg",
          "needs_manual_entry", "none"),
         ("boxwood/2044-04-01-bill.HEIC", "boxwood", "image", "heic",
          "needs_manual_entry", "none"),
+        ("cra/2043-t4.pdf", "cra", "cra_slip", "pdf", "filed", "none"),
+        ("fig/statement", "fig", "statement", "none", "filed", "none"),
+        ("guava/2044-06-30.csv", "guava", "trading_export", "csv", "filed", "none"),
         ("invoices-received/example-vendor/inv9990.pdf",
          "invoices-received/example-vendor", "invoice", "pdf", "filed", "none"),
         ("receipts/2044-07-04.png", "receipts", "image", "png",
          "needs_manual_entry", "none"),
         ("receipts/example-shop/2044-07-01-receipt.pdf", "receipts/example-shop",
          "receipt", "pdf", "filed", "none"),
-        ("alder/2044-01-31.pdf", "alder", "statement", "pdf", "filed", "none"),
-        ("alder/api/2044-01-31-list.json", "alder", "api_response", "json",
+        ("teak/teak.log.2044-05-01.json", "teak", "export", "json",
          "filed", "none"),
-        ("alder/export-2044-01.csv", "alder", "export",
-         "csv", "filed", "none"),
+        ("teak/teak.pos.2044-05-01.json", "teak",
+         "holdings_snapshot", "json", "filed", "none"),
         ("yew/2044-02-12.pdf", "yew", "bill", "pdf", "filed", "none"),
-        ("fig/statement", "fig", "statement", "none", "filed", "none"),
     ]  # fmt: skip
     hashes = {
         str(path): str(sha)
@@ -328,10 +328,10 @@ def test_an_identifier_bearing_path_is_skipped_counted_and_stored_nowhere(
 
     assert sorted(row[0] for row in documents(owner_conn)) == sorted(ADOPTED)
     assert skips(owner_conn) == [
-        ("teak", "identifier_in_path", 1),
-        ("sumac", "identifier_in_path", 1),
         ("alder", "identifier_in_path", 2),
         ("fig", "identifier_in_path", 3),
+        ("sumac", "identifier_in_path", 1),
+        ("teak", "identifier_in_path", 1),
     ]
     assert [(s.directory, s.reason, s.count) for s in out.skipped] == skips(owner_conn)
 
@@ -543,8 +543,8 @@ def test_an_unreadable_file_or_directory_is_counted_and_the_walk_goes_on(
     assert out.registered == 1
     assert [row[0] for row in documents(owner_conn)] == ["yew/2044-02-12.pdf"]
     assert skips(owner_conn) == [
-        ("sumac", "unreadable", 1),
         ("alder", "unreadable", 1),
+        ("sumac", "unreadable", 1),
     ]
     assert "private-sub" not in out.model_dump_json()
 
@@ -584,13 +584,13 @@ def test_a_path_stored_before_its_identifier_was_registered_is_withheld(
 
     assert (out.registered, out.known, out.withheld) == (0, 1, 2)
     assert documents(owner_conn) == [
-        ("(withheld)", "invoices-received", "invoice", "pdf", "filed", "none"),
         ("(withheld)", "alder", "statement", "pdf", "filed", "none"),
+        ("(withheld)", "invoices-received", "invoice", "pdf", "filed", "none"),
         ("sumac/2044-01-31.pdf", "sumac", "statement", "pdf", "filed", "none"),
     ]
     assert skips(owner_conn) == [
-        ("invoices-received", "identifier_in_path", 1),
         ("alder", "identifier_in_path", 1),
+        ("invoices-received", "identifier_in_path", 1),
     ]
     stored = " ".join(
         f"{path} {issuer}"
@@ -626,8 +626,8 @@ def test_files_the_walk_cannot_register_are_counted_by_mapped_directory_only(
     assert out.registered == 1
     assert skips(owner_conn) == [
         ("(unmapped)", "unmapped_directory", 2),
-        ("sumac", "not_a_regular_file", 1),
         ("alder", "not_a_regular_file", 1),
+        ("sumac", "not_a_regular_file", 1),
         ("yew", "not_downloaded", 1),
     ]
     assert "private-folder-name" not in out.model_dump_json()

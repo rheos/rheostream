@@ -168,12 +168,12 @@ def test_the_neem_statement_ties_out_with_its_card_fields(setup: Setup) -> None:
     # The balance owed, negated: the card's lines run from one to the other.
     assert (period.opening, period.closing) == (
         Decimal("-2443.00"),
-        Decimal("-3000.15"),
+        Decimal("-3088.66"),
     )
     assert (period.total_debits, period.total_credits) == (
-        Decimal("995.70"), Decimal("610.75"),
+        Decimal("1256.41"), Decimal("610.75"),
     )  # fmt: skip
-    assert period.balance_due == Decimal("3000.15")
+    assert period.balance_due == Decimal("3088.66")
     assert period.minimum_due == Decimal("98.19")
     assert period.due_date == dt.date(2050, 1, 29)
     # The payment line, not the refund the summary folds into "Neem credits in".

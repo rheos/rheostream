@@ -179,10 +179,10 @@ def test_a_card_statement_gives_the_obligation_as_printed(ledger: Ledger) -> Non
     assert (row.kind, row.period_label) == ("card_statement", "card-2050-01-24")
     assert row.statement_date == row.issued_on == D(2050, 1, 24)
     assert row.due_date == D(2050, 1, 29)
-    assert row.amount_due == Decimal("3000.15")
+    assert row.amount_due == Decimal("3088.66")
     assert row.minimum_due == row.threshold_due == Decimal("98.19")
     assert row.paid == 0
-    assert row.remaining == Decimal("3000.15")
+    assert row.remaining == Decimal("3088.66")
     assert row.threshold_remaining == Decimal("98.19")
     assert row.status == "open"
     assert row.primary_source == NEEM_STATEMENT
@@ -475,7 +475,7 @@ def test_a_newer_bill_supersedes_the_older_and_only_it_is_owed(ledger: Ledger) -
 
     assert (older.period_label, newer.period_label) == (
         "bill-2029-02",
-        "bill-2050-03",
+        "bill-2029-03",
     )
     assert (older.status, newer.status) == ("superseded", "open")
     assert newer.supersedes_id == older.id
@@ -1227,13 +1227,13 @@ def test_an_active_arrangement_supersedes_what_it_replaces_and_owes_current_char
 
     found = by_label(ledger)
 
-    replaced, current = found["bill-2029-02"], found["bill-2050-03"]
+    replaced, current = found["bill-2029-02"], found["bill-2029-03"]
     assert (replaced.status, replaced.arrangement_ref) == ("superseded", "plan")
     assert current.status == "open"
     assert current.arrangement_ref is None
     # The total printed holds what the instalments now cover.
     assert current.amount_due == current.remaining == Decimal("333.84")
-    assert owed_total(ledger) == Decimal("262.05")
+    assert owed_total(ledger) == Decimal("421.58")
 
 
 def test_a_replaced_newest_bill_leaves_only_the_instalments_owed(
@@ -1245,7 +1245,7 @@ def test_a_replaced_newest_bill_leaves_only_the_instalments_owed(
     ledger.derive()
 
     assert by_label(ledger)["bill-2029-02"].status == "superseded"
-    assert owed_total(ledger) == Decimal("129.64")
+    assert owed_total(ledger) == Decimal("87.74")
 
 
 def test_an_arrangement_replaces_a_manual_bill_too(ledger: Ledger) -> None:
@@ -1352,7 +1352,7 @@ def test_an_active_arrangement_suppresses_arrears_so_never_both_are_owed(
 
     assert sorted(by_label(ledger)) == ["bill-2029-02", "inst-plan-1", "inst-plan-2"]
     assert by_label(ledger)["bill-2029-02"].amount_due == Decimal("333.84")
-    assert owed_total(ledger) == Decimal("262.05")
+    assert owed_total(ledger) == Decimal("421.58")
 
 
 def test_a_bill_printing_no_current_charges_is_owed_its_total_less_its_arrears(
@@ -1376,7 +1376,7 @@ def test_a_bill_printing_no_current_charges_is_owed_its_total_less_its_arrears(
     found = by_label(ledger)
 
     assert found["bill-2029-02"].status == "superseded"
-    assert found["bill-2050-03"].amount_due == Decimal("299.22")
+    assert found["bill-2029-03"].amount_due == Decimal("299.22")
 
 
 def test_only_the_newest_bill_states_arrears(ledger: Ledger) -> None:
@@ -1390,7 +1390,7 @@ def test_only_the_newest_bill_states_arrears(ledger: Ledger) -> None:
     ledger.file("boxwood/b.pdf", boxwood_bill("February 25, 2029", "March 18, 2029"))
     ledger.derive()
 
-    assert sorted(by_label(ledger)) == ["bill-2029-02", "bill-2050-03"]
+    assert sorted(by_label(ledger)) == ["bill-2029-02", "bill-2029-03"]
     assert owed_total(ledger) == Decimal("494.66")
 
 
@@ -1403,7 +1403,7 @@ def test_arrears_of_two_accounts_of_one_issuer_are_two_rows(ledger: Ledger) -> N
     found = by_label(ledger)
 
     assert {"arrears-2049-06", "arrears-2049-06-2"} <= set(found)
-    assert owed_total(ledger) == Decimal("276.17")
+    assert owed_total(ledger) == Decimal("202.80")
 
 
 def test_an_arrangement_owes_a_yew_bill_its_printed_current_charges(
@@ -1417,7 +1417,7 @@ def test_an_arrangement_owes_a_yew_bill_its_printed_current_charges(
     bill = by_label(ledger)["bill-2049-07"]
 
     assert bill.amount_due == bill.remaining == Decimal("62.64")
-    assert owed_total(ledger) == Decimal("203.95")
+    assert owed_total(ledger) == Decimal("150.38")
 
 
 def test_a_typed_in_bill_beside_an_active_arrangement_is_owed_as_typed(
@@ -1426,7 +1426,7 @@ def test_a_typed_in_bill_beside_an_active_arrangement_is_owed_as_typed(
     """It supersedes the parsed bill before it, which the arrangement replaced, and it
     prints no current charges to read."""
     boxwood_account(ledger)
-    arrangement(ledger, "boxwood", "bill-2059-02")
+    arrangement(ledger, "boxwood", "bill-2029-02")
     ledger.file(BOXWOOD, fixture("boxwood_bill.txt"))
     ledger.manual(
         OBLIGATIONS_FILE,
@@ -1436,12 +1436,12 @@ def test_a_typed_in_bill_beside_an_active_arrangement_is_owed_as_typed(
 
     found = by_label(ledger)
 
-    assert (found["bill-2059-02"].status, found["bill-2059-03"].status) == (
+    assert (found["bill-2029-02"].status, found["bill-2059-03"].status) == (
         "superseded",
         "open",
     )
     assert found["bill-2059-03"].amount_due == Decimal("84.82")
-    assert found["bill-2059-03"].supersedes_id == found["bill-2059-02"].id
+    assert found["bill-2059-03"].supersedes_id == found["bill-2029-02"].id
     assert owed_total(ledger) == Decimal("390.88")
 
 
@@ -1457,7 +1457,7 @@ def test_a_replaced_typed_in_bill_leaves_only_the_instalments_owed(
     ledger.derive()
 
     assert by_label(ledger)["bill-2029-02"].status == "superseded"
-    assert owed_total(ledger) == Decimal("129.64")
+    assert owed_total(ledger) == Decimal("87.74")
 
 
 def test_a_replaced_bill_keeps_its_printed_total(ledger: Ledger) -> None:

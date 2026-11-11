@@ -11,6 +11,8 @@ into one txn with two sources. Every value is synthetic.
 
 from __future__ import annotations
 
+import dataclasses
+import datetime as dt
 import hashlib
 import uuid
 from collections import Counter
@@ -21,6 +23,7 @@ from typing import cast
 import pytest
 from sqlalchemy import Table, func, select
 
+from rheo_finance.clock import FakeClock
 from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
 from rheo_finance.manual.stage2 import account_id
 from rheo_finance.storage.schema import (
@@ -283,6 +286,10 @@ def test_coverage_breaks_where_a_fee_row_is_missing_and_only_there(
     kept = [row for row in rows if row["Fig Fee"] != "0.10"]
     assert len(kept) == len(rows) - 1
     ledger.file(FIG_CSV, csv_text("fig", kept))
+    # The matrix runs to the clock's month: read it inside the rows' own months.
+    ledger.ctx = dataclasses.replace(
+        ledger.ctx, clock=FakeClock(dt.datetime(2045, 8, 31, 12, 0, tzinfo=dt.UTC))
+    )
 
     ledger.derive()
 

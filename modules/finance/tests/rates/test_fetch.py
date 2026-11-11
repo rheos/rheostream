@@ -142,11 +142,11 @@ def test_with_an_approval_it_sends_one_request_per_series_and_stores_the_rates(
     assert sorted(requested(rowan_stub)) == [
         (
             "/rowan/observations/FXEURCAD/json",
-            {"start_date": "2033-12-05", "end_date": "2034-01-16"},
+            {"start_date": "2033-12-05", "end_date": "2063-01-18"},
         ),
         (
             "/rowan/observations/FXUSDCAD/json",
-            {"start_date": "2033-12-04", "end_date": "2034-01-16"},
+            {"start_date": "2033-12-04", "end_date": "2063-01-18"},
         ),
     ]
     rows = fx_ledger.conn.execute(select(rate).order_by(rate.c.base, rate.c.rate_date))
@@ -195,7 +195,7 @@ def test_an_eur_line_widens_the_spec_and_stales_a_usd_only_approval(
     assert [item.key for item in after.items] == ["FXEURCAD", "FXUSDCAD"]
     assert after.spec_digest != before.spec_digest
     assert "series FXEURCAD: currency EUR; start_date 2033-12-05" in after.text
-    assert "end_date 2034-01-16 (the fetch day)" in after.text
+    assert "end_date 2063-01-18 (the fetch day)" in after.text
     assert is_enabled(usd_ledger.uow, "rates") is False
     out = fetch(usd_ledger)
     assert (out.enabled, out.requests) == (False, 0)
@@ -378,7 +378,7 @@ def test_an_open_series_covers_only_to_its_latest_observation(
     assert requested(rowan_stub) == [
         (
             "/rowan/observations/FXUSDCAD/json",
-            {"start_date": "2034-01-09", "end_date": "2034-01-16"},
+            {"start_date": "2034-01-09", "end_date": "2063-01-18"},
         )
     ]
     assert coverage(fx_ledger) == [

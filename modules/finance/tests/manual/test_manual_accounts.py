@@ -240,7 +240,8 @@ def test_one_confusable_pair_refuses_every_row_ending_alike(
 
 
 # The same institution as CHEQUING, spelled with other case and spacing.
-NEEM = "test-neem,Test neem,test  credit   UNION,credit_card,CAD,monthly,,,,,,,,,"
+# Whitespace runs and case are normalized: the chequing account's institution.
+NEEM = "test-neem,Test neem,test   BANK,credit_card,CAD,monthly,,,,,,,,,"
 # Punctuation is not normalized: another institution.
 OTHER = "test-other,Test other,Test Bank.,savings,CAD,monthly,,,,,,,,,"
 

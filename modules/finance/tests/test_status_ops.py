@@ -397,9 +397,9 @@ def test_status_lines_on_the_fixture_ledger_under_the_reader(
     lines = status_lines(fixture_ledger)
 
     assert list(lines) == [1, 2, 3, 4, 5, 6, 7, 9, 10]
-    assert lines[1].startswith("as of 2031-02-24 ")
+    assert lines[1].startswith("as of 2063-02-23 ")
     assert lines[1].endswith(", database current")
-    assert lines[2] == "last import: alder 2031-02-24; no tick yet"
+    assert lines[2] == "last import: alder 2063-02-23; no tick yet"
     assert (
         lines[3]
         == "documents: 1 unparsed, 1 rejected, 1 needs manual entry, 0 bill gaps"
@@ -512,7 +512,7 @@ def test_coverage_under_the_reader_is_the_matrix_with_reasons_in_words(
 def test_coverage_filters_by_account_and_year(fixture_ledger: FixtureLedger) -> None:
     every = coverage_out(fixture_ledger).months
     years = {m.month.year for m in every}
-    assert years == {2030, 2031}
+    assert years == set(range(2030, 2064))
 
     assert coverage_out(fixture_ledger, account="spare").months == []
     assert coverage_out(fixture_ledger, account="chequing").months == every
@@ -669,7 +669,7 @@ def test_a_database_with_no_report_views_prints_line_1_alone(
     lines = status_lines(fixture_ledger)
 
     assert list(lines) == [1]
-    assert lines[1].startswith("as of 2031-02-24 ")
+    assert lines[1].startswith("as of 2063-02-23 ")
     assert lines[1].endswith(
         f", database schema behind the code (at {HEAD}), no report views yet:"
         " run finance db migrate"

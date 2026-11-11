@@ -34,9 +34,9 @@ from tests.derive.test_payment_application import (
 
 D = dt.date
 M = Decimal
-NOW = dt.datetime(2059, 5, 1, 12, tzinfo=dt.UTC)
-DUE = D(2059, 5, 21)
-FLOOR = '[finance.reminders]\nmin_due_date = "2059-01-01"\n'
+NOW = dt.datetime(2063, 5, 1, 12, tzinfo=dt.UTC)
+DUE = D(2063, 5, 21)
+FLOOR = '[finance.reminders]\nmin_due_date = "2063-01-01"\n'
 
 
 def context(
@@ -61,7 +61,7 @@ def desired(ctx: FinanceContext) -> DesiredOut:
 def add(
     conn: Connection,
     *,
-    period: str = "bill-2059-05",
+    period: str = "bill-2063-05",
     due: dt.date | None = DUE,
     status: str = "open",
     before_floor: bool = False,
@@ -126,10 +126,10 @@ def test_read_uses_owner_connection_and_refuses_member(
     "due,status,before_floor",
     [
         (None, "open", False),
-        (D(2058, 12, 31), "open", False),
-        (D(2059, 5, 21), "open", True),
-        (D(2059, 5, 21), "presumed_paid", False),
-        (D(2059, 5, 21), "disputed", False),
+        (D(2062, 12, 31), "open", False),
+        (D(2063, 5, 21), "open", True),
+        (D(2063, 5, 21), "presumed_paid", False),
+        (D(2063, 5, 21), "disputed", False),
     ],
     ids=[
         "undated",
@@ -169,16 +169,16 @@ def test_floor_is_inclusive_and_contract_contains_only_policy_content(
     rolled_back_context: Callable[[Role], FinanceContext],
     owner_conn: Connection,
 ) -> None:
-    add(owner_conn, due=D(2059, 1, 1), status="partial", threshold="10.77")
+    add(owner_conn, due=D(2063, 1, 1), status="partial", threshold="10.77")
     (ticket,) = desired(context(rolled_back_context)).tickets
     assert ticket.model_dump() == {
         "payee_label": "Sample Utility",
         "amount": M("10.77"),
-        "due_date": D(2059, 1, 1),
-        "period": "bill-2059-05",
-        "source_ref": "finance:sample-utility:bill-2059-05",
-        "title": "Sample Utility: 10.77 CAD due 2059-01-01",
-        "body": "bill-2059-05: 10.77 CAD",
+        "due_date": D(2063, 1, 1),
+        "period": "bill-2063-05",
+        "source_ref": "finance:sample-utility:bill-2063-05",
+        "title": "Sample Utility: 10.77 CAD due 2063-01-01",
+        "body": "bill-2063-05: 10.77 CAD",
         "status": "open",
         "wake": None,
         "area": "bills",
@@ -193,23 +193,23 @@ def test_floor_is_inclusive_and_contract_contains_only_policy_content(
     [
         (
             "Europe/Berlin",
-            D(2059, 4, 3),
-            "2059-03-01T12:00:00+00:00",
-            "2059-03-29T07:00:00+00:00",
+            D(2063, 4, 3),
+            "2063-03-01T12:00:00+00:00",
+            "2063-03-29T07:00:00+00:00",
         ),
         (
             "Europe/Berlin",
-            D(2059, 4, 4),
-            "2059-03-01T12:00:00+00:00",
-            "2059-03-30T06:00:00+00:00",
+            D(2063, 4, 4),
+            "2063-03-01T12:00:00+00:00",
+            "2063-03-30T06:00:00+00:00",
         ),
         (
             "Etc/GMT-9",
-            D(2059, 5, 21),
-            "2059-05-15T23:00:00+00:00",
-            "2059-05-15T23:00:00+00:00",
+            D(2063, 5, 21),
+            "2063-05-15T23:00:00+00:00",
+            "2063-05-15T23:00:00+00:00",
         ),
-        ("Etc/GMT-9", D(2059, 5, 21), "2059-05-15T23:00:01+00:00", None),
+        ("Etc/GMT-9", D(2063, 5, 21), "2063-05-15T23:00:01+00:00", None),
     ],
     ids=["winter-offset", "spring-offset", "wake-now", "wake-passed"],
 )
@@ -236,16 +236,16 @@ def test_wake_settings_and_overdue_use_local_date(
     rolled_back_context: Callable[[Role], FinanceContext],
     owner_conn: Connection,
 ) -> None:
-    add(owner_conn, due=D(2059, 5, 21))
+    add(owner_conn, due=D(2063, 5, 21))
     settings = (
         FLOOR + 'wake_days_before = 2\nwake_time = "09:30"\n'
         '[finance.locale]\ntimezone = "Europe/Berlin"\n'
     )
     (ticket,) = desired(context(rolled_back_context, settings=settings)).tickets
-    assert ticket.wake == dt.datetime(2059, 5, 19, 7, 30, tzinfo=dt.UTC)
+    assert ticket.wake == dt.datetime(2063, 5, 19, 7, 30, tzinfo=dt.UTC)
     for when, expected in [
-        ("2059-05-21T21:59:59+00:00", "normal"),
-        ("2059-05-21T22:00:00+00:00", "high"),
+        ("2063-05-21T21:59:59+00:00", "normal"),
+        ("2063-05-21T22:00:00+00:00", "high"),
     ]:
         (ticket,) = desired(
             context(
@@ -260,10 +260,10 @@ def test_wake_settings_and_overdue_use_local_date(
 def test_card_minimum_stays_on_its_statement_when_next_statement_loads(
     own: Ledger,
 ) -> None:
-    minimum = paid_card(D(2058, 3, 26), "21.54")
-    with_settings(own, '[finance.reminders]\nmin_due_date = "2058-01-01"\n')
+    minimum = paid_card(D(2033, 3, 26), "21.54")
+    with_settings(own, '[finance.reminders]\nmin_due_date = "2033-01-01"\n')
     own.ctx = dataclasses.replace(
-        own.ctx, clock=FakeClock(dt.datetime(2058, 3, 30, 12, tzinfo=dt.UTC))
+        own.ctx, clock=FakeClock(dt.datetime(2033, 3, 30, 12, tzinfo=dt.UTC))
     )
     statement_n(own)
     card_export(own, minimum)
@@ -277,19 +277,19 @@ def test_card_minimum_stays_on_its_statement_when_next_statement_loads(
     assert after[N].status == "done"
     assert after[N1].status == "open"
     assert ": 24.73 CAD due " in after[N1].title
-    assert after[N1].wake == dt.datetime(2058, 4, 21, 15, tzinfo=dt.UTC)
+    assert after[N1].wake == dt.datetime(2033, 4, 21, 15, tzinfo=dt.UTC)
 
 
 def test_builder_accepts_only_the_typed_four_field_policy() -> None:
     policy = PayloadPolicy(
         payee_label="Sample Utility",
         amount=M("10.77"),
-        due_date=D(2059, 5, 21),
-        period="bill-2059-05",
+        due_date=D(2063, 5, 21),
+        period="bill-2063-05",
     )
     payload = build_payload(policy, registered_payees={"Sample Utility"})
-    assert payload.title == "Sample Utility: 10.77 CAD due 2059-05-21"
-    assert payload.body == "bill-2059-05: 10.77 CAD"
+    assert payload.title == "Sample Utility: 10.77 CAD due 2063-05-21"
+    assert payload.body == "bill-2063-05: 10.77 CAD"
     with pytest.raises(PayloadRefused):
         build_payload(policy.model_dump(), registered_payees={"Sample Utility"})  # type: ignore[arg-type]  # Deliberate untyped boundary probe.
 
@@ -301,8 +301,8 @@ def test_typed_policy_refuses_restricted_extra_fields(extra: str) -> None:
             {
                 "payee_label": "Sample Utility",
                 "amount": M("10.77"),
-                "due_date": D(2059, 5, 21),
-                "period": "bill-2059-05",
+                "due_date": D(2063, 5, 21),
+                "period": "bill-2063-05",
                 extra: "private free text",
             }
         )
@@ -311,14 +311,14 @@ def test_typed_policy_refuses_restricted_extra_fields(extra: str) -> None:
 @pytest.mark.parametrize(
     "label,period,amount,registered",
     [
-        ("Sample 999999", "bill-2059-05", "10.77", True),
-        ("Sample 9999 9999 9999 9991", "bill-2059-05", "10.77", True),
-        ("Sample 9999-99**-****-9991", "bill-2059-05", "10.77", True),
+        ("Sample 999999", "bill-2063-05", "10.77", True),
+        ("Sample 9999 9999 9999 9991", "bill-2063-05", "10.77", True),
+        ("Sample 9999-99**-****-9991", "bill-2063-05", "10.77", True),
         ("Sample Utility", "999999", "10.77", True),
         ("Sample Utility", "memo with private text", "10.77", True),
-        ("Sample Utility", "bill:2059-05", "10.77", True),
-        ("Sample Utility", "bill-2059-05", "829694.19", True),
-        ("Sample Counterparty", "bill-2059-05", "10.77", False),
+        ("Sample Utility", "bill:2063-05", "10.77", True),
+        ("Sample Utility", "bill-2063-05", "829694.19", True),
+        ("Sample Counterparty", "bill-2063-05", "10.77", False),
     ],
     ids=[
         "digit-run",
@@ -338,7 +338,7 @@ def test_builder_rejects_restricted_shapes_even_when_label_is_registered(
     registered: bool,
 ) -> None:
     policy = PayloadPolicy(
-        payee_label=label, amount=M(amount), due_date=D(2059, 5, 21), period=period
+        payee_label=label, amount=M(amount), due_date=D(2063, 5, 21), period=period
     )
     with pytest.raises(PayloadRefused):
         build_payload(
@@ -377,8 +377,8 @@ def test_builder_refuses_card_shapes_attached_to_registered_label_words(
     policy = PayloadPolicy(
         payee_label=label,
         amount=M("10.77"),
-        due_date=D(2059, 5, 21),
-        period="bill-2059-05",
+        due_date=D(2063, 5, 21),
+        period="bill-2063-05",
     )
     with pytest.raises(PayloadRefused, match="^restricted shape in reminder payload$"):
         build_payload(policy, registered_payees={label})
@@ -423,8 +423,8 @@ def test_builder_refuses_unicode_decimal_card_shapes_in_registered_labels(
     policy = PayloadPolicy(
         payee_label=label,
         amount=M("10.77"),
-        due_date=D(2059, 5, 21),
-        period="bill-2059-05",
+        due_date=D(2063, 5, 21),
+        period="bill-2063-05",
     )
     with pytest.raises(PayloadRefused, match="^restricted shape in reminder payload$"):
         build_payload(policy, registered_payees={label})
@@ -436,8 +436,8 @@ def test_policy_refuses_invalid_amounts(amount: str) -> None:
         PayloadPolicy(
             payee_label="Sample Utility",
             amount=M(amount),
-            due_date=D(2059, 5, 21),
-            period="bill-2059-05",
+            due_date=D(2063, 5, 21),
+            period="bill-2063-05",
         )
 
 
@@ -482,8 +482,8 @@ def test_builder_revalidates_a_constructed_policy_without_echoing_input() -> Non
     policy = PayloadPolicy.model_construct(
         payee_label="Sample Utility",
         amount=M("-0.01"),
-        due_date=D(2059, 5, 21),
-        period="bill-2059-05",
+        due_date=D(2063, 5, 21),
+        period="bill-2063-05",
     )
     with pytest.raises(PayloadRefused, match="^invalid reminder payload policy$"):
         build_payload(policy, registered_payees={"Sample Utility"})
@@ -495,7 +495,7 @@ def test_policy_refuses_float_money() -> None:
             {
                 "payee_label": "Sample Utility",
                 "amount": 12.5,
-                "due_date": D(2059, 5, 21),
-                "period": "bill-2059-05",
+                "due_date": D(2063, 5, 21),
+                "period": "bill-2063-05",
             }
         )

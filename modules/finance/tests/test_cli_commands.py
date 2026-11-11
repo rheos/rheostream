@@ -43,7 +43,7 @@ from tests.finance_support import DatabaseUnderTest
 
 EM = chr(0x2014)
 CSV_FIXTURE = (FIXTURES / "alder_chequing_jump.csv").read_text(encoding="utf-8")
-STAMP = "as of 2039-02-19 12:00 UTC"
+STAMP = "as of 2063-02-23 12:00 UTC"
 # What no command may print: the identifier, the fixture's description words, its
 # amounts and balances, and the Downloads file's own name.
 SECRETS = (
@@ -336,13 +336,13 @@ def test_status_json_under_the_reader_carries_the_status_lines(
 
     assert list(lines) == [1, 2, 3, 4, 5, 6, 7, 9, 10]
     assert lines[1] == f"{STAMP}, database current"
-    assert lines[2] == "last import: alder 2039-02-19; no tick yet"
+    assert lines[2] == "last import: alder 2063-02-23; no tick yet"
     assert lines[3] == (
         "documents: 1 unparsed, 0 rejected, 1 needs manual entry, 0 bill gaps"
     )
     assert lines[4].startswith("missing account-months: ")
     assert lines[5] == (
-        "confirm last derive snapshot 2039-02-19: pairing 0, held notice 0,"
+        "confirm last derive snapshot 2063-02-23: pairing 0, held notice 0,"
         " card debit 0, payment 0, presumed paid 0, reattach 0, category 0;"
         " untied card payments 0, credits not applied 0, orphaned decisions 0"
     )

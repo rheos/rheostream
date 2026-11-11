@@ -6,19 +6,19 @@
 Neem cycle: December 2 to January 24, 2050   Neem card no XXXX-9991
 
 Neem overview   What to pay
- Line size   $3,908.80   Neem cycle balance   $3,000.15
- Line left   $908.65   Neem least due   $98.19
+ Line size   $3,908.80   Neem cycle balance   $3,088.66
+ Line left   $820.14   Neem least due   $98.19
  Sumd rsi tconse   $0.00   Neem pay by date   January 29, 2050
  Over line by   $0.00
    Sumdolors rsit to tco:
  Neem opening figure   $2,443.00   If sum rsi tcon tet ipiscin gelitse ddoe modte it
  Neem credits in   -   $610.75   sumd rsit 9 tcon(s) tet 9 ipisc(s) to gel ddoe
    sumdolors rsitame in tcon.
- Neem spending   +   $832.02
+ Neem spending   +   $1,092.73
  Neem cash taken   +   $0.00
  Neem interest   +   $67.60
  Neem charges   +   $96.08   Sample rewards
-Neem cycle balance   $3,000.15
+Neem cycle balance   $3,088.66
    Sumdo rsitam   999
 
 Sumd to rsit tconsect tet ipis
@@ -35,7 +35,7 @@ Cash out   9.99%   $0.00
 
    Neem cycle balance   Neem least due   Neem pay by date   Paying now
 
-   $3,000.15   $98.19   January 29, 2050   $ _________________
+   $3,088.66   $98.19   January 29, 2050   $ _________________
 
    SAMPLE CARDHOLDER
    Sumdolo Rsitam

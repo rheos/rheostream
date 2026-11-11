@@ -117,7 +117,7 @@ SAMPLE_ITEMS: Final[tuple[PreviewItem, ...]] = (
     PreviewItem(
         kind="sample",
         key="sample:1",
-        amount=Decimal("99.00"),
+        amount=Decimal("89.13"),
         currency="CAD",
         due_on=dt.date(2026, 1, 31),
         fields=(("title", "Sample bill due"),),

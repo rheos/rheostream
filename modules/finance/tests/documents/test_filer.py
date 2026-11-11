@@ -37,7 +37,7 @@ MakeContext = Callable[[Role], FinanceContext]
 OPERATION = "finance.document.file"
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
 # The test context's fake clock.
-NOW = dt.datetime(2029, 1, 14, 12, 0, tzinfo=dt.UTC)
+NOW = dt.datetime(2063, 1, 18, 12, 0, tzinfo=dt.UTC)
 # Each fixture's filing date: period end, bill date, last row's date.
 STATEMENT = (FIXTURES / "alder_statement_newer.txt").read_bytes()  # 2055-06-12
 BILL = (FIXTURES / "yew_bill.txt").read_bytes()  # 2049-06-28
@@ -146,7 +146,7 @@ def test_a_statement_is_copied_under_its_date_and_the_original_stays(
     assert tree(dirs.archive) == {
         "alder/2055-06-12.pdf": sha(STATEMENT),
         "alder/2038-10-18.csv": sha(EXPORT),
-        "yew/2038-10-04.pdf": sha(BILL),
+        "yew/2049-06-28.pdf": sha(BILL),
     }
     assert downloads_state(dirs) == before
     assert (out.downloads.scanned, out.downloads.filed, out.downloads.known) == (

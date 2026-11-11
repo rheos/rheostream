@@ -11,6 +11,7 @@ import dataclasses
 import datetime as dt
 from collections.abc import Iterable
 
+import pytest
 from sqlalchemy import func, select
 
 from rheo_finance.clock import FakeClock
@@ -40,6 +41,15 @@ YEW_NUMBER = "999000123"
 LAST_MONTH = D(2038, 1, 1)
 
 Cell = tuple[str, str | None]
+
+
+@pytest.fixture(autouse=True)
+def coverage_clock(ledger: Ledger) -> None:
+    """Every matrix here runs to the local month of the clock the module docstring
+    names, whatever the shared ledger clock reads."""
+    ledger.ctx = dataclasses.replace(
+        ledger.ctx, clock=FakeClock(dt.datetime(2038, 1, 17, 12, 0, tzinfo=dt.UTC))
+    )
 
 
 def account_row(
@@ -736,14 +746,14 @@ def test_a_statement_failing_its_checks_shows_rejected_on_every_account_it_names
         (account_row("savings", "Alder", "savings"), "999000000033"),
     )
     text = (FIXTURES / "alder_statement_newer.txt").read_text(encoding="utf-8")
-    summary = "2516.76          74.76"
+    summary = "2,516.76          74.76"
     assert text.count(summary) == 1
-    ledger.file("alder/2055-06-11.pdf", text.replace(summary, "2516.76   74.77"))
+    ledger.file("alder/2055-06-11.pdf", text.replace(summary, "2,516.76   74.77"))
 
     derived = ledger.derive()
 
     assert derived.documents["rejected"] == 1
-    expected = {D(2055, 5, 1): ("rejected", None), LAST_MONTH: ("rejected", None)}
+    expected = {D(2055, 5, 1): ("rejected", None), D(2055, 6, 1): ("rejected", None)}
     assert matrix(ledger, "chequing") == expected
     assert matrix(ledger, "savings") == expected
     assert first_known(ledger, "chequing") == D(2055, 5, 9)

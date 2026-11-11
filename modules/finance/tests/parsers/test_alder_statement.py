@@ -193,9 +193,9 @@ def test_the_overdrawn_spell_rides_on_the_period(setup: Setup) -> None:
 def test_one_cent_off_is_rejected_with_zero_lines_and_an_event(setup: Setup) -> None:
     setup.register()
     text = STATEMENT_2055.read_text(encoding="utf-8")
-    summary = "2516.76          74.76"
+    summary = "2,516.76          74.76"
     assert text.count(summary) == 1
-    doc = setup.file("2055-06-11.pdf", text.replace(summary, "2516.76          74.77"))
+    doc = setup.file("2055-06-11.pdf", text.replace(summary, "2,516.76          74.77"))
 
     assert setup.parse(doc) == Parsed("rejected", "checks_failed")
 
@@ -215,8 +215,8 @@ def test_reparsing_a_rejected_statement_rewrites_its_rejected_periods(
 ) -> None:
     setup.register(("bonus", "chequing", "savings"))  # not the nest account
     text = STATEMENT_2055.read_text(encoding="utf-8")
-    summary = "2516.76          74.76"
-    doc = setup.file("2055-06-11.pdf", text.replace(summary, "2516.76          74.77"))
+    summary = "2,516.76          74.76"
+    doc = setup.file("2055-06-11.pdf", text.replace(summary, "2,516.76          74.77"))
 
     for _ in range(2):
         assert setup.parse(doc) == Parsed("rejected", "checks_failed")

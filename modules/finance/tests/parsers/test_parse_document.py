@@ -145,7 +145,7 @@ def archive(owner_conn: Connection, tmp_path: Path) -> Archive:
 def test_lines_that_reconcile_to_the_summary_commit(
     archive: Archive, fixture_registry: dict[str, Parser]
 ) -> None:
-    doc = archive.file("sumac/2033-01.pdf", b"CARD 109.51 85.74\n-27.06\n5.50\n")
+    doc = archive.file("sumac/2033-01.pdf", b"CARD 109.51 87.95\n-27.06\n5.50\n")
     assert archive.parse(doc) == Parsed("parsed", None, periods=1, lines=2)
     tied = archive.conn.scalar(
         select(statement_period.c.tied_out).where(statement_period.c.document_id == doc)
@@ -206,7 +206,7 @@ def test_a_document_with_no_parser_for_its_issuer_is_unparsed(archive: Archive) 
 def test_a_file_gone_from_the_archive_is_unparsed_with_a_reason(
     archive: Archive, fixture_registry: dict[str, Parser]
 ) -> None:
-    doc = archive.file("sumac/2033-01.pdf", b"CARD 109.51 85.74\n-27.06\n5.50\n")
+    doc = archive.file("sumac/2033-01.pdf", b"CARD 109.51 87.95\n-27.06\n5.50\n")
     (archive.root / "sumac" / "2033-01.pdf").unlink()
     assert archive.parse(doc) == Parsed("unparsed", "file_missing")
 
@@ -214,7 +214,7 @@ def test_a_file_gone_from_the_archive_is_unparsed_with_a_reason(
 def test_changed_bytes_at_the_path_are_not_parsed_as_the_document(
     archive: Archive, fixture_registry: dict[str, Parser]
 ) -> None:
-    doc = archive.file("sumac/2033-01.pdf", b"CARD 109.51 85.74\n-27.06\n5.50\n")
+    doc = archive.file("sumac/2033-01.pdf", b"CARD 109.51 87.95\n-27.06\n5.50\n")
     (archive.root / "sumac" / "2033-01.pdf").write_bytes(b"CARD 1.05 1.05\n")
     assert archive.parse(doc) == Parsed("unparsed", "file_changed")
     assert archive.lines(doc) == 0
@@ -223,7 +223,7 @@ def test_changed_bytes_at_the_path_are_not_parsed_as_the_document(
 def test_a_withheld_path_is_never_opened(
     archive: Archive, fixture_registry: dict[str, Parser]
 ) -> None:
-    doc = archive.file("sumac/2033-01.pdf", b"CARD 109.51 85.74\n-27.06\n5.50\n")
+    doc = archive.file("sumac/2033-01.pdf", b"CARD 109.51 87.95\n-27.06\n5.50\n")
     archive.conn.execute(
         update(document).where(document.c.id == doc).values(path=WITHHELD_PATH)
     )

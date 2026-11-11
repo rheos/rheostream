@@ -61,7 +61,7 @@ def clinic_invoice(total: str, issued: str) -> str:
     text = changed(invoice(issued), "Sample Contractor", "Sample Dental Clinic")
     for printed, replacement in (
         ("$75.55   $552.00", f"$75.55   ${total}"),
-        ("Subtotal   $828.00", f"Subtotal   ${total}"),
+        ("Inv subtotal   $828.00", f"Inv subtotal   ${total}"),
         ("Inv total   $828.00", f"Inv total   ${total}"),
         ("Inv paid   $110.40", f"Inv paid   ${total}"),
         ("Inv owing   $717.60", "Inv owing   $0.00"),

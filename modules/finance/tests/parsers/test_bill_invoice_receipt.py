@@ -235,7 +235,7 @@ def test_an_invoice_gives_one_account_less_invoice_line(
     assert (line.amount, line.currency) == (Decimal("-828.00"), "CAD")
     assert line.amount_due == Decimal("717.60")
     assert (line.description_raw, line.counterparty) == (
-        "Inv number SP0042", "sample contractor",
+        "Invoice SP0042", "sample contractor",
     )  # fmt: skip
 
 
@@ -348,7 +348,8 @@ def test_a_receipt_gives_one_receipt_line_per_payment(setup: Setup) -> None:
 
 def test_a_payment_with_no_number_has_no_reference_digest(setup: Setup) -> None:
     doc = setup.file(
-        RECEIPT, changed(RECEIPT_TEXT, "Pmt. Payment #999123 - ", "Pmt. Payment - ")
+        RECEIPT,
+        changed(RECEIPT_TEXT, "Sample Provider #999123 - ", "Sample Provider - "),
     )
 
     assert setup.parse(doc) == Parsed("parsed", None, periods=0, lines=2)
