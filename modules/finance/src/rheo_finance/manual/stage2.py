@@ -25,6 +25,9 @@ Each loader rewrites the ``manual_entry_error`` rows of its own files and no oth
   ``arrangements.csv``, checked against the loaded payees and held in memory for
   stage 14 (``manual.obligations``, ``manual.arrangements``).
 
+A derive empties ``manual_entry_error`` before the loaders run (``derive.run.CLEARED``),
+so a row under a file no loader reads does not survive it.
+
 Ids come from ``derived_id`` on the fixed business date 2000-01-01 (registry rows have
 no date of their own). An account is keyed by its slug. An identifier is keyed by its
 account's slug and its place among that account's identifiers (sorted by kind and
@@ -353,7 +356,8 @@ def load_filed_years(uow: UnitOfWork, data_dir: Path) -> FiledYears:
 def _rewrite_errors(
     uow: UnitOfWork, files: tuple[str, ...], errors: tuple[RowError, ...]
 ) -> None:
-    """Replace the ``manual_entry_error`` rows of ``files``, and only theirs."""
+    """Replace the ``manual_entry_error`` rows of ``files``, and only theirs: a loader
+    run on its own leaves another file's errors alone."""
     uow.execute(delete(manual_entry_error).where(manual_entry_error.c.file.in_(files)))
     if errors:
         uow.execute(

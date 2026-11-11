@@ -14,14 +14,14 @@ import datetime as dt
 import hashlib
 import os
 import socket
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, NoReturn
 
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import Connection, DateTime, func, select, text, update
+from sqlalchemy import Connection, DateTime, func, insert, select, text, update
 
 from rheo_finance import catalogue, features
 from rheo_finance.clock import FakeClock
@@ -44,6 +44,7 @@ from rheo_finance.storage.schema import (
     decision_target,
     document,
     event,
+    manual_entry_error,
     sink_spec,
     txn,
     txn_source,
@@ -428,6 +429,34 @@ def test_the_digest_reads_a_fractional_json_number_in_event_data(
         return digest(ledger)
 
     assert with_number("1.5") != with_number("2.5")
+
+
+@pytest.mark.parametrize("step", [rebuild, derive], ids=["rebuild", "derive"])
+def test_an_error_row_under_a_file_no_loader_reads_does_not_survive(
+    ledger: Ledger, step: Callable[[Ledger], BaseModel]
+) -> None:
+    seed(ledger)
+    rebuild(ledger)
+    clean = digest(ledger)
+    ledger.conn.execute(
+        insert(manual_entry_error).values(
+            id=uuid7(dt.datetime(2046, 1, 1, tzinfo=dt.UTC)),
+            file="retired.csv",
+            line_no=2,
+            reason="synthetic: a file no loader reads",
+        )
+    )
+    assert digest(ledger) != clean
+
+    step(ledger)
+
+    left = ledger.conn.scalar(
+        select(func.count())
+        .select_from(manual_entry_error)
+        .where(manual_entry_error.c.file == "retired.csv")
+    )
+    assert left == 0
+    assert digest(ledger) == clean
 
 
 def test_every_derived_table_is_digested_and_no_state_table_is() -> None:
