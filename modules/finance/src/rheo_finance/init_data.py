@@ -97,8 +97,15 @@ def _manual_files(directory: Path) -> Mapping[str, tuple[str, ...]]:
 
 
 def init_data(data: Path | None = None) -> InitDataResult:
+    """Lay out ``data`` (default the data directory). Under a bound workspace layout
+    its five directories are created first, so the workspace's ledger has its archive,
+    inbox and keys directories only after this explicit step."""
     directory = data or db.data_dir()
     result = InitDataResult(data_dir=directory)
+    layout = db.bound_layout()
+    if layout is not None and data is None:
+        for each in layout.directories:
+            _ensure_dir(each, result)
     _ensure_dir(directory, result)
     for name in DIRECTORIES:
         _ensure_dir(directory / name, result)

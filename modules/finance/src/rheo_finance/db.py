@@ -1,39 +1,43 @@
-"""The ledger database: credentials, the writer lock, reachability and the chain.
+"""The ledger database: roles, the writer lock, the data layout, reachability and the
+chain.
 
 The standalone runtime that once lived here (``finance db up``, ``db init``,
 ``db migrate``, the ``docker exec`` calls and the native PostgreSQL 17 dump and
 restore seam) was not imported into rheoStream: the module runs on rheoStream's
-Postgres cluster, whose backups the deployment owns. ``migrate`` stays as the library
-call that applies the frozen chain under the owner role.
+Postgres cluster, whose backups the deployment owns. Core runs the frozen chain on its
+own connection through ``migrations/env.py``, which sets the two roles up with
+``prepare_roles`` and runs every revision as ``finance_owner`` (``acting_as``).
 
 This module keeps sqlalchemy, psycopg and alembic out of its top-level imports, because
 ``cli.main`` imports the database layer lazily and must start without it.
 
-Credentials live in ``$FINANCE_DATA_DIR/db.env`` (mode 0600). Nothing here prints a
-password or a DSN that carries one.
+The one-off read of an old standalone ledger takes its owner DSN from a private env
+file (``read_env_file``, mode 0600). Nothing here prints a password or a DSN that
+carries one.
 """
 
 from __future__ import annotations
 
 import contextvars
-import fcntl
 import os
 import re
-import threading
+import stat
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final, Literal
 
 if TYPE_CHECKING:
     from alembic.config import Config
+    from sqlalchemy import Connection
     from sqlalchemy.engine import URL
 
 
 OWNER_ROLE = "finance_owner"
 READER_ROLE = "finance_reader"
+ROLES: Final[tuple[str, str]] = (OWNER_ROLE, READER_ROLE)
 SCHEMA = "finance"
 LIVE_DATABASE = "finance"
 TEST_DATABASE = "finance_test"
@@ -57,78 +61,265 @@ class DbError(Exception):
     """A database command failed. The message is safe to print: it holds no secret."""
 
 
-# The lock is shared by installed CLI, foreground worker and release wrapper.
+class LayoutRefused(DbError):
+    """The workspace layout, or a private file in it, cannot be used. The message is a
+    fixed code."""
+
+
+# --- the writer lock -----------------------------------------------------------------
+
+# The CLI and the worker are separate processes on one workspace database.
 WRITER_WAIT_SECONDS = 30.0
-
-
-@dataclass
-class _WriterOwner:
-    identity: tuple[Path, int, int]
-    held: bool = True
-
-
-_LOCK_OWNER: contextvars.ContextVar[_WriterOwner | None] = contextvars.ContextVar(
-    "finance_writer_lock", default=None
-)
+# ``b"RHEOFINW"``: core's key style, one constant per database, so one per workspace.
+WRITER_LOCK_KEY: Final = 0x5248454F46494E57
+_LOCK_POLL_SECONDS = 0.05
 
 
 class WriterBusy(DbError):
-    """Another process owns the ledger writer lock."""
+    """Another connection holds the ledger writer lock."""
 
 
 @contextmanager
 def writer_lock(
-    data: Path | None = None, *, wait_seconds: float = WRITER_WAIT_SECONDS
+    connection: Connection, *, wait_seconds: float = WRITER_WAIT_SECONDS
 ) -> Iterator[None]:
-    """Bounded, process-local reentrant flock on the shared private data mount.
+    """The ledger writer lock on ``connection``'s transaction, waited for at most
+    ``wait_seconds`` (0 to 300), else ``WriterBusy``.
 
-    Never unlink the lock file: waiters must continue to address the same inode.
-    The installed CLI wrapper must hold this context across all release writes.
+    A transaction-level advisory lock, released at commit or rollback: a session-level
+    one would outlive a pooled connection's transaction. It is polled with
+    ``pg_try_advisory_xact_lock`` rather than bounded by ``lock_timeout``, because a
+    lock timeout aborts the caller's transaction. Postgres stacks the lock, so a nested
+    call on the same connection enters at once; one on another connection waits, then
+    raises ``WriterBusy``.
     """
     if not 0 <= wait_seconds <= 300:
         raise DbError("writer wait must be between 0 and 300 seconds")
-    path = (data or data_dir()).resolve() / "locks" / "ledger.lock"
-    identity = (path, os.getpid(), threading.get_ident())
-    owner = _LOCK_OWNER.get()
-    if owner is not None and owner.held and owner.identity == identity:
-        yield
-        return
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    try:
-        os.fchmod(fd, 0o600)
-        deadline = time.monotonic() + wait_seconds
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise WriterBusy(
-                        "writer_busy: retry after the current writer"
-                    ) from None
-                time.sleep(min(0.05, remaining))
-        owner = _WriterOwner(identity)
-        token = _LOCK_OWNER.set(owner)
-        try:
-            yield
-        finally:
-            # Copies of this context keep the same object after our token resets.
-            owner.held = False
-            _LOCK_OWNER.reset(token)
-            fcntl.flock(fd, fcntl.LOCK_UN)
-    finally:
-        os.close(fd)
+    from sqlalchemy import text
+
+    statement = text("SELECT pg_try_advisory_xact_lock(:key)")
+    deadline = time.monotonic() + wait_seconds
+    while not connection.execute(statement, {"key": WRITER_LOCK_KEY}).scalar_one():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise WriterBusy("writer_busy: retry after the current writer")
+        time.sleep(min(_LOCK_POLL_SECONDS, remaining))
+    yield
 
 
-# --- paths and credentials ---------------------------------------------------------
+# --- the two roles -------------------------------------------------------------------
+
+RolePlan = Literal["reuse", "create", "refuse"]
+
+
+def role_plan(*, roles_exist: bool, can_set_both: bool, is_superuser: bool) -> RolePlan:
+    """What ``prepare_roles`` does with what it read.
+
+    ``reuse`` when both roles exist and the session can switch to both (a superuser, or
+    a member of both with the SET option); ``create`` when they do not both exist and
+    the session is a superuser; otherwise ``refuse``. A deployment whose application
+    role is not a superuser creates both roles itself and grants them to that role, per
+    the module README, and then gets ``reuse``.
+    """
+    if roles_exist and (is_superuser or can_set_both):
+        return "reuse"
+    if not roles_exist and is_superuser:
+        return "create"
+    return "refuse"
+
+
+def _create_role_sql(role: str) -> str:
+    # Roles are cluster-wide and advisory locks per database, so two installs in two
+    # workspaces can race here: the exception block settles it.
+    return (
+        f"DO $$ BEGIN CREATE ROLE {role} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE"
+        " NOREPLICATION; EXCEPTION WHEN duplicate_object OR unique_violation THEN"
+        " NULL; END $$"
+    )
+
+
+def prepare_roles(connection: Connection) -> RolePlan:
+    """Make sure both roles exist, own schema ``finance`` as ``finance_owner`` when the
+    schema exists, and take ``PUBLIC``'s EXECUTE off functions the owner creates.
+
+    Runs in the caller's transaction (``CREATE ROLE`` is transactional, so a failed
+    install takes the roles back). The facts are the session user's, because ``SET
+    ROLE`` is checked against it. Nothing database-wide is changed: that is core's.
+    """
+    from sqlalchemy import text
+
+    found: set[str] = set(
+        connection.execute(
+            text("SELECT rolname FROM pg_catalog.pg_roles WHERE rolname IN (:o, :r)"),
+            {"o": OWNER_ROLE, "r": READER_ROLE},
+        ).scalars()
+    )
+    roles_exist = found == set(ROLES)
+    is_superuser = bool(
+        connection.execute(
+            text(
+                "SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = session_user"
+            )
+        ).scalar_one()
+    )
+    can_set_both = (
+        roles_exist
+        and not is_superuser
+        and all(
+            connection.execute(
+                text("SELECT pg_has_role(session_user, :role, 'SET')"), {"role": role}
+            ).scalar_one()
+            for role in ROLES
+        )
+    )
+    plan = role_plan(
+        roles_exist=roles_exist, can_set_both=can_set_both, is_superuser=is_superuser
+    )
+    if plan == "refuse":
+        raise DbError("finance_roles_unavailable: see the module README")
+    if plan == "create":
+        for role in ROLES:
+            connection.execute(text(_create_role_sql(role)))
+    owner = connection.execute(
+        text(
+            "SELECT pg_get_userbyid(nspowner) FROM pg_catalog.pg_namespace"
+            " WHERE nspname = :schema"
+        ),
+        {"schema": SCHEMA},
+    ).scalar_one_or_none()
+    if owner is not None and owner != OWNER_ROLE:
+        connection.execute(text(f"ALTER SCHEMA {SCHEMA} OWNER TO {OWNER_ROLE}"))
+    # Global, not IN SCHEMA: a per-schema default can only add to the global default,
+    # which gives PUBLIC EXECUTE on new functions.
+    connection.execute(
+        text(
+            f"ALTER DEFAULT PRIVILEGES FOR ROLE {OWNER_ROLE}"
+            " REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
+        )
+    )
+    return plan
+
+
+@contextmanager
+def acting_as(connection: Connection, role: str) -> Iterator[None]:
+    """Run the block as ``role`` (one of the two finance roles) inside ``connection``'s
+    transaction: ``SET LOCAL ROLE``, then ``RESET ROLE`` when the block returns.
+
+    No reset after an exception: the caller's rollback (or its rollback to a savepoint
+    taken before this) undoes the role, and a statement in an aborted transaction
+    would fail. The reset matters because core's install goes on in the same
+    transaction after the chain.
+    """
+    if role not in ROLES:
+        raise DbError("not a finance role")
+    from sqlalchemy import text
+
+    connection.execute(text(f"SET LOCAL ROLE {role}"))
+    yield
+    connection.execute(text("RESET ROLE"))
+
+
+# --- paths and private files -------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FinanceLayout:
+    """The module's directories under the workspace's uploads directory."""
+
+    root: Path
+    data: Path
+    archive: Path
+    inbox: Path
+    keys: Path
+
+    @property
+    def directories(self) -> tuple[Path, ...]:
+        return (self.root, self.data, self.archive, self.inbox, self.keys)
+
+
+def layout_under(uploads: Path) -> FinanceLayout:
+    """``<uploads>/finance/{data,archive,inbox,keys}``. Pure: touches nothing."""
+    root = uploads / "finance"
+    return FinanceLayout(
+        root=root,
+        data=root / "data",
+        archive=root / "archive",
+        inbox=root / "inbox",
+        keys=root / "keys",
+    )
+
+
+def check_layout(layout: FinanceLayout) -> FinanceLayout:
+    """``layout`` when its five directories exist; nothing is created.
+
+    An auto-created empty archive on an unmounted volume would let derive empty the
+    ledger, so a missing directory is a refusal; ``finance init-data`` creates them.
+    """
+    for directory in layout.directories:
+        if directory.is_symlink() or not directory.is_dir():
+            raise LayoutRefused("finance_layout_missing")
+    return layout
+
+
+_LAYOUT: contextvars.ContextVar[FinanceLayout | None] = contextvars.ContextVar(
+    "finance_layout", default=None
+)
+
+LayoutToken = contextvars.Token[FinanceLayout | None]
+
+
+def use_layout(layout: FinanceLayout) -> LayoutToken:
+    """Bind ``layout`` for this context; ``release_layout`` undoes it."""
+    return _LAYOUT.set(layout)
+
+
+def release_layout(token: LayoutToken) -> None:
+    _LAYOUT.reset(token)
+
+
+def bound_layout() -> FinanceLayout | None:
+    return _LAYOUT.get()
 
 
 def data_dir() -> Path:
-    """``$FINANCE_DATA_DIR``, default ``~/Finances``, with ``~`` expanded."""
+    """The bound layout's ``data``, else ``$FINANCE_DATA_DIR``, else ``~/Finances``,
+    with ``~`` expanded."""
+    layout = bound_layout()
+    if layout is not None:
+        return layout.data
     raw = os.environ.get("FINANCE_DATA_DIR", "").strip() or DEFAULT_DATA_DIR
     return Path(raw).expanduser().absolute()
+
+
+def read_private_file(path: Path, *, within: Path | None = None) -> str:
+    """The text of ``path`` when it is a regular file, not a symlink, readable by its
+    owner alone and, when ``within`` is given, inside it; else
+    ``LayoutRefused("finance_private_file_refused")``. Secrets live in files like this,
+    never in deployment variables."""
+    refused = LayoutRefused("finance_private_file_refused")
+    if within is not None:
+        try:
+            path.resolve().relative_to(within.resolve())
+        except ValueError:
+            raise refused from None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        raise refused from None
+    try:
+        mode = os.fstat(fd).st_mode
+        if not stat.S_ISREG(mode) or mode & 0o077:
+            raise refused
+        handle = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+    with handle:
+        body = handle.read()
+    try:
+        return body.decode("utf-8")
+    except UnicodeDecodeError:
+        raise refused from None
 
 
 def env_file_path(data: Path | None = None) -> Path:
@@ -142,6 +333,10 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
         text = target.read_text(encoding="utf-8")
     except FileNotFoundError:
         raise DbError(f"no {ENV_FILE_NAME} at {target}; {REMEDY}") from None
+    return parse_env_text(text)
+
+
+def parse_env_text(text: str) -> dict[str, str]:
     values: dict[str, str] = {}
     for line in text.splitlines():
         stripped = line.strip()
@@ -252,27 +447,22 @@ def code_revisions() -> frozenset[str]:
     return frozenset(each.revision for each in chain)
 
 
-def migrate(url: URL | None = None) -> str:
-    """Upgrade to head as owner, excluding the worker and other writers."""
-    with writer_lock():
-        return _migrate(url)
-
-
-def _migrate(url: URL | None = None) -> str:
-    """Upgrade to head under the owner role (``url``, default the live owner DSN)."""
+def _migrate(url: URL) -> str:
+    """Upgrade to head on a connection to ``url``, as ``env.py`` does under core: the
+    test harness's path to a migrated scratch database."""
     from alembic import command
     from sqlalchemy import create_engine
     from sqlalchemy.exc import OperationalError
     from sqlalchemy.pool import NullPool
 
     config = alembic_config()
-    engine = create_engine(url or owner_url(), poolclass=NullPool)
+    engine = create_engine(url, poolclass=NullPool)
     try:
         with engine.begin() as connection:
             config.attributes["connection"] = connection
             command.upgrade(config, "head")
     except OperationalError as exc:
-        raise DbError(f"could not migrate: {exc.orig}; {REMEDY}") from None
+        raise DbError(f"could not migrate: {exc.orig}") from None
     finally:
         engine.dispose()
     return head_revision()

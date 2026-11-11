@@ -23,14 +23,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import replace
-from typing import Any, Self
+from typing import Any, Protocol, Self
 
 import psycopg
 from psycopg import pq
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
-from sqlalchemy import Connection, Engine, Transaction, create_engine, text
+from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.engine import URL
 from sqlalchemy.pool import NullPool
 
@@ -40,7 +40,7 @@ from rheo_finance.context import (
     UnitOfWork,
 )
 from rheo_finance.contracts import Role, SafetyClass
-from rheo_finance.db import writer_lock
+from rheo_finance.db import OWNER_ROLE, READER_ROLE, writer_lock
 
 NAME_SHAPE = re.compile(r"finance\.[a-z_]+\.[a-z_]+")
 TOOL_NAME_SHAPE = re.compile(r"finance_[a-z_]+")
@@ -78,8 +78,62 @@ class NoDatabases(OperationError):
     pass
 
 
+class CoreSession(Protocol):
+    """What ``dispatch`` needs from one of core's sessions: its connection, inside the
+    one transaction, and the two ways to end it. Core's ``UnitOfWork`` is one."""
+
+    @property
+    def connection(self) -> Connection: ...
+
+    def commit(self) -> None: ...
+
+    def rollback(self) -> None: ...
+
+
+SessionOpener = Callable[[], AbstractContextManager[CoreSession]]
+
+# The role each connection name runs as on a core session.
+_SESSION_ROLES: dict[ConnectionName, str] = {
+    "owner": OWNER_ROLE,
+    "reader": READER_ROLE,
+}
+
+
+class _Ending(Protocol):
+    """The transaction surface ``dispatch`` ends: SQLAlchemy's ``Transaction``, or
+    ``_SessionTransaction`` over a core session."""
+
+    @property
+    def is_active(self) -> bool: ...
+
+    def commit(self) -> None: ...
+
+    def rollback(self) -> None: ...
+
+
+class _SessionTransaction:
+    """A core session's transaction as ``dispatch`` ends it."""
+
+    def __init__(self, session: CoreSession) -> None:
+        self._session = session
+        self._ended = False
+
+    @property
+    def is_active(self) -> bool:
+        return not self._ended
+
+    def commit(self) -> None:
+        self._ended = True
+        self._session.commit()
+
+    def rollback(self) -> None:
+        self._ended = True
+        self._session.rollback()
+
+
 class _Databases:
-    """The owner and reader DSNs, one engine per DSN, created on first use.
+    """Where ``dispatch`` opens an operation's connection: the owner and reader DSNs
+    (one engine per DSN, created on first use), or core's sessions for the workspace.
 
     Only this module touches it: a guard test fails on any other module under
     ``src/rheo_finance`` that names it, ``_databases`` or ``with_databases``.
@@ -87,16 +141,25 @@ class _Databases:
 
     def __init__(
         self,
-        owner_url: URL,
-        reader_url: URL,
+        owner_url: URL | None,
+        reader_url: URL | None,
         owner_connection: Connection | None = None,
+        open_session: SessionOpener | None = None,
     ) -> None:
-        self._urls: dict[ConnectionName, URL] = {
-            "owner": owner_url,
-            "reader": reader_url,
-        }
+        self._urls: dict[ConnectionName, URL] = {}
+        if owner_url is not None and reader_url is not None:
+            self._urls = {"owner": owner_url, "reader": reader_url}
         self._engines: dict[ConnectionName, Engine] = {}
         self.owner_connection = owner_connection
+        self.open_session = open_session
+
+    @classmethod
+    def from_urls(cls, owner_url: URL, reader_url: URL) -> _Databases:
+        return cls(owner_url, reader_url)
+
+    @classmethod
+    def from_core(cls, open_session: SessionOpener) -> _Databases:
+        return cls(None, None, open_session=open_session)
 
     def engine(self, name: ConnectionName) -> Engine:
         engine = self._engines.get(name)
@@ -113,10 +176,20 @@ def with_databases(
 ) -> FinanceContext:
     """``ctx`` carrying the owner and reader DSNs that ``dispatch`` opens.
 
-    For the composition roots (the CLI, jobs, tests) only. A handler receives a context
-    without them.
+    For the composition roots (the source export, tests) only. A handler receives a
+    context without them.
     """
-    return replace(ctx, _databases=_Databases(owner_url, reader_url))
+    return replace(ctx, _databases=_Databases.from_urls(owner_url, reader_url))
+
+
+def with_core_sessions(
+    ctx: FinanceContext, *, open_session: SessionOpener
+) -> FinanceContext:
+    """``ctx`` whose operations each run on a fresh core session from
+    ``open_session``, as ``finance_owner`` or ``finance_reader`` by the spec's
+    connection (``SET LOCAL ROLE``, which ends with the transaction ``dispatch``
+    ends). For the composition over core only."""
+    return replace(ctx, _databases=_Databases.from_core(open_session))
 
 
 def with_owner_connection(
@@ -127,12 +200,12 @@ def with_owner_connection(
     For tests only (the DSN-holder guard keeps it out of ``src``): ``dispatch`` runs
     the handler inside a savepoint on ``connection`` and "commits" by releasing it, so
     the caller's own transaction decides what survives.
-    Reader operations still open the reader DSN. ``ctx`` must already carry databases
+    Reader operations still open the reader DSN. ``ctx`` must already carry DSNs
     (``with_databases``).
     """
     databases = ctx._databases
-    if databases is None:
-        raise NoDatabases("with_owner_connection needs a context with databases")
+    if databases is None or not databases._urls:
+        raise NoDatabases("with_owner_connection needs a context with DSNs")
     return replace(
         ctx,
         _databases=_Databases(
@@ -144,8 +217,16 @@ def with_owner_connection(
 @contextmanager
 def _opened(
     databases: _Databases, name: ConnectionName
-) -> Iterator[tuple[Connection, Transaction]]:
+) -> Iterator[tuple[Connection, _Ending]]:
     """The connection and transaction an operation runs in."""
+    if databases.open_session is not None:
+        with databases.open_session() as session:
+            connection = session.connection
+            # LOCAL: the role ends with the transaction dispatch ends before this
+            # block exits, so the pooled connection goes back as the session user.
+            connection.execute(text(f"SET LOCAL ROLE {_SESSION_ROLES[name]}"))
+            yield connection, _SessionTransaction(session)
+        return
     injected = databases.owner_connection if name == "owner" else None
     if injected is not None:
         yield injected, injected.begin_nested()
@@ -240,13 +321,11 @@ def owner_transaction(ctx: FinanceContext) -> Iterator[UnitOfWork]:
     databases = ctx._databases
     if databases is None:
         raise NoDatabases("owner transaction needs a root context")
-    with (
-        writer_lock(ctx.paths.data),
-        _opened(databases, "owner") as (connection, transaction),
-    ):
+    with _opened(databases, "owner") as (connection, transaction):
         try:
             connection.execute(text("SELECT 1"))
-            yield UnitOfWork(connection)
+            with writer_lock(connection):
+                yield UnitOfWork(connection)
             if not transaction.is_active or not _server_in_transaction(connection):
                 raise HandlerEndedTransaction(
                     "owner transaction was ended by its caller"
@@ -292,10 +371,11 @@ def dispatch(
 
     Refuses an unknown name, a role the spec does not list, a context built for another
     role, an input its model rejects and a context with no databases (a handler's own
-    context is one), all before any connection is opened. Then it
-    opens the DSN the spec's ``connection`` names and runs the handler in one
-    transaction: committed when the handler returns its output model, rolled back on any
-    error, which is re-raised.
+    context is one), all before any connection is opened. Then it opens the
+    connection the spec's ``connection`` names (its DSN, or a core session switched to
+    that role) and runs the handler in one transaction: committed when the handler
+    returns its output model, rolled back on any error, which is re-raised. A MUTATE
+    spec first takes the writer lock on that transaction.
     """
     spec = SPECS.get(name)
     if spec is None:
@@ -313,19 +393,20 @@ def dispatch(
         raise NoDatabases(f"{name}: the context carries no databases")
     handler_ctx = replace(ctx, _databases=None)
 
-    # Mutations take the shared writer lock. READ and DRAFT write nothing, and the
-    # lock itself creates locks/ledger.lock, so they stay concurrent and file-free.
-    lock = (
-        writer_lock(ctx.paths.data)
-        if spec.safety_class is SafetyClass.MUTATE
-        else nullcontext()
-    )
-    with lock, _opened(databases, spec.connection) as (connection, transaction):
+    with _opened(databases, spec.connection) as (connection, transaction):
         try:
             # psycopg sends BEGIN with the first statement: open the server transaction
             # now, so an idle server after the handler means the handler ended it.
             connection.execute(text("SELECT 1"))
-            result = spec.handler(handler_ctx, UnitOfWork(connection), data)
+            # Mutations take the writer lock on their own transaction; READ and DRAFT
+            # write nothing, so they stay concurrent.
+            lock = (
+                writer_lock(connection)
+                if spec.safety_class is SafetyClass.MUTATE
+                else nullcontext()
+            )
+            with lock:
+                result = spec.handler(handler_ctx, UnitOfWork(connection), data)
             if not transaction.is_active or not _server_in_transaction(connection):
                 raise HandlerEndedTransaction(
                     f"{name}: the handler ended its transaction"
