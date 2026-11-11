@@ -1,0 +1,370 @@
+"""Derivation stage 2, the manual load, from the files under ``<data>/manual/``.
+
+Each loader rewrites the ``manual_entry_error`` rows of its own files and no others
+(another file's errors are its own loader's to rewrite):
+
+- ``load_accounts``: ``accounts.csv`` and ``account_identifiers.csv`` through the
+  registry rules (``manual.accounts``) into ``account`` and ``account_identifier``;
+- ``load_cash_lines``: ``transactions.csv``, checked against the loaded registry and
+  held for stage 3 (``manual.cash_lines``);
+- ``load_document_periods``: ``document_periods.csv``, checked against the loaded
+  registry and held for stage 6 (``manual.document_periods``);
+- ``load_filed_years``: ``filed_years.csv`` into ``filed_year``
+  (``manual.filed_years``);
+- ``load_transfer_hints``: ``transfer_hints.csv``, checked against the loaded
+  registry and held in memory for ``reference.patterns.classify`` and stage 9
+  (``manual.transfer_hints``); its patterns are restricted and never stored;
+- ``load_own_addresses``: ``own_addresses.csv``, checked against the loaded registry,
+  into ``own_address`` (``manual.own_addresses``), keyed by the address itself;
+- ``load_crypto_labels``: ``crypto_labels.csv`` into ``crypto_label``
+  (``manual.crypto_labels``), keyed by the line key each row's line ref names;
+- ``load_payees``: ``payees.csv``, the account-backed payees of the loaded registry
+  and the bill issuers into ``payee`` (``manual.payees``), keyed by slug, and held in
+  memory for stages 3 and 14;
+- ``load_obligations`` and ``load_arrangements``: ``obligations.csv`` and
+  ``arrangements.csv``, checked against the loaded payees and held in memory for
+  stage 14 (``manual.obligations``, ``manual.arrangements``).
+
+Ids come from ``derived_id`` on the fixed business date 2000-01-01 (registry rows have
+no date of their own). An account is keyed by its slug. An identifier is keyed by its
+account's slug and its place among that account's identifiers (sorted by kind and
+text), never by the identifier itself: an id is public in references, and a hash of a
+short account number can be reversed by trying every number.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import uuid
+from pathlib import Path
+from typing import Final
+
+from sqlalchemy import delete, insert
+
+from rheo_finance.context import UnitOfWork
+from rheo_finance.manual.accounts import (
+    ACCOUNTS_FILE,
+    IDENTIFIERS_FILE,
+    AccountIdentifierRow,
+    AccountRow,
+    Registry,
+    build_registry,
+)
+from rheo_finance.manual.arrangements import (
+    ARRANGEMENTS_FILE,
+    ArrangementRow,
+    Arrangements,
+    build_arrangements,
+)
+from rheo_finance.manual.cash_lines import (
+    TRANSACTIONS_FILE,
+    CashLineRow,
+    CashLines,
+    build_cash_lines,
+)
+from rheo_finance.manual.crypto_labels import (
+    CRYPTO_LABELS_FILE,
+    CryptoLabelRow,
+    CryptoLabels,
+    build_crypto_labels,
+)
+from rheo_finance.manual.document_periods import (
+    DOCUMENT_PERIODS_FILE,
+    DocumentPeriodRow,
+    DocumentPeriods,
+    build_document_periods,
+)
+from rheo_finance.manual.filed_years import (
+    FILED_YEARS_FILE,
+    FiledYearRow,
+    FiledYears,
+    build_filed_years,
+)
+from rheo_finance.manual.headers import MANUAL_DIR_NAME
+from rheo_finance.manual.loader import RowError, load_csv
+from rheo_finance.manual.obligations import (
+    OBLIGATIONS_FILE,
+    ManualObligations,
+    ObligationRow,
+    build_obligations,
+)
+from rheo_finance.manual.own_addresses import (
+    OWN_ADDRESSES_FILE,
+    OwnAddresses,
+    OwnAddressRow,
+    build_own_addresses,
+)
+from rheo_finance.manual.payees import (
+    PAYEES_FILE,
+    Payee,
+    PayeeRow,
+    Payees,
+    build_payees,
+)
+from rheo_finance.manual.transfer_hints import (
+    TRANSFER_HINTS_FILE,
+    TransferHintRow,
+    TransferHints,
+    build_transfer_hints,
+)
+from rheo_finance.storage.ids import derived_id
+from rheo_finance.storage.schema import (
+    account,
+    account_identifier,
+    crypto_label,
+    filed_year,
+    manual_entry_error,
+    own_address,
+    payee,
+)
+
+REGISTRY_DATE: Final = dt.date(2000, 1, 1)
+
+
+def account_id(slug: str) -> uuid.UUID:
+    return derived_id(REGISTRY_DATE, ("account", slug))
+
+
+def error_id(error: RowError) -> uuid.UUID:
+    return derived_id(
+        REGISTRY_DATE,
+        ("manual_entry_error", error.file, error.line_no, error.reason),
+    )
+
+
+def _account_values(row: AccountRow) -> dict[str, object]:
+    return {
+        "id": account_id(row.slug),
+        "slug": row.slug,
+        "label": row.label,
+        "institution": row.institution,
+        "kind": row.kind,
+        "currencies": list(row.currencies),
+        "cadence": row.cadence,
+        "owner": row.owner,
+        "opened_on": row.opened,
+        "closed_on": row.closed,
+        "sourced_by": row.sourced_by,
+        "placeholder": row.placeholder,
+        "missing_before": row.missing_before,
+        "missing_reason": row.missing_reason,
+    }
+
+
+def _identifier_values(
+    identifiers: tuple[AccountIdentifierRow, ...],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    seen: dict[str, int] = {}
+    for ident in sorted(identifiers, key=lambda i: (i.account, i.kind, i.identifier)):
+        place = seen.get(ident.account, 0)
+        seen[ident.account] = place + 1
+        rows.append(
+            {
+                "id": derived_id(
+                    REGISTRY_DATE, ("account_identifier", ident.account, place)
+                ),
+                "account_id": account_id(ident.account),
+                "identifier": ident.identifier,
+                "kind": ident.kind,
+                "valid_from": ident.valid_from,
+                "valid_to": ident.valid_to,
+            }
+        )
+    return rows
+
+
+def load_accounts(uow: UnitOfWork, data_dir: Path) -> Registry:
+    """Rewrite the registry tables from the manual files under ``data_dir``."""
+    manual = data_dir / MANUAL_DIR_NAME
+    registry = build_registry(
+        load_csv(manual / ACCOUNTS_FILE, AccountRow),
+        load_csv(manual / IDENTIFIERS_FILE, AccountIdentifierRow),
+    )
+    uow.execute(delete(account_identifier))
+    uow.execute(delete(account))
+    uow.execute(insert(account), [_account_values(row) for row in registry.accounts])
+    uow.execute(insert(account_identifier), _identifier_values(registry.identifiers))
+    _rewrite_errors(uow, (ACCOUNTS_FILE, IDENTIFIERS_FILE), registry.errors)
+    return registry
+
+
+def load_cash_lines(uow: UnitOfWork, data_dir: Path, registry: Registry) -> CashLines:
+    """The ``transactions.csv`` lines whose account is in ``registry``, for stage 3."""
+    cash = build_cash_lines(
+        load_csv(data_dir / MANUAL_DIR_NAME / TRANSACTIONS_FILE, CashLineRow),
+        {row.slug for row in registry.accounts},
+    )
+    _rewrite_errors(uow, (TRANSACTIONS_FILE,), cash.errors)
+    return cash
+
+
+def load_document_periods(
+    uow: UnitOfWork, data_dir: Path, registry: Registry
+) -> DocumentPeriods:
+    """The ``document_periods.csv`` periods whose account is in ``registry``, for
+    stage 6."""
+    periods = build_document_periods(
+        load_csv(data_dir / MANUAL_DIR_NAME / DOCUMENT_PERIODS_FILE, DocumentPeriodRow),
+        {row.slug for row in registry.accounts},
+    )
+    _rewrite_errors(uow, (DOCUMENT_PERIODS_FILE,), periods.errors)
+    return periods
+
+
+def load_transfer_hints(
+    uow: UnitOfWork, data_dir: Path, registry: Registry
+) -> TransferHints:
+    """The ``transfer_hints.csv`` rows whose counterpart (if any) is in ``registry``,
+    for ``reference.patterns.classify`` and stage 9."""
+    hints = build_transfer_hints(
+        load_csv(data_dir / MANUAL_DIR_NAME / TRANSFER_HINTS_FILE, TransferHintRow),
+        {row.slug for row in registry.accounts},
+    )
+    _rewrite_errors(uow, (TRANSFER_HINTS_FILE,), hints.errors)
+    return hints
+
+
+def load_own_addresses(
+    uow: UnitOfWork, data_dir: Path, registry: Registry
+) -> OwnAddresses:
+    """Rewrite ``own_address`` from the ``own_addresses.csv`` rows whose account is in
+    ``registry``."""
+    found = build_own_addresses(
+        load_csv(data_dir / MANUAL_DIR_NAME / OWN_ADDRESSES_FILE, OwnAddressRow),
+        {row.slug for row in registry.accounts},
+    )
+    uow.execute(delete(own_address))
+    if found.rows:
+        uow.execute(
+            insert(own_address),
+            [
+                {"address": row.address, "account_id": account_id(row.account)}
+                for row in found.rows
+            ],
+        )
+    _rewrite_errors(uow, (OWN_ADDRESSES_FILE,), found.errors)
+    return found
+
+
+def load_crypto_labels(uow: UnitOfWork, data_dir: Path) -> CryptoLabels:
+    """Rewrite ``crypto_label`` from ``crypto_labels.csv``."""
+    found = build_crypto_labels(
+        load_csv(data_dir / MANUAL_DIR_NAME / CRYPTO_LABELS_FILE, CryptoLabelRow)
+    )
+    uow.execute(delete(crypto_label))
+    if found.rows:
+        uow.execute(
+            insert(crypto_label),
+            [
+                {"line_key_id": row.line_ref, "label": row.label, "note": row.note}
+                for row in found.rows
+            ],
+        )
+    _rewrite_errors(uow, (CRYPTO_LABELS_FILE,), found.errors)
+    return found
+
+
+def payee_id(slug: str) -> uuid.UUID:
+    return derived_id(REGISTRY_DATE, ("payee", slug))
+
+
+def _payee_values(found: Payee) -> dict[str, object]:
+    return {
+        "id": payee_id(found.slug),
+        "slug": found.slug,
+        "display_label": found.label,
+        "kind": found.kind,
+        "account_id": None if found.account is None else account_id(found.account),
+        "party_ref": found.party,
+        "patterns": list(found.patterns),
+        "paid_from": [account_id(slug) for slug in found.paid_from],
+    }
+
+
+def load_payees(uow: UnitOfWork, data_dir: Path, registry: Registry) -> Payees:
+    """Rewrite ``payee`` from ``payees.csv``, the account-backed payees of
+    ``registry`` and the bill issuers."""
+    found = build_payees(
+        load_csv(data_dir / MANUAL_DIR_NAME / PAYEES_FILE, PayeeRow), registry
+    )
+    uow.execute(delete(payee))
+    if found.payees:
+        uow.execute(insert(payee), [_payee_values(each) for each in found.payees])
+    _rewrite_errors(uow, (PAYEES_FILE,), found.errors)
+    return found
+
+
+def load_obligations(
+    uow: UnitOfWork, data_dir: Path, registry: Registry, payees: Payees
+) -> ManualObligations:
+    """The ``obligations.csv`` rows whose payee is in ``payees``, for stage 14."""
+    found = build_obligations(
+        load_csv(data_dir / MANUAL_DIR_NAME / OBLIGATIONS_FILE, ObligationRow),
+        payees.slugs,
+        registry.path_check(),
+    )
+    _rewrite_errors(uow, (OBLIGATIONS_FILE,), found.errors)
+    return found
+
+
+def load_arrangements(
+    uow: UnitOfWork, data_dir: Path, registry: Registry, payees: Payees
+) -> Arrangements:
+    """The ``arrangements.csv`` instalments whose payee is in ``payees``, for stage
+    14."""
+    found = build_arrangements(
+        load_csv(data_dir / MANUAL_DIR_NAME / ARRANGEMENTS_FILE, ArrangementRow),
+        payees.slugs,
+        registry.path_check(),
+    )
+    _rewrite_errors(uow, (ARRANGEMENTS_FILE,), found.errors)
+    return found
+
+
+def filed_year_id(year: int) -> uuid.UUID:
+    # The registry date, not the year: derived_id's time field starts in 1970.
+    return derived_id(REGISTRY_DATE, ("filed_year", year))
+
+
+def load_filed_years(uow: UnitOfWork, data_dir: Path) -> FiledYears:
+    """Rewrite ``filed_year`` from ``filed_years.csv``."""
+    filed = build_filed_years(
+        load_csv(data_dir / MANUAL_DIR_NAME / FILED_YEARS_FILE, FiledYearRow)
+    )
+    uow.execute(delete(filed_year))
+    if filed.years:
+        uow.execute(
+            insert(filed_year),
+            [
+                {
+                    "id": filed_year_id(row.year),
+                    "year": row.year,
+                    "filed_on": row.filed_on,
+                    "note": row.note,
+                }
+                for row in filed.years
+            ],
+        )
+    _rewrite_errors(uow, (FILED_YEARS_FILE,), filed.errors)
+    return filed
+
+
+def _rewrite_errors(
+    uow: UnitOfWork, files: tuple[str, ...], errors: tuple[RowError, ...]
+) -> None:
+    """Replace the ``manual_entry_error`` rows of ``files``, and only theirs."""
+    uow.execute(delete(manual_entry_error).where(manual_entry_error.c.file.in_(files)))
+    if errors:
+        uow.execute(
+            insert(manual_entry_error),
+            [
+                {
+                    "id": error_id(error),
+                    "file": error.file,
+                    "line_no": error.line_no,
+                    "reason": error.reason,
+                }
+                for error in errors
+            ],
+        )
