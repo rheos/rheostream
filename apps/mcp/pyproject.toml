@@ -22,7 +22,7 @@ requires-python = ">=3.12,<3.13"
 # models are snake_case (structured_content, input_schema, is_error). A looser
 # floor would be a claim this package cannot honour, and it would only be found
 # by whoever first resolved an older pin.
-dependencies = ["rheo-contracts", "rheo-core", "mcp>=2.2,<3"]
+dependencies = ["rheo-contracts", "rheo-core", "mcp>=2.3.0,<3"]
 
 [tool.uv.sources]
 rheo-contracts = { workspace = true }
