@@ -1,8 +1,10 @@
 """State export and import over two scratch databases (D11): every state table
 non-empty in A, exported, imported into a fresh B, both rebuilt: the derived digests
 agree and B's export is A's, byte for byte. A second import and a wrong head are
-refused, so is an import into a ledger whose document set is not empty, and the
-export waits on the writer lock like a writer. Values are synthetic.
+refused, so is an import into a ledger whose document set is not empty; one after
+``finance init-data`` and an empty rebuild is accepted. The export takes the writer
+lock before its first read (also shown without a database, over a stand-in unit of
+work). Values are synthetic.
 """
 
 from __future__ import annotations
@@ -13,21 +15,25 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
+from typing import NoReturn, cast
 
 import pytest
-from sqlalchemy import create_engine, insert, text
+from sqlalchemy import Table, create_engine, insert, text
 from sqlalchemy.pool import NullPool
 
-from rheo_finance import catalogue, db, operations
+from rheo_finance import catalogue, db, operations, queue
 from rheo_finance.clock import FakeClock
-from rheo_finance.context import FinanceContext, FinancePaths
+from rheo_finance.context import FinanceContext, FinancePaths, UnitOfWork
 from rheo_finance.contracts import Role
 from rheo_finance.derive.digest import digested_tables
-from rheo_finance.derive.run import FILE_OWNED, STATE
+from rheo_finance.derive.ops import DigestOut
+from rheo_finance.derive.run import CLEARED, FILE_OWNED, REWRITTEN, STATE
+from rheo_finance.init_data import init_data
 from rheo_finance.operations import OperationError, dispatch
 from rheo_finance.settings import parse_settings
 from rheo_finance.state import transfer
-from rheo_finance.state.transfer import ExportOut, ImportOut
+from rheo_finance.state.transfer import ExportIn, ExportOut, ImportOut
 from rheo_finance.storage import schema
 from tests.finance_support import (
     SCRATCH_DATABASES,
@@ -233,11 +239,22 @@ def test_an_import_at_another_head_is_refused(
         run("finance.state.import", payload, b)
 
 
-def test_every_table_the_digest_covers_must_be_empty_too() -> None:
+def test_the_import_needs_the_state_and_the_file_owned_tables_empty() -> None:
     names = [table.name for table in transfer.import_must_be_empty()]
     assert len(names) == len(set(names))
-    assert set(names) == STATE | {table.name for table in digested_tables()}
-    assert FILE_OWNED <= set(names)
+    assert names[: len(STATE)] == [table.name for table in transfer.state_tables()]
+    assert set(names) == STATE | FILE_OWNED
+
+
+def test_the_tables_an_empty_rebuild_writes_are_not_checked() -> None:
+    """``queue_count`` (one row per queue kind) and ``sink_spec`` (one row per sink)
+    get rows from any rebuild, an empty ledger's too; the import must accept them, as
+    the rebuild after it clears or rewrites every digested table outside FILE_OWNED."""
+    checked = {table.name for table in transfer.import_must_be_empty()}
+    digested = {table.name for table in digested_tables()}
+    assert queue.KINDS
+    assert {"queue_count", "sink_spec"} <= digested - checked
+    assert digested - checked == ({t.name for t in CLEARED} | REWRITTEN) - FILE_OWNED
 
 
 FILE_ROWS = {
@@ -280,6 +297,31 @@ def test_an_import_into_a_ledger_with_files_is_refused(
         run("finance.state.import", payload, b)
 
 
+def test_an_import_after_init_data_and_an_empty_rebuild_is_accepted(
+    two_databases: tuple[DatabaseUnderTest, DatabaseUnderTest], tmp_path: Path
+) -> None:
+    """A fresh install (the migration chain), ``finance init-data`` and a rebuild of
+    the empty ledger leave derived rows (the queue snapshot) and no state or file
+    rows; the import is accepted there."""
+    catalogue.load_all()
+    _, target = two_databases
+    b = context_for(target, tmp_path / "b")
+    init_data(tmp_path / "b" / "data")
+    run("finance.ledger.rebuild", {}, b)
+    found = run("finance.ledger.digest", {}, b)
+    assert isinstance(found, DigestOut)
+    counts = {each.name: each.count for each in found.tables}
+    assert counts["queue_count"] == len(queue.KINDS)
+    assert all(counts[name] == 0 for name in FILE_OWNED)
+    payload = {
+        "schema_head": db.head_revision(),
+        "tables": [{"name": name, "lines": []} for name in sorted(STATE)],
+    }
+    imported = run("finance.state.import", payload, b)
+    assert isinstance(imported, ImportOut)
+    assert {(t.name, t.rows) for t in imported.tables} == {(n, 0) for n in STATE}
+
+
 def test_the_export_takes_the_writer_lock_before_it_reads(
     test_database: DatabaseUnderTest,
     tmp_path: Path,
@@ -287,13 +329,10 @@ def test_the_export_takes_the_writer_lock_before_it_reads(
 ) -> None:
     """Every writer takes the lock until it commits, so an export that cannot enter
     while another connection holds it reads its tables and its digest with no commit
-    landing between them."""
+    landing between them. Each read fails the test if it runs, so the export must
+    raise ``WriterBusy`` before its first read, not merely at some point."""
     catalogue.load_all()
     ctx = context_for(test_database, tmp_path / "a")
-
-    def bounded(connection: db.Statements) -> AbstractContextManager[None]:
-        return db.writer_lock(connection, wait_seconds=0)
-
     monkeypatch.setattr(transfer, "writer_lock", bounded)
     engine = create_engine(test_database.owner_url, poolclass=NullPool)
     try:
@@ -301,9 +340,91 @@ def test_the_export_takes_the_writer_lock_before_it_reads(
             holder.execute(
                 text("SELECT pg_advisory_lock(:key)"), {"key": db.WRITER_LOCK_KEY}
             )
-            with pytest.raises(db.WriterBusy):
-                run("finance.state.export", {}, ctx)
-        # Closing the holder ended its session and its lock.
+            with monkeypatch.context() as reads:
+                for name in EXPORT_READS:
+                    reads.setattr(transfer, name, read_before_the_lock)
+                with pytest.raises(db.WriterBusy):
+                    run("finance.state.export", {}, ctx)
+        # Closing the holder ended its session and its lock; the reads are real again.
         assert isinstance(run("finance.state.export", {}, ctx), ExportOut)
     finally:
         engine.dispose()
+
+
+# What the export reads, in order: the schema version, each state table, the digest.
+EXPORT_READS = ("_schema_version", "table_lines", "ledger_digest")
+
+
+def bounded(connection: db.Statements) -> AbstractContextManager[None]:
+    """The writer lock with no wait: a held lock is ``WriterBusy`` at once."""
+    return db.writer_lock(connection, wait_seconds=0)
+
+
+def read_before_the_lock(*_args: object) -> NoReturn:
+    pytest.fail("the export read before it held the writer lock")
+
+
+class LockOnly:
+    """A stand-in unit of work that answers only the writer lock's statement, with
+    ``granted``, and records each try in ``events``."""
+
+    def __init__(self, events: list[str], *, granted: bool) -> None:
+        self.events = events
+        self.granted = granted
+
+    def execute(self, statement: object, _parameters: object = None) -> LockOnly:
+        assert "pg_try_advisory_xact_lock" in str(statement)
+        self.events.append("lock")
+        return self
+
+    def scalar_one(self) -> bool:
+        return self.granted
+
+
+def export_with(uow: LockOnly) -> ExportOut:
+    return transfer.export_state(
+        cast(FinanceContext, None), cast(UnitOfWork, uow), ExportIn()
+    )
+
+
+def test_a_busy_lock_stops_the_export_before_any_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(transfer, "writer_lock", bounded)
+    for name in EXPORT_READS:
+        monkeypatch.setattr(transfer, name, read_before_the_lock)
+    events: list[str] = []
+    with pytest.raises(db.WriterBusy):
+        export_with(LockOnly(events, granted=False))
+    assert events == ["lock"]
+
+
+def test_the_export_takes_the_lock_first_then_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    def version(_uow: object) -> str:
+        events.append("version")
+        return "head"
+
+    def lines(_uow: object, table: Table) -> list[str]:
+        events.append(f"table {table.name}")
+        return []
+
+    def digest(_uow: object) -> SimpleNamespace:
+        events.append("digest")
+        return SimpleNamespace(digest="0" * 64)
+
+    monkeypatch.setattr(transfer, "_schema_version", version)
+    monkeypatch.setattr(transfer, "table_lines", lines)
+    monkeypatch.setattr(transfer, "ledger_digest", digest)
+    out = export_with(LockOnly(events, granted=True))
+    assert events == [
+        "lock",
+        "version",
+        *(f"table {table.name}" for table in transfer.state_tables()),
+        "digest",
+    ]
+    assert out.schema_head == "head"
+    assert {table.name for table in out.tables} == STATE

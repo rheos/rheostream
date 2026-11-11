@@ -13,9 +13,10 @@ Two operations of the module's own registry, never core's:
   digest. It holds the writer lock from before its first read, so every table and the
   digest come from one commit: no writer commits while it reads.
 - ``finance.state.import`` (MUTATE, owner only): into a database at the same head
-  whose state tables are all empty, and so is every other table the derived digest
-  covers (the file-owned document set included), so the rebuild that follows starts
-  from nothing but the imported state; rows go in in foreign-key order.
+  whose state tables are all empty, and so is the file-owned document set
+  (``document``, ``archive_skip``), so the rebuild that follows starts from nothing
+  but the imported state; derived rows are allowed, as that rebuild clears or
+  rewrites them all. Rows go in in foreign-key order.
 
 A line is one row: every column in table order as ``[name, tagged]``, each value
 tagged by ``derive.digest.canonical_value`` (numbers normalized, times in UTC), and a
@@ -40,8 +41,8 @@ from rheo_finance import db
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass, Tiered
 from rheo_finance.db import writer_lock
-from rheo_finance.derive.digest import canonical_value, digested_tables, ledger_digest
-from rheo_finance.derive.run import STATE
+from rheo_finance.derive.digest import canonical_value, ledger_digest
+from rheo_finance.derive.run import FILE_OWNED, STATE
 from rheo_finance.operations import OperationError, OperationSpec, register
 from rheo_finance.storage.schema import metadata
 from rheo_finance.tier import Tier
@@ -71,12 +72,18 @@ def state_tables() -> list[Table]:
 
 
 def import_must_be_empty() -> list[Table]:
-    """Every table an import needs empty: the state tables, then every other table the
-    derived digest covers (``document`` and ``archive_skip`` among them). Any row there
-    would reach the rebuild and the digest beside the imported state."""
+    """Every table an import needs empty: the state tables, then the registry the file
+    operation owns (``derive.run.FILE_OWNED``: ``document``, ``archive_skip``). A row
+    there would survive the rebuild and reach the digest beside the imported state.
+
+    The other digested tables are not checked: the rebuild that follows an import
+    clears (``CLEARED``) or rewrites (``REWRITTEN``) every one of them, and a rebuild
+    of an empty ledger already leaves rows in two (``queue_count``, ``sink_spec``)."""
     state = state_tables()
-    others = [table for table in digested_tables() if table.name not in STATE]
-    return state + others
+    owned = [table for table in metadata.sorted_tables if table.name in FILE_OWNED]
+    if {table.name for table in owned} != FILE_OWNED:
+        raise OperationError("state_tables_missing")
+    return state + owned
 
 
 def _kind(column: Column[object]) -> type:
