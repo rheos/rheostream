@@ -44,6 +44,10 @@ from tests.finance_support import DatabaseUnderTest
 EM = chr(0x2014)
 CSV_FIXTURE = (FIXTURES / "alder_chequing_jump.csv").read_text(encoding="utf-8")
 STAMP = "as of 2063-02-23 12:00 UTC"
+# The coverage matrix runs to the clock's month: the coverage tests read it under a
+# clock in the fixture's own era.
+COVERAGE_NOW = dt.datetime(2039, 2, 24, 12, 0, tzinfo=dt.UTC)
+COVERAGE_STAMP = "as of 2039-02-24 12:00 UTC"
 # What no command may print: the identifier, the fixture's description words, its
 # amounts and balances, and the Downloads file's own name.
 SECRETS = (
@@ -76,13 +80,15 @@ class Ran:
     err: str
 
 
-def _context(fixture: Fixture, *, owner_url: URL, reader_url: URL) -> FinanceContext:
+def _context(
+    fixture: Fixture, *, owner_url: URL, reader_url: URL, when: dt.datetime = NOW
+) -> FinanceContext:
     ctx = FinanceContext(
         settings=parse_settings(
             f'[finance.paths]\narchive = "{fixture.archive}"\n'
             f'downloads = "{fixture.downloads}"\n'
         ),
-        clock=FakeClock(NOW),
+        clock=FakeClock(when),
         paths=FinancePaths(data=fixture.data),
         role=Role.OWNER,
         snapshot_provider=lambda _uow, _ref: None,
@@ -135,11 +141,13 @@ def _cli(
     *,
     owner_url: URL | None = None,
     reader_url: URL | None = None,
+    when: dt.datetime = NOW,
 ) -> Ran:
     ctx = _context(
         fixture,
         owner_url=owner_url or fixture.database.owner_url,
         reader_url=reader_url or fixture.database.reader_url,
+        when=when,
     )
     monkeypatch.setattr(composition, "build_context", lambda _role: ctx)
     code = main(argv)
@@ -200,7 +208,10 @@ def run(
     monkeypatch.setenv("FINANCE_DATA_DIR", str(fixture.data))
 
     def go(
-        *argv: str, owner_url: URL | None = None, reader_url: URL | None = None
+        *argv: str,
+        owner_url: URL | None = None,
+        reader_url: URL | None = None,
+        when: dt.datetime = NOW,
     ) -> Ran:
         return _cli(
             fixture,
@@ -209,6 +220,7 @@ def run(
             monkeypatch,
             owner_url=owner_url,
             reader_url=reader_url,
+            when=when,
         )
 
     return go
@@ -219,8 +231,8 @@ def reader_only(run: Callable[..., Ran]) -> Callable[..., Ran]:
     """``run`` with an owner DSN that reaches nothing: only reader operations work."""
     nowhere = _nowhere()
 
-    def go(*argv: str) -> Ran:
-        return run(*argv, owner_url=nowhere)
+    def go(*argv: str, when: dt.datetime = NOW) -> Ran:
+        return run(*argv, owner_url=nowhere, when=when)
 
     return go
 
@@ -376,11 +388,11 @@ def test_status_prints_the_same_lines_as_one_fixed_list(
 def test_coverage_json_under_the_reader_is_the_matrix_and_the_counts(
     reader_only: Callable[..., Ran],
 ) -> None:
-    ran = reader_only("coverage", "--json")
+    ran = reader_only("coverage", "--json", when=COVERAGE_NOW)
     assert ran.code == 0, ran.err
     got = json.loads(ran.out)
 
-    assert got["as_of"] == STAMP
+    assert got["as_of"] == COVERAGE_STAMP
     assert got["no_data_accounts"] == 1
     months = got["months"]
     assert {m["account"] for m in months} == {"chequing"}
@@ -398,15 +410,15 @@ def test_coverage_json_under_the_reader_is_the_matrix_and_the_counts(
 def test_coverage_prints_counts_then_a_matrix_with_reasons_in_words(
     reader_only: Callable[..., Ran],
 ) -> None:
-    got = json.loads(reader_only("coverage", "--json").out)
+    got = json.loads(reader_only("coverage", "--json", when=COVERAGE_NOW).out)
     by_state = got["months_by_state"]
-    ran = reader_only("coverage")
+    ran = reader_only("coverage", when=COVERAGE_NOW)
 
     assert ran.code == 0, ran.err
     lines = ran.out.splitlines()
     assert lines[:4] == [
         f"finance coverage: {by_state['have']} have, {by_state['partial']} partial,"
-        f" {by_state['missing']} missing account-months, {STAMP}",
+        f" {by_state['missing']} missing account-months, {COVERAGE_STAMP}",
         f"{by_state['rejected']} rejected, {by_state['unparsed']} unparsed,"
         f" {by_state['not_applicable']} not applicable",
         "1 account with no data",

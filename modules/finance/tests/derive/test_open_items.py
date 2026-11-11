@@ -540,7 +540,7 @@ def test_cli_prints_the_same_counts_and_sums_and_an_empty_year(
     assert main(["report", "open-items", "--year", "2027"]) == 0
     assert capsys.readouterr().out == "2027: no open items\n"
     assert main(["report", "open-items"]) == 2
-    assert main(["report", "open-items", "--year", "1973"]) == 1
+    assert main(["report", "open-items", "--year", "1850"]) == 1
 
 
 def test_coverage_and_usable_sources_are_derived_not_typed(

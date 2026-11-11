@@ -82,16 +82,18 @@ def receipt(*rows: tuple[str, str, str, str]) -> str:
     return changed(text, "Slip paid total   $262.77", f"Slip paid total   ${total}")
 
 
-def payments(ledger: Ledger, *rows: tuple[str, str, str]) -> None:
+def payments(
+    ledger: Ledger, *rows: tuple[str, str, str], opening: str = "2055/01/01"
+) -> None:
     """A chequing export of ``(day, description, amount out)`` rows, newest first,
-    above an opening deposit of 1192.07 on 2055-01-01."""
+    above an opening deposit of 1192.07 on ``opening``, a day older than every row."""
     balance = Decimal("1192.07") - sum((Decimal(out) for _, _, out in rows), Decimal(0))
     lines = []
     for day, description, out in rows:
         lines.append(csv_row(day, description, out=out, balance=f"{balance:.2f}"))
         balance += Decimal(out)
     lines.append(
-        csv_row("2055/01/01", "DEPOSIT   SAMPLE PAYROLL   99906", into="1192.07",
+        csv_row(opening, "DEPOSIT   SAMPLE PAYROLL   99906", into="1192.07",
                 balance="1192.07")
     )  # fmt: skip
     ledger.chequing()
@@ -176,7 +178,7 @@ def test_an_unmatched_receipt_is_one_txn_on_paid_outside(ledger: Ledger) -> None
 
 @pytest.mark.parametrize(
     ("day", "matched"),
-    [("2062/03/17", True), ("2062/03/18", False), ("2062/03/10", False)],
+    [("2036/05/26", True), ("2036/05/27", False), ("2036/05/19", False)],
     ids=["three_days_after", "four_days_after", "four_days_before"],
 )
 def test_a_receipt_matches_inside_its_window_only(
@@ -273,7 +275,7 @@ def test_an_unmatched_invoice_adds_no_txn_and_no_spending(
 
 @pytest.mark.parametrize(
     ("day", "matched"),
-    [("2061/12/31", True), ("2062/01/01", False), ("2061/11/01", True)],
+    [("2047/07/03", True), ("2047/07/04", False), ("2047/05/04", True)],
     ids=["thirty_days_after", "thirty_one_days_after", "thirty_days_before"],
 )
 def test_an_invoice_matches_its_payment_inside_thirty_days(
@@ -337,10 +339,15 @@ def test_receipt_and_invoice_lines_store_their_keys(ledger: Ledger) -> None:
 
 
 def test_matching_is_maximal_not_greedy(ledger: Ledger) -> None:
-    """Receipt payments on 10 and 22 May, card lines on 7 and 19 May. The 10th
-    is nearest the 11th, but taking it there would strand the 14th: both match, the
-    10th to the 7th and the 14th to the 11th, and nothing is paid outside."""
-    payments(ledger, ("2036/05/19", CLINIC, "31.97"), ("2036/05/15", CLINIC, "31.97"))
+    """Receipt payments on 18 and 22 May, card lines on 15 and 19 May. The 18th
+    is nearest the 19th, but taking it there would strand the 22nd: both match, the
+    18th to the 15th and the 22nd to the 19th, and nothing is paid outside."""
+    payments(
+        ledger,
+        ("2036/05/19", CLINIC, "31.97"),
+        ("2036/05/15", CLINIC, "31.97"),
+        opening="2036/05/14",
+    )
     ledger.file(
         RECEIPT,
         receipt(
@@ -425,8 +432,8 @@ def test_a_payment_line_that_arrives_later_takes_the_receipt(ledger: Ledger) -> 
 
 
 def test_derive_and_rebuild_give_the_same_links(ledger: Ledger) -> None:
-    payments(ledger, ("2036/05/23", CLINIC, "31.97"), ("2061/12/31", CONTRACTOR,
-             "828.00"))  # fmt: skip
+    payments(ledger, ("2047/06/18", CONTRACTOR, "828.00"), ("2036/05/23", CLINIC,
+             "31.97"), opening="2036/05/22")  # fmt: skip
     ledger.file(RECEIPT, fixture("patient_receipt.txt"))
     ledger.file(INVOICE, invoice())
 

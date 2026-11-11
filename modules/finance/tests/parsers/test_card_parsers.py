@@ -246,7 +246,7 @@ def test_a_foreign_purchase_keeps_the_issuers_cad_amount(setup: Setup) -> None:
 @pytest.mark.parametrize(
     ("printed", "changed"),
     [
-        ("$3,000.15", "$3,000.16"),  # the statement balance, everywhere it prints
+        ("$3,088.66", "$3,088.67"),  # the statement balance, everywhere it prints
         (
             "SAMPLE GROCER SAMPLE CITY ZZ   $56.58",
             "SAMPLE GROCER SAMPLE CITY ZZ   $56.59",
@@ -371,19 +371,39 @@ def test_a_neem_export_for_an_unregistered_card_is_rejected(setup: Setup) -> Non
 
 
 @pytest.mark.parametrize(
-    ("printed", "changed"),
+    ("printed", "changed", "currency_column"),
     [
-        (",6.21,,CAD,", ",6.21,1.05,CAD,"),  # both a debit and a credit
-        (",6.21,,CAD,", ",6.21,,USD,"),  # a currency the export does not post
-        (",6.21,,CAD,", ",6.21,CAD,"),  # seven columns
+        (",,6.21,XXXX-9991,", ",1.05,6.21,XXXX-9991,", False),  # a credit and a debit
+        (
+            ",,6.21,XXXX-9991,CAD,",
+            ",,6.21,XXXX-9991,USD,",
+            True,
+        ),  # a currency the export does not post
+        (",,6.21,XXXX-9991,", ",6.21,XXXX-9991,", False),  # five columns
     ],
 )
 def test_a_csv_that_is_not_the_neem_export_is_unparsed(
-    setup: Setup, printed: str, changed: str
+    setup: Setup,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    printed: str,
+    changed: str,
+    currency_column: bool,
 ) -> None:
     setup.register(NEEM)
     text = fixture("alder_neem_export.csv")
-    assert printed in text
+    if currency_column:
+        # The owner's layout adds a currency column after the card; every row of the
+        # export reads CAD there.
+        owner = tmp_path / "identities.toml"
+        order = (*alder_neem_csv.ROLES[:5], "currency", alder_neem_csv.ROLES[5])
+        columns = ", ".join(f'"{each}"' for each in order)
+        owner.write_text(
+            f'[layout]\n"alder_neem.csv.columns" = [{columns}]\n', encoding="utf-8"
+        )
+        monkeypatch.setattr(identities, "identities_path", lambda: owner)
+        text = text.replace("XXXX-9991,", "XXXX-9991,CAD,")
+    assert text.count(printed) == 1
     doc = setup.file("alder-neem/2048-02-22.csv", text.replace(printed, changed))
 
     assert setup.parse(doc) == Parsed("unparsed", "not_recognised")

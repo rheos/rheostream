@@ -392,9 +392,9 @@ def test_identifiers_in_the_manual_file_are_refused_before_stage_2_has_run(
 
     assert sorted(row[0] for row in documents(owner_conn)) == sorted(adopted)
     assert skips(owner_conn) == [
-        ("teak", "identifier_in_path", 1),
-        ("sumac", "identifier_in_path", 1),
         ("alder", "identifier_in_path", 7),
+        ("sumac", "identifier_in_path", 1),
+        ("teak", "identifier_in_path", 1),
     ]
     stored = " ".join(
         f"{path} {issuer}"

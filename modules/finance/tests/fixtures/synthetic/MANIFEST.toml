@@ -162,7 +162,7 @@ description = "Patient receipt layout text in an invented layout: two payments t
 [[fixture]]
 path = "tests/fixtures/synthetic/hazel_activity.csv"
 synthetic = true
-description = "Hazel activity CSV in an invented layout: the April rows of hazel_activity.txt (the conversion pair, a bank deposit, an automatic payment, a received payment with a fee), a March purchase before the statement, a held authorization and a balance per currency; fake values."
+description = "Hazel activity CSV in an invented layout: the November rows of hazel_activity.txt (the conversion pair, a bank deposit, an automatic payment, a received payment with a fee), an October purchase before the statement, a held authorization and a balance per currency; fake values."
 
 [[fixture]]
 path = "tests/fixtures/synthetic/fig_statement.csv"

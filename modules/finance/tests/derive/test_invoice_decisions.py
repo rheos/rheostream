@@ -195,7 +195,7 @@ def test_an_unmatched_invoice_adds_zero_until_a_decision_adds_exactly_one_line(
     assert (line["origin"], line["basis"]) == ("document_expense", "unverified_export")
     assert line["counterparty"] == "sample contractor"
     assert line["recognition_date"] == PAID_ON
-    assert spending(ledger) == Decimal("-882.78")
+    assert spending(ledger) == Decimal("-31.97") - TOTAL
     assert (out.lines.from_invoice_decisions, out.lines.unmatched_invoices) == (1, 0)
     assert out.lines.txns == 3
     (primary,) = [row for row in sources(ledger, "primary") if row.txn_id == line["id"]]

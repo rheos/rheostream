@@ -293,11 +293,11 @@ def test_a_payment_years_before_the_only_open_bill_stays_a_credit(
     ("day", "amount", "to"),
     [
         (D(2028, 3, 16), "82.56", "bill-2028-03"),
-        (D(2028, 2, 21), "82.56", "bill-2028-03"),
+        (D(2028, 2, 20), "82.56", "bill-2028-03"),
         (D(2031, 4, 16), "82.56", "bill-2028-03"),
         (D(2031, 4, 26), "98.04", "bill-2031-05"),
         (D(2028, 3, 16), "72.59", "confirm"),
-        (D(2028, 2, 20), "82.56", "no_target"),
+        (D(2028, 2, 19), "82.56", "no_target"),
     ],
     ids=[
         "inside",
@@ -332,7 +332,7 @@ def test_a_payment_inside_a_superseded_bills_window_lands_on_that_bill(
 
 @pytest.mark.parametrize(
     ("day", "to"),
-    [(D(2031, 5, 11), "bill-2028-03"), (D(2031, 5, 12), "no_target")],
+    [(D(2031, 5, 10), "bill-2028-03"), (D(2031, 5, 11), "no_target")],
     ids=["inside", "at the end"],
 )
 def test_an_old_bills_window_ends_at_the_next_bill_plus_early_days(
@@ -375,16 +375,16 @@ def test_a_payment_in_another_currency_pays_nothing(
 ) -> None:
     """Every obligation is in CAD: with one to pay, the owner says what it was; with
     nothing to pay there is nothing to ask."""
-    bills(paying, ("isp", "206.40", issued, issued + dt.timedelta(days=19)))
+    bills(paying, ("isp", "219.29", issued, issued + dt.timedelta(days=19)))
     if paid_before:
-        bank(paying, (issued, ISP, Decimal("-206.40")))
+        bank(paying, (issued, ISP, Decimal("-219.29")))
     notice(paying, JUNE, currency="USD")
 
     paying.derive()
 
-    assert Applied(to, Decimal("206.40"), True) in applied(paying)
+    assert Applied(to, Decimal("219.29"), True) in applied(paying)
     assert {row.paid for row in owed(paying).values()} == {
-        Decimal("206.40") if paid_before else 0
+        Decimal("219.29") if paid_before else 0
     }
 
 
@@ -466,7 +466,7 @@ def test_two_bills_issued_and_due_on_the_same_days_that_both_fit_are_a_question(
 
     paying.derive()
 
-    assert applied(paying) == [Applied("confirm", Decimal("219.29"), True)]
+    assert applied(paying) == [Applied("confirm", Decimal("206.40"), True)]
 
 
 def test_of_two_bills_that_fit_the_older_is_paid(paying: Ledger) -> None:
@@ -1110,7 +1110,7 @@ def power(
     )
 
 
-PAID_UP = ((D(2029, 3, 26), "51.60"), (D(2029, 4, 26), "61.92"))
+PAID_UP = ((D(2029, 3, 26), "38.22"), (D(2029, 4, 26), "61.92"))
 
 
 def test_a_bill_issued_while_the_arrangement_ran_keeps_owing_its_current_charges(
@@ -1149,8 +1149,8 @@ def test_a_bill_issued_after_the_last_instalment_owes_its_arrears_again(
         "inst-plan-1": "paid",
         "inst-plan-2": "paid",
     }
-    assert found["bill-2029-06"].amount_due == Decimal("264.44")
-    assert found["arrears-2029-05"].amount_due == Decimal("103.20")
+    assert found["bill-2029-06"].amount_due == Decimal("299.22")
+    assert found["arrears-2029-05"].amount_due == Decimal("195.44")
 
 
 @pytest.mark.parametrize(
@@ -1173,7 +1173,7 @@ def test_a_bill_cut_within_early_days_of_the_last_instalment_stays_governed(
         assert found["bill-2029-06"].amount_due == Decimal("333.84")
         assert "arrears-2029-05" not in found
     else:
-        assert found["bill-2029-06"].amount_due == Decimal("264.44")
+        assert found["bill-2029-06"].amount_due == Decimal("299.22")
         assert found["arrears-2029-05"].status == "open"
 
 
@@ -1204,7 +1204,7 @@ def test_a_last_instalment_overpaid_just_before_a_new_bill_settles(
     }
     assert applied(ledger) == [
         Applied("bill-2029-06", Decimal("333.84"), True),
-        Applied("excess", Decimal("5.00"), True),
+        Applied("excess", Decimal("5.16"), True),
         Applied("inst-plan-1", Decimal("38.22"), True),
         Applied("inst-plan-2", Decimal("61.92"), True),
     ]
@@ -1215,7 +1215,7 @@ def test_a_last_instalment_overpaid_just_before_a_new_bill_settles(
 def test_a_finish_that_moves_a_payment_off_the_plan_keeps_it_active_and_says_so(
     ledger: Ledger,
 ) -> None:
-    """The owner says the 26 April 69.92 paid the arrears row, which exists only once
+    """The owner says the 26 April 61.92 paid the arrears row, which exists only once
     the plan is finished. Finished, the decision takes the payment off inst-plan-2 and
     the plan is not finished; active, the row is gone and the decision names nothing.
     Neither reading holds, so the plan stays active (its bills governed, no arrears

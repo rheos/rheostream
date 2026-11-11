@@ -86,7 +86,7 @@ def test_an_accounts_payee_patterns_match_as_a_payees_row_does(
 ) -> None:
     """The invoice prints the contractor's name; the payment line prints the firm's.
     One account-backed payee holding both makes the payment the invoice's."""
-    payments(ledger, ("2042/12/31", PAID_TO_FIRM, "828.00"))
+    payments(ledger, ("2047/06/12", PAID_TO_FIRM, "828.00"))
     ledger.file(INVOICE, invoice())
     assert counts(ledger.derive()) == (2, 0, 0, 1)
 

@@ -81,14 +81,14 @@ def test_registered_payees_share_keys_and_every_label_withholds_printed_names(
     "wording",
     [
         "E-SEND FROM",
-        "PAYEE:",
-        "PAYER:",
+        "SENT TO:",
+        "CAME FROM:",
         "MOVE TO",
         "MOVE FROM",
         "E-SEND",
         "CAROB",
         "MAIL SEND",
-        "etransfer debit (",
+        "ESEND (",
         "e-send returned (",
     ],
 )
@@ -109,7 +109,7 @@ def test_each_reference_wording_withholds_an_unregistered_name(
         ("E-SEND to sample-sumac", True),
         ("E-SEND to Sample Sumacs", False),
         ("Sample Sumac E-SEND to Sample Henna", False),
-        ("etransfer debit (Sample Sumac)", True),
+        ("ESEND (Sample Sumac)", True),
     ],
 )
 def test_payee_matching_is_whole_token_and_only_in_the_name_position(

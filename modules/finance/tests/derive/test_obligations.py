@@ -798,7 +798,7 @@ def test_a_newer_parsed_bill_supersedes_an_older_manual_bill_of_a_bill_source(
     yew_account(ledger)
     ledger.manual(
         OBLIGATIONS_FILE,
-        "yew,bill,,,58.55,,2059-01-26,,2050-01-16",
+        "yew,bill,,,58.55,,2049-06-19,,2049-05-29",
     )
     ledger.file(YEW, fixture("yew_bill.txt"))
     ledger.derive()
@@ -944,8 +944,8 @@ def test_a_bill_sources_manual_debts_never_chain(ledger: Ledger) -> None:
 
     assert (found["debt-first"].status, found["debt-second"].status) == ("open", "open")
     assert found["debt-second"].supersedes_id is None
-    assert found["bill-2059-02"].status == "open"
-    assert owed_total(ledger) == Decimal("517.99")
+    assert found["bill-2049-07"].status == "open"
+    assert owed_total(ledger) == Decimal("1092.84")
 
 
 def test_a_manual_bill_chains_on_the_account_of_the_parsed_bills_not_the_stood_for_one(
@@ -1104,7 +1104,7 @@ def test_a_manual_row_and_a_parsed_bill_of_one_key_are_one_with_the_documents_fi
     yew_account(ledger)
     ledger.manual(
         OBLIGATIONS_FILE,
-        "yew,bill,,,94.51,,2049-06-30,,2049-06-01",
+        "yew,bill,,,94.51,,2049-07-20,,2049-06-29",
     )
     ledger.file(YEW, fixture("yew_bill.txt"))
     ledger.derive()
@@ -1442,7 +1442,7 @@ def test_a_typed_in_bill_beside_an_active_arrangement_is_owed_as_typed(
     )
     assert found["bill-2059-03"].amount_due == Decimal("84.82")
     assert found["bill-2059-03"].supersedes_id == found["bill-2029-02"].id
-    assert owed_total(ledger) == Decimal("390.88")
+    assert owed_total(ledger) == Decimal("172.56")
 
 
 def test_a_replaced_typed_in_bill_leaves_only_the_instalments_owed(
@@ -1490,7 +1490,7 @@ def test_current_charges_above_a_credited_total_owe_only_the_total(
     boxwood_account(ledger)
     arrangement(ledger, "boxwood")
     ledger.file(
-        BOXWOOD, boxwood_credited(("-$488.60", "-$586.32"), "-$127.17", "$44.58")
+        BOXWOOD, boxwood_credited(("-$488.60", "-$114.36"), "-$289.26", "$44.58")
     )
     ledger.derive()
 
@@ -1505,7 +1505,7 @@ def test_a_bill_in_credit_under_an_arrangement_stays_as_printed_and_owes_nothing
     boxwood_account(ledger)
     arrangement(ledger, "boxwood")
     ledger.file(
-        BOXWOOD, boxwood_credited(("-$781.76", "-$343.98"), "-$1050.04", "-$716.20")
+        BOXWOOD, boxwood_credited(("-$781.76", "-$581.98"), "-$1050.04", "-$716.20")
     )
     ledger.derive()
 
@@ -1558,7 +1558,7 @@ def test_arrears_on_a_bill_in_credit_make_no_row(ledger: Ledger) -> None:
     ledger.file(
         BOXWOOD,
         boxwood_credited(
-            ("-$781.76", "-$343.98"),
+            ("-$781.76", "-$581.98"),
             "-$1050.04",
             "-$716.20",
             "\n   Arrears   $195.44",

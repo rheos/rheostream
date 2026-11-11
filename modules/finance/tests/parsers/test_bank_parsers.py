@@ -237,8 +237,8 @@ def test_each_version_reads_only_its_own_layout() -> None:
 def test_one_cent_off_the_totals_rejects_the_statement(setup: Setup) -> None:
     setup.register(CHEQUING, NEST)
     text = fixture(CURRENT_TEXT)
-    assert text.count("$1,033.75") == 1
-    doc = setup.file(CURRENT, text.replace("$1,033.75", "$1,033.76"))
+    assert text.count("$6,851.72") == 1
+    doc = setup.file(CURRENT, text.replace("$6,851.72", "$6,851.73"))
 
     assert setup.parse(doc) == Parsed("rejected", "summary_mismatch")
     assert setup.lines(doc) == []

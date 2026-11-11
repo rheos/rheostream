@@ -614,7 +614,7 @@ def test_a_transfers_derived_fee_line_is_no_payment(notices: Ledger) -> None:
     """A debit and a card credit that differ book a fee line under the debit's account,
     in wording a payee could name. The payment is what reached the card."""
     notices.manual(PAYEES_FILE, "bank,Our bank,vendor,FEE,,")
-    bank(notices, (D(2034, 6, 4), BILL_PAYMENT, Decimal("-196.90")))
+    bank(notices, (D(2034, 6, 4), BILL_PAYMENT, Decimal("-221.94")))
     file_card(notices, (D(2034, 6, 6), PAYMENT_RECEIVED, AMOUNT))
 
     notices.derive()
@@ -858,7 +858,7 @@ def test_a_notice_that_names_no_payee_makes_no_payment(notices: Ledger) -> None:
 def test_a_notice_is_named_by_its_description_when_its_printed_payee_names_none(
     notices: Ledger,
 ) -> None:
-    notices.manual(PAYEES_FILE, "isp,Our net,vendor,CARD PAID IN,,")
+    notices.manual(PAYEES_FILE, "isp,Our net,vendor,MONEY IN,,")
     notice(notices, JUNE, printed="Sample Unknown")
 
     notices.derive()
@@ -1263,7 +1263,7 @@ def test_a_fans_amount_is_the_sum_of_its_credits(notices: Ledger) -> None:
             "joined",
             "joined",
             name="neem",
-            amount=Decimal("452.37"),
+            amount=AMOUNT * 2,
         )
     ]
 
@@ -1301,7 +1301,7 @@ def test_a_payment_of_an_invoice_debts_amount_due_is_a_payment_at_its_remaining(
 def test_a_payment_of_an_invoice_debts_amount_due_clears_the_debt(
     ledger: Ledger,
 ) -> None:
-    invoice_debt(ledger, ("2035/03/12", CONTRACTOR, "717.60"))
+    invoice_debt(ledger, ("2047/06/20", CONTRACTOR, "717.60"))
 
     (debt,) = ledger.conn.execute(select(obligation)).all()
     assert (debt.status, debt.remaining) == ("paid", 0)

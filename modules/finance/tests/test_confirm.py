@@ -260,7 +260,7 @@ def test_queue_read_permissions_and_no_tool_export(prepared: Ledger) -> None:
 def test_held_notice_pair_answer_reuses_notice_and_money_contract(
     prepared: Ledger, cli: tuple[Run, list[str]], answer: str
 ) -> None:
-    bank(prepared, (D(2031, 6, 22), "SAMPLE ISP", M("-216.40")))
+    bank(prepared, (D(2031, 6, 22), "SAMPLE ISP", M("-219.29")))
     notice(prepared, D(2031, 6, 14))
     prepared.derive()
     item = pick(prepared, "held_notice")
@@ -346,15 +346,15 @@ def test_orphan_category_and_pair_offer_stored_fields_and_complete_replacements(
     category = record(
         prepared,
         kind="category",
-        target_ref=ref(prepared, "-9.28"),
+        target_ref=ref(prepared, "-9.29"),
         category="groceries",
         tag="personal",
     )
     paired = record(
         prepared,
         kind="pair",
-        target_ref=ref(prepared, "-21.64"),
-        counterpart_ref=ref(prepared, "21.64"),
+        target_ref=ref(prepared, "-23.36"),
+        counterpart_ref=ref(prepared, "23.36"),
     )
     prepared.derive()
     parser_change(monkeypatch)
@@ -514,8 +514,8 @@ def test_multi_line_decline_failure_rolls_back_all_rows(
     record(
         prepared,
         kind="pair",
-        target_ref=ref(prepared, "-21.64"),
-        counterpart_ref=ref(prepared, "21.64"),
+        target_ref=ref(prepared, "-23.36"),
+        counterpart_ref=ref(prepared, "23.36"),
     )
     prepared.derive()
     parser_change(monkeypatch)
@@ -570,7 +570,7 @@ def test_confirm_and_queue_withhold_source_transfer_names(
 def test_notice_evidence_withholds_source_names_and_sender_streams(
     prepared: Ledger, cli: tuple[Run, list[str]]
 ) -> None:
-    bank(prepared, (D(2031, 6, 22), "SAMPLE ISP", M("-216.40")))
+    bank(prepared, (D(2031, 6, 22), "SAMPLE ISP", M("-219.29")))
     notice(prepared, D(2031, 6, 14), printed="SAMPLE ISP sAmPlE   SuMaC")
     prepared.derive()
     before = pending(prepared)
@@ -617,7 +617,7 @@ def test_orphan_evidence_does_not_reprint_legacy_merchant_keys_or_notes(
         prepared,
         kind="category",
         merchant_key="SaMpLe   SuMaC legacy key",
-        newest_line_ref=ref(prepared, "-9.28"),
+        newest_line_ref=ref(prepared, "-9.29"),
         category="groceries",
         tag="personal",
         note="sAmPlE   SuMaC private note",

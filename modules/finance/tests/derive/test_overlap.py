@@ -51,7 +51,7 @@ from .support import (
 DOCS = {
     "export_2039": ("synthetic-card/2039-10-28-export.csv", "card_2039_export.csv"),
     "download_2039": (
-        "synthetic-card/2027-10-05-download.pdf",
+        "synthetic-card/2039-10-20-download.pdf",
         "card_2039_download.txt",
     ),
     "statement_may": ("synthetic-card/2041-05-07.pdf", "card_statement_2041_05.txt"),

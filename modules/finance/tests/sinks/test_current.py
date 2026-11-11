@@ -681,14 +681,14 @@ def test_actual_invoice_payment_deletion_closes_current_item(
     assert isinstance(ledger, Ledger)
     from tests.derive.test_payment_application import with_settings
 
-    with_settings(ledger, '[finance.reminders]\nmin_due_date = "2063-01-01"\n')
+    with_settings(ledger, '[finance.reminders]\nmin_due_date = "2062-01-01"\n')
     ledger.file(INVOICE, invoice())
     ledger.derive()
     unpaid(ledger, DUE_ON)
     ledger.derive()
     assert len(debts(ledger)) == 1
     current.sync_reminders(ledger.ctx)
-    payments(ledger, ("2062/12/31", CONTRACTOR, "705.93"))
+    payments(ledger, ("2062/04/03", CONTRACTOR, "717.60"))
     ledger.derive()
     assert debts(ledger) == []
     current_stub.requests.clear()
@@ -709,7 +709,7 @@ def test_invoice_vendor_registration_closes_old_identity_and_creates_new_once(
     assert isinstance(ledger, Ledger)
     from tests.derive.test_payment_application import with_settings
 
-    with_settings(ledger, '[finance.reminders]\nmin_due_date = "2063-01-01"\n')
+    with_settings(ledger, '[finance.reminders]\nmin_due_date = "2062-01-01"\n')
     open_invoice(ledger)
     unpaid(ledger, DUE_ON)
     ledger.derive()

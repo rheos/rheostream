@@ -215,7 +215,7 @@ def test_an_outgoing_reversal_nets_the_cancelled_debit_and_the_resend_counts_onc
 def test_a_clawed_back_credit_nets_and_the_resent_credit_counts_once(
     chequing: Ledger, reversal: str, printed: str | None
 ) -> None:
-    received, taken_back, again = D(2054, 10, 10), D(2046, 11, 14), D(2046, 11, 15)
+    received, taken_back, again = D(2046, 11, 10), D(2046, 11, 14), D(2046, 11, 15)
     derive(
         chequing,
         line(received, CLAWED_BACK.original, Decimal("500.48")),

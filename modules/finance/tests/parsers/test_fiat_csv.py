@@ -44,7 +44,7 @@ FIG = ManualAccount("fig", "Fig", "wallet", ("W-0001-ZZ",), currencies="CAD;USD"
 JUNIPER = ManualAccount(
     "juniper", "Juniper", "payment_processor", ("SAMPLE999JUNIPER",), currencies="USD"
 )
-HAZEL_CSV = "hazel/activity-2051-04-30.csv"
+HAZEL_CSV = "hazel/activity-2030-11-30.csv"
 FIG_CSV = "fig/statement-2045-08-28.csv"
 JUNIPER_CSV = "juniper/balance-2045-08-27.csv"
 
