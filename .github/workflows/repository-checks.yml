@@ -287,8 +287,20 @@ jobs:
       - name: Sync (frozen)
         run: uv sync --frozen --extra local-embeddings
       # The finance parser tests call the real pdftotext, which the runner image lacks (#533).
+      # A mirror outage must not block the database suite; a missing pdftotext still fails the parser tests red, since pdf_to_text raises.
       - name: Install poppler-utils
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
+        timeout-minutes: 6
+        continue-on-error: true
+        run: |
+          for try in 1 2 3; do
+            if sudo apt-get -o Acquire::Retries=3 update \
+                && sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends poppler-utils; then
+              exit 0
+            fi
+            echo "apt try $try failed"
+            [ "$try" = 3 ] || sleep $(( try * 40 ))
+          done
+          exit 1
       # Keyed on the model identifier, so a model change misses the cache instead of
       # restoring the old artifact under the new name. The identifier is
       # embedding/local.py's MODEL_ID and retrieval/rerank.py's immutable revision;
