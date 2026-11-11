@@ -184,6 +184,14 @@ def configured_presets(text: str) -> tuple[Preset, ...]:
     return validate_presets(parsed)
 
 
+def validate_setting(value: object) -> None:
+    """The ``leads.jobfeed.presets`` ``KeySpec`` validator: refuse at the write what
+    :func:`configured_presets` would refuse at the run, with the same codes."""
+    if not isinstance(value, str):
+        raise PresetInvalid("presets_not_json")
+    configured_presets(value)
+
+
 # Best Matches is one page; Most Recent is the initial page plus four load-more
 # pages; the over-cap refresh reads one page of postings above the discovery cap so
 # tracked postings keep their counts. At ten rows a page that is at most 70 rows.
