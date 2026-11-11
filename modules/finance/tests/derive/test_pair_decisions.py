@@ -963,7 +963,7 @@ def test_one_out_leg_fanned_to_two_in_legs_nets_the_whole_pair_once(
 
 @pytest.mark.parametrize(
     ("outs", "fee"),
-    [(("-83.98", "-83.98"), [Decimal("-4.32")]), (("-83.98", "-64.80"), [])],
+    [(("-83.98", "-67.22"), [Decimal("-4.32")]), (("-83.98", "-61.08"), [])],
     ids=["short-by-4", "favourable"],
 )
 def test_two_out_legs_fanned_into_one_in_leg_net_the_whole_pair_once(

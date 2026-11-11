@@ -419,7 +419,7 @@ def test_candidates_match_account_currency_and_inclusive_posting_tolerance(
     ledger.cash(
         "other,2051-02-04,-9.29,CAD,Sample other account,",
         "card,2051-02-04,-9.29,USD,Sample other currency,",
-        "card,2051-01-30,-9.294,CAD,Sample nearby purchase,",
+        "card,2051-02-01,-9.294,CAD,Sample nearby purchase,",
     )
     parser_change(monkeypatch, shift=3)
     ledger.derive()

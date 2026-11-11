@@ -213,7 +213,7 @@ def test_same_day_eligibility_setting_edit_leaves_last_derive_snapshot(
 ) -> None:
     ledger = scratch_ledger
     vendors(ledger)
-    bank(ledger, (dt.date(2037, 6, 24), "SAMPLE ISP", Decimal("-161.60")))
+    bank(ledger, (dt.date(2037, 6, 24), "SAMPLE ISP", Decimal("-220.29")))
     notice(ledger, dt.date(2037, 6, 16))
     with_settings(ledger, "[finance.payments]\nmatch_tolerance = 2.00\n")
     ledger.derive()
@@ -241,13 +241,13 @@ def test_sampled_date_controls_presumed_eligibility_without_new_operation_input(
         ledger.ctx,
         ledger.uow,
         queue.ListIn(counts_only=True),
-        as_of_date=dt.date(2034, 12, 1),
+        as_of_date=dt.date(2052, 12, 1),
     )
     later = queue.list_items(
         ledger.ctx,
         ledger.uow,
         queue.ListIn(counts_only=True),
-        as_of_date=dt.date(2038, 2, 26),
+        as_of_date=dt.date(2056, 2, 26),
     )
     assert {row.kind: row.count for row in earlier.counts}["presumed_paid"] == 0
     assert {row.kind: row.count for row in later.counts}["presumed_paid"] > 0

@@ -448,7 +448,7 @@ def test_crypto_edge_ids_do_not_move_with_the_time_zone(crypto_ledger: Ledger) -
     # Late in the UTC day, so the local posting date differs between the two zones.
     # An edge id, like a line's, is keyed to the UTC date: a zone change re-keys none.
     ledger = crypto_ledger
-    late = "2057-03-06T03:30:00+00:00"
+    late = "2057-03-06T22:30:00+00:00"
     ledger.manual(OWN_ADDRESSES_FILE, f"vault,{OWN_VAULT}")
     three_accounts(ledger)
     file(

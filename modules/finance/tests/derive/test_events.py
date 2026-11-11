@@ -351,8 +351,8 @@ def test_split_intermediate_negative_balance_is_not_an_overdrawn_spell(
     statement(ledger)
     split = (
         STATEMENT.replace("393.20", "  1.08")
-        .replace("583.20", " 388.84")
-        .replace("465.24", " 270.88")
+        .replace("583.20", "191.08")
+        .replace("465.24", " 73.12")
     )
     ledger.file("alder/2055-06-12.pdf", split)
     ledger.derive()
@@ -404,6 +404,7 @@ def test_payment_alert_notice_is_written_while_all_sinks_are_disabled(
 ) -> None:
     ledger.chequing()
     ledger.manual("payees.csv", "net,Sample network,vendor,SAMPLE NET,,")
+    clock(ledger, "2054-02-20T12:00:00")
     bills(ledger, ("net", "21.08", D(2054, 1, 1), D(2054, 1, 11)))
     ledger.file(
         "alder/paid.csv",
@@ -437,13 +438,13 @@ def test_same_day_native_parser_spells_preserve_cardinality(
         "23 MAY SAMPLE CREDIT  390.88  195.44\n"
         "23 MAY SAMPLE DEBIT AGAIN  390.88  -195.44\n"
     )
-    withdrawals = 423 * (closed_spells + 1)
-    deposits = 423 * closed_spells
+    withdrawals = Decimal("390.88") * (closed_spells + 1)
+    deposits = Decimal("390.88") * closed_spells
     layout = (
         "JUNE 12, 2055\n"
         "ALDER CYCLE 9 MAY 2055 UNTIL 12 JUN 2055\n"
         "ALDER DAILY CHEQUING No 999000000022  "
-        f"195.44  {withdrawals}.00  {deposits}.00  -195.44\n\n"
+        f"195.44  {withdrawals}  {deposits}  -195.44\n\n"
         "ALDER DAILY CHEQUING No 999000000022\n"
         "ALDER START FIGURE  195.44\n"
         "23 MAY SAMPLE DEBIT  390.88  -195.44\n" + repeat * closed_spells

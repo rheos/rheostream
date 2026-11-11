@@ -21,7 +21,7 @@ import pytest
 from sqlalchemy import Row as SqlRow
 from sqlalchemy import select
 
-from rheo_finance.clock import local_today
+from rheo_finance.clock import FakeClock, local_today
 from rheo_finance.derive.presumed import presumed_paid_candidates
 from rheo_finance.derive.run import run
 from rheo_finance.derive.snapshot import txn_snapshot
@@ -207,6 +207,9 @@ def test_a_bill_due_after_this_month_is_not_offered(ledger: Ledger) -> None:
     2058 and the floor a year on: the bill due this month is offered on chequing's
     gap, the one due in March is not, though chequing has no data for it either."""
     history(ledger)
+    ledger.ctx = dataclasses.replace(
+        ledger.ctx, clock=FakeClock(dt.datetime(2058, 1, 15, 12, tzinfo=dt.UTC))
+    )
     with_settings(ledger, "[finance.reminders]\nmin_due_date = 2059-01-01\n")
     bills(
         ledger,

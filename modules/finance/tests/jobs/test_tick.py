@@ -80,7 +80,7 @@ def test_real_derive_is_dirty_once_after_midnight(
     ctx = configured(rolled_back_context(Role.SERVICE), tmp_path)
     clock = ctx.clock
     assert isinstance(clock, FakeClock)
-    clock.set(dt.datetime(2034, 1, 17, 6, 59, tzinfo=dt.UTC))
+    clock.set(dt.datetime(2034, 1, 17, 23, 59, tzinfo=dt.UTC))
     assert "finance.derive" in [r.job for r in tick(ctx).runs]
     clock.advance(dt.timedelta(minutes=2))
     assert "finance.derive" in [r.job for r in tick(ctx).runs]

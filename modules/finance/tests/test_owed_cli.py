@@ -115,7 +115,7 @@ def test_default_headline_cap_totals_card_columns_order_and_json(
             stored,
             f"sample-{n:02}",
             "bill",
-            dt.date(2051, 5, 24),
+            dt.date(2057, 5, 20),
             amount="54",
             minimum=None,
         )
@@ -129,7 +129,7 @@ def test_default_headline_cap_totals_card_columns_order_and_json(
     assert len(got["rows"]) == 15 and got["more"] == 2
     assert got["due_in_window"] == "810.00"
     assert "due in the next 14 days: 810.00 CAD" in head
-    assert "overdue: 19.52 CAD" in head and "carried: 912.55 CAD" in head
+    assert "overdue: 11.47 CAD" in head and "carried: 675.84 CAD" in head
     rows = [
         line for line in detail.splitlines() if line.startswith("finance.obligation:")
     ]
@@ -139,13 +139,13 @@ def test_default_headline_cap_totals_card_columns_order_and_json(
         "source sample-bills/sample-card.pdf; before reminders floor"
     )
     for fragment in [
-        "balance 942.50 CAD",
-        "minimum 29.95 CAD",
+        "balance 697.74 CAD",
+        "minimum 21.90 CAD",
         "paid 10.43 CAD",
-        "overdue 19.52 CAD",
-        "carried 912.55 CAD",
-        "remaining 932.07 CAD",
-        "due 2051-05-19",
+        "overdue 11.47 CAD",
+        "carried 675.84 CAD",
+        "remaining 687.31 CAD",
+        "due 2057-05-15",
         "1 days overdue",
     ]:
         assert fragment in rows[0]
@@ -170,7 +170,7 @@ def test_undated_manual_source_and_missing_card_minimum(
     stored.commit()
     got = json.loads(output(run, "--json"))
     shown = output(run)
-    assert "minimum not printed (threshold 942.50 CAD)" in shown
+    assert "minimum not printed (threshold 697.74 CAD)" in shown
     assert got["rows"][-1]["due_date"] is None
     assert "no due date; source obligations.csv:2" in shown
 
@@ -314,8 +314,8 @@ def test_presumed_paid_effective_and_recorded_figures(
     )
     stored.commit()
     shown = output(run, "--trace", ref)
-    assert "paid 942.50 CAD" in shown and "remaining 0.00 CAD" in shown
-    assert "recorded paid 0.00 CAD; recorded remaining 942.50 CAD" in shown
+    assert "paid 697.74 CAD" in shown and "remaining 0.00 CAD" in shown
+    assert "recorded paid 0.00 CAD; recorded remaining 697.74 CAD" in shown
     assert f"presumed-paid basis finance.decision:{did}; owner; presumed_paid;" in shown
 
 
@@ -332,7 +332,7 @@ def test_credits_preserve_currencies_missing_cad_and_payee_only_reason(
                 payee_id=pid,
                 amount=M(amount),
                 currency=currency,
-                paid_on=dt.date(2051, 5, 17),
+                paid_on=dt.date(2057, 5, 13),
                 source="notice_only",
                 state="active",
             )
@@ -345,11 +345,11 @@ def test_credits_preserve_currencies_missing_cad_and_payee_only_reason(
         stored.execute(
             insert(open_item).values(
                 id=uuid7(NOW),
-                tax_year=2051,
+                tax_year=2057,
                 kind="unapplied_credit",
                 subject_ref=f"finance.payment_application:{app}",
                 payment_id=pay,
-                occurred_on=dt.date(2051, 5, 17),
+                occurred_on=dt.date(2057, 5, 13),
                 amount=-M(amount),
                 direction="out",
                 currency=currency,
@@ -361,12 +361,12 @@ def test_credits_preserve_currencies_missing_cad_and_payee_only_reason(
         )
     stored.commit()
     got = json.loads(output(run, "--json"))
-    assert got["overdue"] == "29.95" and got["carried"] == "912.55"
+    assert got["overdue"] == "21.90" and got["carried"] == "675.84"
     assert got["credits"]["count"] == 2
     assert got["credits"]["sums"][1]["cad_amount"] is None
     shown = output(run, "--trace", f"finance.obligation:{ident}")
-    assert "credits not applied: 2, 5.99 CAD; 7.34 USD" in shown
-    assert "5.99 CAD; credit exceeds obligation for Sample-Card" in shown
+    assert "credits not applied: 2, 5.00 CAD; 7.00 USD" in shown
+    assert "5.00 CAD; credit exceeds obligation for Sample-Card" in shown
     assert "7 USD; credit exceeds obligation for Sample-Card" in shown
     for row in got["credits"]["items"]:
         assert row["payment_ref"] in shown and row["line_ref"] in shown

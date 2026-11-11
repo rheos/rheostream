@@ -149,13 +149,13 @@ def test_a_fiat_pair_with_a_zero_leg_leaves_no_edge(fx_ledger: Ledger) -> None:
         f"{FX_DIR}/cad.txt",
         fx_lines(
             "CAD",
-            "2059-06-08 -160.60 - - SAMPLE OUT 99961",
-            "2059-06-08 0.00 - - SAMPLE ZERO 99967",
+            "2055-06-11 -160.60 - - SAMPLE OUT 99961",
+            "2055-06-11 0.00 - - SAMPLE ZERO 99967",
         ),
     )
     ledger.file(
         f"{FX_DIR}/usd.txt",
-        fx_lines("USD", "2059-06-08 116.95 156.60 - SAMPLE IN 99962"),
+        fx_lines("USD", "2055-06-11 116.95 156.60 - SAMPLE IN 99962"),
     )
     ledger.derive()
 
@@ -206,8 +206,8 @@ def test_a_fiat_pair_with_an_excluded_line_leaves_no_edge(ledger: Ledger) -> Non
     # even as a pair of reversal shape.
     accounts_with_placeholder(ledger)
     ledger.cash(
-        "staking,2059-06-08,-41.00,CAD,SAMPLE OUT 99974,",
-        "staking,2059-06-10,41.00,CAD,SAMPLE IN 99975,",
+        "staking,2055-06-11,-41.00,CAD,SAMPLE OUT 99974,",
+        "staking,2055-06-13,41.00,CAD,SAMPLE IN 99975,",
     )
     ledger.derive()
 

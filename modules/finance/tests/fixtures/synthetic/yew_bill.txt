@@ -30,7 +30,7 @@
 Sum rsit tco tetu ipi gelits ddoe modt orincid
    Yew party tag:   99900012SAMPLE
 
-   Yew holder key   Sum Rsi Tconse   Owing   Paid
+   Yew holder key   Yew Settle By   Owing   Paid
    999000123   July 19, 2049   $101.40
 
    Sample Customer

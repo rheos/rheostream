@@ -212,7 +212,11 @@ def test_card_minimum_and_carried_at_read_time_under_reader(
     assert row.primary_source
     assert out.overdue == M(overdue) and out.carried == M("675.84")
     # Same stored bytes, different local day across the UTC/local midnight boundary.
-    earlier = owed(built, when=dt.datetime(2057, 5, 16, 3, tzinfo=dt.UTC))
+    earlier = owed(
+        built,
+        when=dt.datetime(2057, 5, 16, 3, tzinfo=dt.UTC),
+        settings='[finance.locale]\ntimezone = "Etc/GMT+9"\n',
+    )
     assert earlier.overdue == 0
     assert earlier.rows[0].due_in_window == M("21.90") - M(paid)
     assert len(out.headline) == 5
@@ -232,7 +236,7 @@ def test_full_totals_order_cap_undated_and_missing_minimum(
     add(stored, "undated", "manual_debt", None, amount="35.44", minimum=None)
     stored.commit()
     capped = owed(built, settings="[finance.owed]\nmax_rows=2\nwindow_days=14\n")
-    assert capped.overdue == M("833.52")
+    assert capped.overdue == M("840.75")
     assert capped.due_in_window == M("30.99")
     assert len(capped.rows) == 2 and capped.more == 4
     every = owed(built)
@@ -500,10 +504,10 @@ def test_credit_rows_and_counts_share_kind_filter_keep_native_and_missing_cad(
     out = owed(built)
     assert out.overdue == M("21.90") and out.carried == M("675.84")
     assert out.credits.count == 2 and len(out.credits.items) == 2
-    assert out.credits.line == "credits not applied: 2, 4.38 CAD; 8.09 USD"
+    assert out.credits.line == "credits not applied: 2, 5.00 CAD; 7.00 USD"
     assert [(r.currency, r.amount, r.cad_amount) for r in out.credits.sums] == [
-        ("CAD", M("4.38"), M("4.38")),
-        ("USD", M("8.09"), None),
+        ("CAD", M("5.00"), M("4.38")),
+        ("USD", M("7.00"), None),
     ]
     detail = trace(built).credits
     assert detail == out.credits
@@ -535,7 +539,7 @@ def test_patternless_invoice_flag_and_registered_vendor_rederive_clears_debt(
     )
     ctx = operations.with_owner_connection(ctx, stored)
     ledger = Ledger(stored, ctx, tmp_path)
-    payments(ledger, ("2057/03/05", CONTRACTOR, "620.85"))
+    payments(ledger, ("2047/06/10", CONTRACTOR, "717.60"))
     ledger.file(INVOICE, invoice())
     ledger.derive()
     unpaid(ledger)
@@ -544,7 +548,7 @@ def test_patternless_invoice_flag_and_registered_vendor_rederive_clears_debt(
     stored.commit()
     (row,) = owed(built).rows
     assert row.payee_slug == "invoices-received" and row.payments_unmatchable
-    assert row.amount_due == M("620.85") and row.remaining == M("620.85")
+    assert row.amount_due == M("717.60") and row.remaining == M("717.60")
     assert row.invoice_folder and row.invoice_folder.startswith("invoices-received/")
     ledger.manual(PAYEES_FILE, "sample-vendor,Sample Vendor,vendor,SAMPLE CONTRACTOR,,")
     ledger.derive()

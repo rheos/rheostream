@@ -132,7 +132,7 @@ def test_two_identical_same_day_lines_both_survive(ledger: Ledger) -> None:
         "\n".join(
             [
                 csv_row(
-                    "2031/02/05",
+                    "2038/10/06",
                     "DEPOSIT   SAMPLE PAYROLL  99906",
                     into="19.66",
                     balance="353.88",

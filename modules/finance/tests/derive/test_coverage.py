@@ -720,7 +720,7 @@ def test_months_before_missing_before_are_missing_with_its_reason(
 
 
 def test_the_jump_fixture_never_shows_its_month_as_have(ledger: Ledger) -> None:
-    # Rows are missing between two February lines: the month is partial for the jump,
+    # Rows are missing between two October lines: the month is partial for the jump,
     # and with no whole month inside it no month is missing.
     register_chequing(ledger)
     ledger.file(
@@ -731,7 +731,7 @@ def test_the_jump_fixture_never_shows_its_month_as_have(ledger: Ledger) -> None:
     ledger.derive()
 
     assert matrix(ledger, "chequing") == {
-        D(2038, 2, 1): ("partial", "running_balance_break")
+        D(2038, 10, 1): ("partial", "running_balance_break")
     }
 
 

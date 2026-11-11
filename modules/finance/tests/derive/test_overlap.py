@@ -530,11 +530,13 @@ def test_each_txn_carries_the_basis_of_its_first_source(
         ("card", "Sample Card", "credit_card", CARD_IDENTIFIER),
     )
     ledger.add_identifier("chequing", STATEMENT_IDENTIFIER)
-    for path, fixture in (
-        ("alder/export.csv", "alder_chequing_jump.csv"),
-        ("alder/2055-06-12.pdf", "alder_statement_split.txt"),
-    ):
-        ledger.file(path, (FIXTURES / fixture).read_text(encoding="utf-8"))
+    # The export's rows are the jump fixture's, a year and some on: after the statement.
+    export = (FIXTURES / "alder_chequing_jump.csv").read_text(encoding="utf-8")
+    ledger.file("alder/export.csv", export.replace("2038/", "2056/"))
+    ledger.file(
+        "alder/2055-06-12.pdf",
+        (FIXTURES / "alder_statement_split.txt").read_text(encoding="utf-8"),
+    )
     file(ledger, "download_2039")
     ledger.cash("paid-outside,2055-07-01,-12.12,CAD,coffee money,")
 
