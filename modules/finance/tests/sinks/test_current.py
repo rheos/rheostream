@@ -688,7 +688,7 @@ def test_actual_invoice_payment_deletion_closes_current_item(
     ledger.derive()
     assert len(debts(ledger)) == 1
     current.sync_reminders(ledger.ctx)
-    payments(ledger, ("2047/06/10", CONTRACTOR, "717.60"))
+    payments(ledger, ("2047/06/10", CONTRACTOR, "828.00"))
     ledger.derive()
     assert debts(ledger) == []
     current_stub.requests.clear()

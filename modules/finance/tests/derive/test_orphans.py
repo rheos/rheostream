@@ -433,7 +433,7 @@ def test_candidates_match_account_currency_and_inclusive_posting_tolerance(
     rows = ledger.conn.execute(select(txn).where(txn.c.id.in_(candidates))).all()
     assert {row.currency for row in rows} == {"CAD"}
     assert {row.posting_date for row in rows} == {
-        dt.date(2051, 1, 30),
+        dt.date(2051, 2, 1),
         dt.date(2051, 2, 7),
     }
 

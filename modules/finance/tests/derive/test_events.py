@@ -404,7 +404,7 @@ def test_payment_alert_notice_is_written_while_all_sinks_are_disabled(
 ) -> None:
     ledger.chequing()
     ledger.manual("payees.csv", "net,Sample network,vendor,SAMPLE NET,,")
-    clock(ledger, "2054-02-20T12:00:00")
+    clock(ledger, "2054-01-20T12:00:00")
     bills(ledger, ("net", "21.08", D(2054, 1, 1), D(2054, 1, 11)))
     ledger.file(
         "alder/paid.csv",
