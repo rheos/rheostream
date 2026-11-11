@@ -2019,6 +2019,17 @@ The following changes are recorded here.
     replacement, swaps the writer's secret, then revokes the old token, and a renewal
     item in Current carries the date. No migration.
 
+27. **Personal finance is a module, not a breach of the accounting non-goal.** Recorded on
+    2026-11-11 against issue #543. A `finance` module holds a personal ledger and its
+    reminders inside the workspace. The non-goal "a replacement for a complete accounting
+    or tax product" stands: the module reconciles statements, tracks what is owed and
+    prepares inputs for an accountant, and computes no tax. Current still does not become
+    accounting: finance is the "other integration" the Current section allows, owning its
+    own records, and Current only holds the reminder items finance files through
+    Current's operations. The module installs per workspace, its schedule is gated by a
+    workspace setting that starts off, and it registers no operations or tools; a later,
+    explicit read-only set is the only way an agent reaches it.
+
 ### Website intake implementation clarification (2026-10-09)
 
 Signed website event identity comes from the signed body (`event_id`) or its exact-byte

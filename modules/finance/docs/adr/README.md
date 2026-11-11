@@ -23,3 +23,8 @@ ADR-0022 supersedes ADR-0001: inside rheoStream the four `docextract` modules th
 ledger uses are vendored, pinned by their bytes, rather than installed from a private
 git dependency. ADR-0023 records the codenames that name every institution and the
 private file that holds their own wording.
+
+ADR-0024 records how the module runs on core: roles made by `env.py`, one role per
+operation on core's sessions, an advisory writer lock, the tick as a gated core job,
+the uploads layout, no core operations or tools, and model calls through the runtime.
+It supersedes nothing; ADR-0008's two connection names now map to the two roles.
