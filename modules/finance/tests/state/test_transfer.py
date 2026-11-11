@@ -1,7 +1,8 @@
 """State export and import over two scratch databases (D11): every state table
 non-empty in A, exported, imported into a fresh B, both rebuilt: the derived digests
 agree and B's export is A's, byte for byte. A second import and a wrong head are
-refused. Values are synthetic.
+refused, so is an import into a ledger whose document set is not empty, and the
+export waits on the writer lock like a writer. Values are synthetic.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from decimal import Decimal
 from pathlib import Path
 
@@ -16,13 +18,15 @@ import pytest
 from sqlalchemy import create_engine, insert, text
 from sqlalchemy.pool import NullPool
 
-from rheo_finance import catalogue, operations
+from rheo_finance import catalogue, db, operations
 from rheo_finance.clock import FakeClock
 from rheo_finance.context import FinanceContext, FinancePaths
 from rheo_finance.contracts import Role
-from rheo_finance.derive.run import STATE
+from rheo_finance.derive.digest import digested_tables
+from rheo_finance.derive.run import FILE_OWNED, STATE
 from rheo_finance.operations import OperationError, dispatch
 from rheo_finance.settings import parse_settings
+from rheo_finance.state import transfer
 from rheo_finance.state.transfer import ExportOut, ImportOut
 from rheo_finance.storage import schema
 from tests.finance_support import (
@@ -227,3 +231,79 @@ def test_an_import_at_another_head_is_refused(
     }
     with pytest.raises(OperationError, match="schema_mismatch"):
         run("finance.state.import", payload, b)
+
+
+def test_every_table_the_digest_covers_must_be_empty_too() -> None:
+    names = [table.name for table in transfer.import_must_be_empty()]
+    assert len(names) == len(set(names))
+    assert set(names) == STATE | {table.name for table in digested_tables()}
+    assert FILE_OWNED <= set(names)
+
+
+FILE_ROWS = {
+    "document": (
+        "INSERT INTO finance.document"
+        " (id, path, sha256, kind, issuer, format, status, imported_at)"
+        " VALUES (:id, 'synthetic/a.pdf', :sha, 'bill', 'sample-issuer', 'pdf',"
+        " 'filed', :at)"
+    ),
+    "archive_skip": (
+        "INSERT INTO finance.archive_skip (directory, reason, count)"
+        " VALUES ('synthetic', 'unmapped_directory', 1)"
+    ),
+}
+
+
+@pytest.mark.parametrize("table", sorted(FILE_ROWS))
+def test_an_import_into_a_ledger_with_files_is_refused(
+    two_databases: tuple[DatabaseUnderTest, DatabaseUnderTest],
+    tmp_path: Path,
+    table: str,
+) -> None:
+    catalogue.load_all()
+    _, target = two_databases
+    engine = create_engine(target.owner_url, poolclass=NullPool)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(FILE_ROWS[table]),
+                {"id": uuid.UUID(int=7), "sha": "a" * 64, "at": T0},
+            )
+    finally:
+        engine.dispose()
+    b = context_for(target, tmp_path / "b")
+    payload = {
+        "schema_head": db.head_revision(),
+        "tables": [{"name": name, "lines": []} for name in sorted(STATE)],
+    }
+    with pytest.raises(OperationError, match="state_not_empty"):
+        run("finance.state.import", payload, b)
+
+
+def test_the_export_takes_the_writer_lock_before_it_reads(
+    test_database: DatabaseUnderTest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every writer takes the lock until it commits, so an export that cannot enter
+    while another connection holds it reads its tables and its digest with no commit
+    landing between them."""
+    catalogue.load_all()
+    ctx = context_for(test_database, tmp_path / "a")
+
+    def bounded(connection: db.Statements) -> AbstractContextManager[None]:
+        return db.writer_lock(connection, wait_seconds=0)
+
+    monkeypatch.setattr(transfer, "writer_lock", bounded)
+    engine = create_engine(test_database.owner_url, poolclass=NullPool)
+    try:
+        with engine.connect() as holder:
+            holder.execute(
+                text("SELECT pg_advisory_lock(:key)"), {"key": db.WRITER_LOCK_KEY}
+            )
+            with pytest.raises(db.WriterBusy):
+                run("finance.state.export", {}, ctx)
+        # Closing the holder ended its session and its lock.
+        assert isinstance(run("finance.state.export", {}, ctx), ExportOut)
+    finally:
+        engine.dispose()

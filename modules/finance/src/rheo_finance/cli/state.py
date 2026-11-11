@@ -5,8 +5,9 @@ canonical lines, each ending in a newline) and ``manifest.json`` with the format
 schema head, the derived digest and each table's row count and sha256. The directory
 is 0700 and every file 0600. The import recomputes every count and hash from the files
 and refuses ``manifest_mismatch`` before anything is dispatched, and
-``state_file_refused`` for anything reached through a symlink; ``finance rebuild``
-follows it.
+``state_file_refused`` for a symlink anywhere on the path (an ancestor directory
+included), a directory component that is not a directory, a file that is not a regular
+file, or a file that fails once opened; ``finance rebuild`` follows it.
 
 By default both run on the workspace's own database (``composition.build_context``).
 ``--source-dsn-file`` (export only) reads an old standalone ledger through a private
@@ -19,7 +20,6 @@ import what they dispatch with inside themselves.
 from __future__ import annotations
 
 import argparse
-import errno
 import hashlib
 import json
 import os
@@ -99,30 +99,84 @@ def write_export(
     return entries
 
 
-def _read(path: Path) -> bytes:
-    """A regular file's bytes, never through a symlink (the write side's
-    ``O_NOFOLLOW``). A missing or unreadable file is a mismatch; a symlink or a
-    non-regular file is refused outright (``O_NONBLOCK``: opening a FIFO does not
-    wait for a writer)."""
+_DIR_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
+_FILE_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+
+def _open_failed(name: str, dir_fd: int, *, want_dir: bool) -> StateFilesRefused:
+    """The code for a component ``os.open`` refused: a symlink, or a file where a
+    directory belongs, is refused; a missing or unreadable one is a mismatch. The
+    ``lstat`` only names the code; the refusal itself is the ``O_NOFOLLOW`` open's."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError as exc:
-        code = "state_file_refused" if exc.errno == errno.ELOOP else "manifest_mismatch"
-        raise StateFilesRefused(code) from None
-    with os.fdopen(fd, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-            raise StateFilesRefused("state_file_refused")
-        return handle.read()
+        mode = os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode
+    except OSError:
+        return StateFilesRefused("manifest_mismatch")
+    if stat.S_ISLNK(mode) or (want_dir and not stat.S_ISDIR(mode)):
+        return StateFilesRefused("state_file_refused")
+    return StateFilesRefused("manifest_mismatch")
+
+
+def _open_dir(path: Path) -> int:
+    """A descriptor for directory ``path``, opened one component at a time from the
+    root (or the working directory) with ``O_NOFOLLOW``, so no component, an ancestor
+    included, is followed through a symlink, and nothing can swap one in between a
+    check and the read."""
+    if path.is_absolute():
+        start, parts = path.anchor, path.parts[1:]
+    else:
+        start, parts = ".", path.parts
+    try:
+        fd = os.open(start, _DIR_FLAGS)
+    except OSError:
+        raise StateFilesRefused("manifest_mismatch") from None
+    try:
+        for part in parts:
+            try:
+                child = os.open(part, _DIR_FLAGS, dir_fd=fd)
+            except OSError:
+                raise _open_failed(part, fd, want_dir=True) from None
+            os.close(fd)
+            fd = child
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _read(dir_fd: int, name: str) -> bytes:
+    """A regular file's bytes, opened relative to ``dir_fd`` and never through a
+    symlink (the write side's ``O_NOFOLLOW``). A missing or unreadable file is a
+    mismatch; a symlink or a non-regular file is refused outright (``O_NONBLOCK``:
+    opening a FIFO does not wait for a writer), and so is a file whose ``fstat`` or
+    read fails once it is open."""
+    try:
+        fd = os.open(name, _FILE_FLAGS, dir_fd=dir_fd)
+    except OSError:
+        raise _open_failed(name, dir_fd, want_dir=False) from None
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise StateFilesRefused("state_file_refused")
+            return handle.read()
+    except OSError:
+        raise StateFilesRefused("state_file_refused") from None
 
 
 def read_export(source: Path) -> tuple[str, Tables]:
     """The schema head and each table's lines, after every count and hash matched.
-    Nothing is read through a symlink: not the directory, ``state/`` or any file."""
-    if source.is_symlink() or (source / STATE_DIR).is_symlink():
-        raise StateFilesRefused("state_file_refused")
+    Nothing is read through a symlink: not an ancestor of the directory, the directory,
+    ``state/`` or any file."""
+    root = _open_dir(source)
+    try:
+        return _read_export(root)
+    finally:
+        os.close(root)
+
+
+def _read_export(root: int) -> tuple[str, Tables]:
     mismatch = StateFilesRefused("manifest_mismatch")
     try:
-        manifest = json.loads(_read(source / MANIFEST_NAME).decode("utf-8"))
+        manifest = json.loads(_read(root, MANIFEST_NAME).decode("utf-8"))
     except ValueError:
         raise mismatch from None
     if not isinstance(manifest, dict) or manifest.get("format") != FORMAT:
@@ -131,6 +185,18 @@ def read_export(source: Path) -> tuple[str, Tables]:
     entries = manifest.get("tables")
     if not isinstance(head, str) or not isinstance(entries, list):
         raise mismatch
+    try:
+        state = os.open(STATE_DIR, _DIR_FLAGS, dir_fd=root)
+    except OSError:
+        raise _open_failed(STATE_DIR, root, want_dir=True) from None
+    try:
+        return head, _read_tables(state, entries)
+    finally:
+        os.close(state)
+
+
+def _read_tables(state: int, entries: list[object]) -> Tables:
+    mismatch = StateFilesRefused("manifest_mismatch")
     tables: Tables = []
     for entry in entries:
         if not isinstance(entry, dict):
@@ -138,7 +204,7 @@ def read_export(source: Path) -> tuple[str, Tables]:
         name, rows, digest = entry.get("name"), entry.get("rows"), entry.get("sha256")
         if not (isinstance(name, str) and TABLE_NAME.fullmatch(name)):
             raise mismatch
-        body = _read(source / STATE_DIR / f"{name}.jsonl")
+        body = _read(state, f"{name}.jsonl")
         if hashlib.sha256(body).hexdigest() != digest:
             raise mismatch
         try:
@@ -148,10 +214,11 @@ def read_export(source: Path) -> tuple[str, Tables]:
         if text and not text.endswith("\n"):
             raise mismatch
         lines = tuple(text[:-1].split("\n")) if text else ()
-        if len(lines) != rows or isinstance(rows, bool):
+        # A strict integer: JSON 2.0 equals 2 and true equals 1, and neither is a count.
+        if type(rows) is not int or len(lines) != rows:
             raise mismatch
         tables.append((name, lines))
-    return head, tables
+    return tables
 
 
 def _cmd_export(args: argparse.Namespace) -> int:

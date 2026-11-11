@@ -6,6 +6,7 @@ module that is not ready pass through. No database.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -107,6 +108,33 @@ def test_cancellation_lease_and_readiness_pass_through(
         tick_job.finance_tick_job(object(), _payload(), Token())  # type: ignore[arg-type]
     assert caught.value is exc
     assert tick_job.PASS_THROUGH == (JobCancelled, JobLeaseLost, ModuleNotReady)
+
+
+def test_the_tick_is_handed_the_pass_through_classes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_run`` gives the tick core's cancellation and lease classes, so a job's model
+    call that raises one stops the tick instead of being recorded as a failed job."""
+    from rheo_finance import db
+    from rheo_finance.jobs import tick as tick_module
+    from rheo_finance.wiring import core as wiring_core
+    from rheo_finance.wiring import model as wiring_model
+
+    handed: list[dict[str, object]] = []
+    layout = db.layout_under(Path("/synthetic/uploads"))
+    monkeypatch.setattr(tick_job, "context_for_scheduled_job", lambda _id: object())
+    monkeypatch.setattr(wiring_core, "layout_for", lambda _core: layout)
+    monkeypatch.setattr(db, "check_layout", lambda given: given)
+    monkeypatch.setattr(wiring_core, "context_over_core", lambda *_a, **_k: object())
+    monkeypatch.setattr(wiring_model, "runtime_model_client", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        tick_module, "tick", lambda _ctx, **kwargs: handed.append(kwargs)
+    )
+    token = Token()
+    tick_job.finance_tick_job(object(), _payload(), token)  # type: ignore[arg-type]
+    assert len(handed) == 1
+    assert handed[0]["pass_through"] == tick_job.PASS_THROUGH
+    assert handed[0]["checkpoint"] == token.checkpoint
 
 
 def test_the_handler_refuses_another_payload_and_checks_the_token_first(

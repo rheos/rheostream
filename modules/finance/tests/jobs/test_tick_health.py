@@ -67,7 +67,10 @@ def test_public_tick_behind_capable_schema_records_failure_and_runs_nothing(
             pytest.fail("schema refusal must run no callbacks")
 
         monkeypatch.setitem(JOBS, name, JobSpec(name, forbidden))
-    with pytest.raises(OperationError, match="schema_behind: run finance db migrate"):
+    with pytest.raises(
+        OperationError,
+        match="^schema_behind: upgrade the finance module with rheo module upgrade$",
+    ):
         tick(ctx)
     row = owner_conn.execute(select(job_run)).one()
     assert row.job == "finance.tick" and row.ok is False
@@ -263,9 +266,8 @@ def test_public_status_reader_tick_age_staleness_snapshots_and_schema(
                 )
             )
         behind = lines()
-        assert (
-            list(behind) == [1]
-            and "schema behind code: run finance db migrate" in behind[1]
+        assert list(behind) == [1] and behind[1].endswith(
+            "schema behind code: upgrade the finance module with rheo module upgrade"
         )
         with engine.begin() as connection:
             connection.execute(

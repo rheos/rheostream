@@ -10,9 +10,12 @@ Two operations of the module's own registry, never core's:
 
 - ``finance.state.export`` (READ, owner): per state table its canonical lines, their
   count and the sha256 of the file they make, plus the schema head and the derived
-  digest.
+  digest. It holds the writer lock from before its first read, so every table and the
+  digest come from one commit: no writer commits while it reads.
 - ``finance.state.import`` (MUTATE, owner only): into a database at the same head
-  whose state tables are all empty; rows go in in foreign-key order.
+  whose state tables are all empty, and so is every other table the derived digest
+  covers (the file-owned document set included), so the rebuild that follows starts
+  from nothing but the imported state; rows go in in foreign-key order.
 
 A line is one row: every column in table order as ``[name, tagged]``, each value
 tagged by ``derive.digest.canonical_value`` (numbers normalized, times in UTC), and a
@@ -36,7 +39,8 @@ from sqlalchemy import Column, Table, select, text
 from rheo_finance import db
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass, Tiered
-from rheo_finance.derive.digest import canonical_value, ledger_digest
+from rheo_finance.db import writer_lock
+from rheo_finance.derive.digest import canonical_value, digested_tables, ledger_digest
 from rheo_finance.derive.run import STATE
 from rheo_finance.operations import OperationError, OperationSpec, register
 from rheo_finance.storage.schema import metadata
@@ -64,6 +68,15 @@ def state_tables() -> list[Table]:
     if {table.name for table in tables} != STATE:
         raise OperationError("state_tables_missing")
     return tables
+
+
+def import_must_be_empty() -> list[Table]:
+    """Every table an import needs empty: the state tables, then every other table the
+    derived digest covers (``document`` and ``archive_skip`` among them). Any row there
+    would reach the rebuild and the digest beside the imported state."""
+    state = state_tables()
+    others = [table for table in digested_tables() if table.name not in STATE]
+    return state + others
 
 
 def _kind(column: Column[object]) -> type:
@@ -222,25 +235,30 @@ class ExportOut(BaseModel):
 
 
 def export_state(_ctx: FinanceContext, uow: UnitOfWork, _data: ExportIn) -> ExportOut:
-    head = _schema_version(uow)
-    if head is None:
-        raise OperationError("schema_unknown: the database records no revision")
-    tables = []
-    for table in state_tables():
-        lines = table_lines(uow, table)
-        tables.append(
-            TableState(
-                name=table.name,
-                rows=len(lines),
-                sha256=file_digest(lines),
-                lines=tuple(lines),
+    # READ COMMITTED reads each statement at its own commit. The writer lock, taken
+    # before the first read and held to the end of dispatch's transaction, keeps every
+    # writer (all of them take it) from committing between the table reads and the
+    # digest.
+    with writer_lock(uow):
+        head = _schema_version(uow)
+        if head is None:
+            raise OperationError("schema_unknown: the database records no revision")
+        tables = []
+        for table in state_tables():
+            lines = table_lines(uow, table)
+            tables.append(
+                TableState(
+                    name=table.name,
+                    rows=len(lines),
+                    sha256=file_digest(lines),
+                    lines=tuple(lines),
+                )
             )
+        return ExportOut(
+            schema_head=head,
+            derived_digest=ledger_digest(uow).digest,
+            tables=tuple(tables),
         )
-    return ExportOut(
-        schema_head=head,
-        derived_digest=ledger_digest(uow).digest,
-        tables=tuple(tables),
-    )
 
 
 # --- the import -------------------------------------------------------------------
@@ -308,7 +326,7 @@ def import_state(_ctx: FinanceContext, uow: UnitOfWork, data: ImportIn) -> Impor
     given = {each.name: each.lines for each in data.tables}
     if len(given) != len(data.tables) or set(given) != {t.name for t in tables}:
         raise OperationError("state_tables_mismatch: every state table, once")
-    for table in tables:
+    for table in import_must_be_empty():
         if uow.scalar(select(select(table).exists())):
             raise OperationError("state_not_empty: import into an empty ledger")
     identity = _identity_columns(uow)

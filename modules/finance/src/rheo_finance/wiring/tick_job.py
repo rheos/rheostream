@@ -7,7 +7,8 @@ cancellation token before each due job, before the prune and while a model call 
 
 The worker stores ``str(exc)`` of whatever a handler raises, so every failure leaves
 here as ``FinanceJobFailed`` carrying a fixed code and nothing chained; cancellation,
-a lost lease and a module that is not ready pass through unchanged. The ledger is
+a lost lease and a module that is not ready pass through unchanged, from inside a due
+job too (the tick is handed the same classes). The ledger is
 imported inside the handler, so loading the manifest (``rheo web compose`` loads every
 discovered one) does not import it.
 """
@@ -93,7 +94,9 @@ def _run(workspace_id: UUID, token: CancellationToken) -> None:
             Role.SERVICE,
             model_client=runtime_model_client(core_ctx, heartbeat=token.checkpoint),
         )
-        tick(ctx, checkpoint=token.checkpoint)
+        # The tick's per-job handler records any other error and goes on; these stop
+        # the job, so no further job runs after a cancel or under another lease.
+        tick(ctx, checkpoint=token.checkpoint, pass_through=PASS_THROUGH)
     finally:
         db.release_layout(bound)
 

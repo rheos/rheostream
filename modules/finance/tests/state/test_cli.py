@@ -77,6 +77,24 @@ def test_a_changed_count_is_a_mismatch(tmp_path: Path) -> None:
         state_cli.read_export(out)
 
 
+@pytest.mark.parametrize(
+    ("index", "rows"),
+    [(0, 2.0), (0, "2"), (1, False), (0, None)],
+    ids=["float", "string", "bool", "null"],
+)
+def test_a_count_that_is_not_a_strict_integer_is_a_mismatch(
+    tmp_path: Path, index: int, rows: object
+) -> None:
+    # Each value equals the table's real count (2 or 0) under ==, except the string.
+    out = written(tmp_path)
+    path = out / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["tables"][index]["rows"] = rows
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(state_cli.StateFilesRefused, match="manifest_mismatch"):
+        state_cli.read_export(out)
+
+
 def test_a_missing_file_or_a_path_name_is_a_mismatch(tmp_path: Path) -> None:
     out = written(tmp_path)
     path = out / "manifest.json"
@@ -106,6 +124,40 @@ def test_nothing_is_read_through_a_symlink(tmp_path: Path, which: str) -> None:
         state_cli.read_export(out)
 
 
+@pytest.mark.parametrize("depth", [1, 2], ids=["parent", "grandparent"])
+def test_nothing_is_read_through_a_symlinked_ancestor(
+    tmp_path: Path, depth: int
+) -> None:
+    # tmp_path is already resolved, so the only link on the path is the one made here.
+    real = tmp_path / "real"
+    inner = real / "inner" if depth == 2 else real
+    inner.mkdir(parents=True)
+    written(inner)
+    (tmp_path / "link").symlink_to(real)
+    through = tmp_path / "link" / ("inner/export" if depth == 2 else "export")
+    assert state_cli.read_export(inner / "export")[0] == "head-synthetic", "control"
+    with pytest.raises(state_cli.StateFilesRefused, match="state_file_refused"):
+        state_cli.read_export(through)
+
+
+def test_a_relative_path_reads_the_same_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    written(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert dict(state_cli.read_export(Path("export"))[1]) == LINES
+
+
+def test_a_file_where_a_directory_belongs_is_refused(tmp_path: Path) -> None:
+    out = written(tmp_path)
+    for each in (out / "state").iterdir():
+        each.unlink()
+    (out / "state").rmdir()
+    (out / "state").write_bytes(b"")
+    with pytest.raises(state_cli.StateFilesRefused, match="state_file_refused"):
+        state_cli.read_export(out)
+
+
 def test_a_table_file_that_is_not_a_regular_file_is_refused(tmp_path: Path) -> None:
     out = written(tmp_path)
     table = out / "state" / "rate.jsonl"
@@ -113,6 +165,22 @@ def test_a_table_file_that_is_not_a_regular_file_is_refused(tmp_path: Path) -> N
     os.mkfifo(table, 0o600)
     with pytest.raises(state_cli.StateFilesRefused, match="state_file_refused"):
         state_cli.read_export(out)
+
+
+def test_a_file_that_fails_once_open_is_refused_with_the_code_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = written(tmp_path)
+
+    def failing(_fd: int) -> os.stat_result:
+        raise OSError(5, "synthetic input/output error", "/synthetic/path")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fstat", failing)
+        with pytest.raises(state_cli.StateFilesRefused) as caught:
+            state_cli.read_export(out)
+    assert str(caught.value) == "state_file_refused"
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
 
 
 def _refuse(*_args: object, **_kwargs: object) -> Any:

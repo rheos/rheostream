@@ -23,15 +23,15 @@ import os
 import re
 import stat
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 if TYPE_CHECKING:
     from alembic.config import Config
-    from sqlalchemy import Connection
+    from sqlalchemy import Connection, Executable
     from sqlalchemy.engine import URL
 
 
@@ -55,6 +55,9 @@ DEFAULT_DATA_DIR = "~/Finances"
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
 REMEDY = "set FINANCE_OWNER_DSN and FINANCE_READER_DSN in db.env"
+# What to do when the database is behind the code: core runs the chain when it installs
+# or upgrades the module (ADR-0024); the module has no migrate command of its own.
+UPGRADE_REMEDY: Final = "upgrade the finance module with rheo module upgrade"
 
 
 class DbError(Exception):
@@ -79,9 +82,18 @@ class WriterBusy(DbError):
     """Another connection holds the ledger writer lock."""
 
 
+class Statements(Protocol):
+    """What the writer lock needs: ``execute`` on one transaction. A ``Connection`` and
+    the ``UnitOfWork`` a handler gets both have it."""
+
+    def execute(
+        self, statement: Executable, parameters: Mapping[str, Any] | None = None
+    ) -> Any: ...
+
+
 @contextmanager
 def writer_lock(
-    connection: Connection, *, wait_seconds: float = WRITER_WAIT_SECONDS
+    connection: Statements, *, wait_seconds: float = WRITER_WAIT_SECONDS
 ) -> Iterator[None]:
     """The ledger writer lock on ``connection``'s transaction, waited for at most
     ``wait_seconds`` (0 to 300), else ``WriterBusy``.

@@ -622,7 +622,7 @@ def test_a_cash_line_on_the_built_in_account_adds_no_coverage_month(
 # --- line 1: the database state -------------------------------------------------------
 
 
-def test_line_1_says_migrate_when_the_database_is_behind_the_code(
+def test_line_1_says_upgrade_when_the_database_is_behind_the_code(
     fixture_ledger: FixtureLedger, sinks_off: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     at = status_lines(fixture_ledger)
@@ -634,7 +634,7 @@ def test_line_1_says_migrate_when_the_database_is_behind_the_code(
 
     assert status_lines(fixture_ledger)[1].endswith(
         f", database schema at {HEAD}, code at 0099_later;"
-        " schema behind code: run finance db migrate"
+        " schema behind code: upgrade the finance module with rheo module upgrade"
     )
 
 
@@ -672,5 +672,5 @@ def test_a_database_with_no_report_views_prints_line_1_alone(
     assert lines[1].startswith("as of 2063-02-23 ")
     assert lines[1].endswith(
         f", database schema behind the code (at {HEAD}), no report views yet:"
-        " run finance db migrate"
+        " upgrade the finance module with rheo module upgrade"
     )

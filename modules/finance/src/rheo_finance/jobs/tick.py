@@ -21,7 +21,12 @@ from rheo_finance import catalogue
 from rheo_finance.clock import as_utc, local_to_utc
 from rheo_finance.context import FinanceContext
 from rheo_finance.contracts import Role
-from rheo_finance.db import VERSION_TABLE, code_revisions, head_revision
+from rheo_finance.db import (
+    UPGRADE_REMEDY,
+    VERSION_TABLE,
+    code_revisions,
+    head_revision,
+)
 from rheo_finance.derive.fingerprint import fingerprint
 from rheo_finance.jobs.ops import RecordIn
 from rheo_finance.jobs.registry import JOBS, TICK_JOB, JobResult
@@ -123,13 +128,22 @@ def _record_tick(ctx: FinanceContext, started: dt.datetime, result: JobResult) -
 
 
 def tick(
-    ctx: FinanceContext, *, checkpoint: Callable[[], None] = _nothing
+    ctx: FinanceContext,
+    *,
+    checkpoint: Callable[[], None] = _nothing,
+    pass_through: tuple[type[BaseException], ...] = (),
 ) -> TickResult:
     """Run due jobs serially as SERVICE. No job may borrow owner authorization.
 
     ``checkpoint`` runs before each due job and before the prune: core's job passes
     its cancellation token's, which raises on a cancel or a lost lease and keeps the
     lease otherwise.
+
+    A job that fails is recorded ``failed`` and the tick goes on, except for an error
+    of a ``pass_through`` class: that one stops the tick unrecorded and leaves as it
+    is. Core's job passes its cancellation and lease-loss errors, which a model call's
+    heartbeat raises inside a job; this package does not import core, so the caller
+    names them.
     """
     if ctx.role is not Role.SERVICE:
         raise RoleRefused("jobs tick requires service role")
@@ -160,7 +174,7 @@ def tick(
                 _record_tick(ctx, now, JobResult(ok=False, detail_code="failed"))
             elif version >= "0042_tick_health":
                 _record_tick(ctx, now, JobResult(ok=False, detail_code="schema_behind"))
-        raise SchemaBehind("schema_behind: run finance db migrate")
+        raise SchemaBehind(f"schema_behind: {UPGRADE_REMEDY}")
     with owner_transaction(ctx) as uow:
         rows = PostgresJobRepository(uow).all()
     completed: list[JobRun] = []
@@ -185,6 +199,8 @@ def tick(
             result = spec.callback(ctx)
         except SinkDisabled:
             result = JobResult(ok=None, detail_code="skipped: sink off")
+        except pass_through:
+            raise
         except Exception:
             # Never persist exception text: it may contain paths, SQL or payloads.
             result = JobResult(ok=False, detail_code="failed")
