@@ -346,7 +346,7 @@ def test_a_draft_is_stored_as_sections_with_findings_and_progress(
     assert got.findings["accuracy"][0]["verdict"] == "whitelisted"
     assert got.findings["style"] == []
     assert got.model_id == "claude_cli:default"
-    assert got.prompt_version == "jobproposal.2/profile.1"
+    assert got.prompt_version == "jobproposal.3/profile.1"
     assert drafting.model.roles == ["analysis", "draft", "gate"]
     # Every call ran as the profile's owner, tool-less, and left nothing behind.
     assert {t["account_id"] for t in drafting.tokens.issued} == {
@@ -774,6 +774,19 @@ def test_pricing_needs_a_policy_then_drafts_a_schedule_the_owner_can_edit(
         "800.00",
     )
     assert edited.pricing.suggestion["fixed_total"] == "1000.00"
+
+
+def test_pricing_reads_a_per_unit_ask_from_the_last_draft(drafting: Drafting) -> None:
+    drafting.set_profile(pricing=PRICING)
+    opportunity = drafting.paste("~025995")
+    drafting.model.analysis = {**ANALYSIS, "per_unit": "minute"}
+    drafting.op("leads.jobproposal.request", ref=opportunity)
+    drafting.sweep()
+    drafting.model.roles.clear()
+    drafting.op("leads.jobpricing.request", ref=opportunity)
+    drafting.sweep()
+    assert drafting.model.roles == ["milestones"]
+    assert "PER-MINUTE ASK" in drafting.model.starts[-1].request.task
 
 
 def test_a_draft_that_is_asked_for_a_quote_prices_the_job_first(

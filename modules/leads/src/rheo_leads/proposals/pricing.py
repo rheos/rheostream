@@ -207,14 +207,21 @@ def suggest(
 
 
 def figures_block(
-    p: PricingPolicy, rows: Sequence[tuple[str, Decimal]], listing_type: str | None
+    p: PricingPolicy,
+    rows: Sequence[tuple[str, Decimal]],
+    listing_type: str | None,
+    *,
+    per_unit: str = "",
+    first_piece: bool = False,
 ) -> str:
-    """The milestones as the ONLY amounts a draft may state."""
+    """The milestones as the ONLY amounts a draft may state. The apply form's hourly
+    rate is the owner's bookkeeping and never reaches the drafter. With a per-unit
+    ask the total is never the per-unit rate; ``first_piece`` says these rows were
+    priced as the first piece alone, setup included."""
     amounts = [amount for _, amount in rows]
     total = round(sum(amounts, Decimal(0)), 2)
     days = working_days(p, amounts)
     weeks = math.ceil(days / 5) if days else 0
-    hourly = suggest(p, listing_type=listing_type, amounts=amounts, analysis={})
     lines = [
         "\n\nPRICING FIGURES (the developer's own numbers, computed from honest "
         "working-days at their day rate; these are the ONLY amounts you may state, "
@@ -228,10 +235,6 @@ def figures_block(
         f"calendar week{'s' if weeks != 1 else ''} of delivery."
     )
     lines.append(
-        f"- Hourly equivalent: ${plain(hourly.rate)}/hr, about "
-        f"{plain(hourly.hours or 0)} tracked hours."
-    )
-    lines.append(
         "HOW TO USE THEM: where the posting asks for a quote, estimate, price, or "
         "timeline, state the total and the working-day count plainly, name the stages "
         "in one sentence, and stop. Do not apologise for the figure, offer to lower "
@@ -240,11 +243,29 @@ def figures_block(
         "as the allowance it represents, with one clause saying that anything beyond "
         "it is quoted separately before it is touched."
     )
-    if (listing_type or "").strip().lower() == "hourly":
+    if per_unit and first_piece:
         lines.append(
-            "The listing is set to hourly, so the apply form carries an hourly rate: "
-            f"say in one neutral clause that the form shows ${plain(hourly.rate)}/hr "
-            "and that the fixed total above is the figure they asked for; the two "
-            "agree. Never present the stages as hourly-rate steps."
+            f"PER-{per_unit.upper()} ASK: the posting asks for a price per {per_unit}. "
+            "These figures price the FIRST piece only, and that piece carries one-time "
+            "setup (look development, style frames, the production pipeline) that "
+            f"each later {per_unit} reuses. State the total as the price of that "
+            "first piece. Never call it, or anything derived from it, the "
+            f"per-{per_unit} rate, and never say each later {per_unit} costs the "
+            f"same. Say in one plain clause that the recurring per-{per_unit} rate "
+            "leaves out the setup and is quoted once the first piece has set the look."
         )
+    elif per_unit:
+        lines.append(
+            f"PER-{per_unit.upper()} ASK: the posting asks for a price per {per_unit}. "
+            "State these figures as the price of the stages they name. Never call "
+            f"the total, or anything derived from it, the per-{per_unit} rate; say in "
+            f"one plain clause that the per-{per_unit} rate is quoted separately."
+        )
+    lines.append(
+        "The application form's own rate or price field is the developer's to fill. "
+        "Never mention the application form, an hourly rate or tracked hours derived "
+        "from these figures, or that two figures agree or match."
+    )
+    if (listing_type or "").strip().lower() == "hourly":
+        lines.append("Never present the stages as hourly-rate steps.")
     return "\n".join(lines)

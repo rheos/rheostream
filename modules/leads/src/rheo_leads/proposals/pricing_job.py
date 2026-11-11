@@ -25,7 +25,7 @@ from sqlalchemy import and_, func, or_, select, update
 
 from rheo_leads import model_calls
 from rheo_leads.proposals import job as drafting
-from rheo_leads.proposals import milestones, pricing
+from rheo_leads.proposals import milestones, pricing, prompts
 from rheo_leads.proposals.pipeline import AnswerUnusable
 from rheo_leads.proposals.pricing_store import write_schedule
 from rheo_leads.proposals.profile import StoredProposalProfile
@@ -45,6 +45,8 @@ class PriceClaim:
     title: str
     fields: dict[str, str]
     mode: str | None
+    # The unit of a per-unit ask, from the last draft's analysis; "" when none.
+    per_unit: str = ""
 
 
 def _claimable(now: datetime) -> Any:
@@ -107,7 +109,20 @@ def claim(uow: Any, *, now: datetime, window: timedelta) -> PriceClaim | None:
         title=row["title"],
         fields=drafting._fields(uow, row["opportunity_id"]),
         mode=row["mode"],
+        per_unit=_per_unit(uow, row["opportunity_id"]),
     )
+
+
+def _per_unit(uow: Any, opportunity_id: UUID) -> str:
+    findings = uow.connection.execute(
+        select(s.job_proposal.c.findings).where(
+            s.job_proposal.c.opportunity_id == opportunity_id
+        )
+    ).scalar_one_or_none()
+    analysis = findings.get("analysis") if isinstance(findings, dict) else None
+    if not isinstance(analysis, dict):
+        return ""
+    return str(prompts.normalize_analysis(analysis)["per_unit"])
 
 
 def _mine(claimed: PriceClaim) -> Any:
@@ -263,6 +278,7 @@ def price_one(
                 description=description,
                 budget_min=fields.get(EXTENSION + "budget_min"),
                 budget_max=fields.get(EXTENSION + "budget_max"),
+                per_unit=claimed.per_unit,
             ),
             milestones.SCHEMA,
         )
