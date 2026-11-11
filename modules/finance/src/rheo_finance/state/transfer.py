@@ -52,6 +52,10 @@ _TAGS: Final[dict[type, str]] = {
     dt.datetime: "ts",
     bool: "bool",
 }
+# The widest integer a state column holds (bigint). A larger one is refused as a bad
+# line rather than built in full by int() and refused by the database later.
+_INT_MIN: Final = Decimal(-(2**63))
+_INT_MAX: Final = Decimal(2**63 - 1)
 
 
 def state_tables() -> list[Table]:
@@ -126,9 +130,15 @@ def decode_value(column: Column[object] | None, tagged: object) -> object:
                 return raw
             case "num" if isinstance(raw, str):
                 number = Decimal(raw)
+                # canonical_value never writes Infinity or NaN; int() would raise
+                # OverflowError or ValueError on them, and Postgres numeric takes both.
+                if not number.is_finite():
+                    raise LineInvalid("not a finite number")
                 if kind is int:
                     if number != number.to_integral_value():
                         raise LineInvalid("not an integer")
+                    if not _INT_MIN <= number <= _INT_MAX:
+                        raise LineInvalid("integer out of range")
                     return int(number)
                 return number
             case "str" if isinstance(raw, str):

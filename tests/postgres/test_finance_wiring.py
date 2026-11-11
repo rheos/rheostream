@@ -10,14 +10,17 @@ under the session's temporary data root.
 - D2: after the chain (and after the install check) the transaction runs as the session
   user again: ``env.py`` reset the role.
 - D3: everything in schema ``finance`` belongs to ``finance_owner``; nothing outside it
-  belongs to either finance role.
+  belongs to either finance role, save the TOAST tables (and their indexes) of
+  finance's own tables, which Postgres gives the parent table's owner.
 - D4: neither role has a privilege outside ``finance`` beyond USAGE on the system
-  schemas and ``public``; the positive controls hold.
+  schemas and ``public``, each privilege probed on its own relkinds; the positive
+  controls hold.
 - D5: enable writes the ``tick`` row; a due visit enqueues nothing until the workspace
   itself sets ``finance.jobs.enabled``, and then one ``finance.tick``.
 - D6: one worker visit runs the tick over an empty layout: the job succeeds, the tick
   is recorded, and the next workspace session is the session user.
-- D7: a schema behind the code fails the job with the fixed code alone.
+- D7: a database at a known revision other than the code's head fails the job with
+  the fixed ``schema_behind`` code alone.
 - D8: no ``finance.*`` name reaches core's operation or tool registries.
 """
 
@@ -66,6 +69,17 @@ SYSTEM_SCHEMAS: Final = frozenset(
     {"finance", "pg_catalog", "information_schema", "public"}
 )
 INTERVAL: Final = timedelta(seconds=900)
+# A TOAST table and its index sit in ``pg_toast`` and belong to their parent table's
+# owner. One counts as finance's own only when its parent table is in ``finance``:
+# the parent's ``reltoastrelid`` names the TOAST table, and ``pg_index`` maps the
+# TOAST index to that table. Over ``pg_class c`` joined to ``pg_namespace n``.
+_TOAST_OF_FINANCE: Final = (
+    "n.nspname = 'pg_toast' AND EXISTS ("
+    "SELECT 1 FROM pg_class parent"
+    " JOIN pg_namespace pn ON pn.oid = parent.relnamespace"
+    " WHERE pn.nspname = 'finance' AND parent.reltoastrelid IN ("
+    "c.oid, (SELECT i.indrelid FROM pg_index i WHERE i.indexrelid = c.oid)))"
+)
 
 
 @dataclass
@@ -129,10 +143,13 @@ def test_install_records_every_revision_oldest_first(finance: Finance) -> None:
         rows = connection.execute(
             select(table.c.schema_version)
             .where(table.c.module_id == "finance")
-            .order_by(table.c.applied_at)
+            # Deterministic even if two stamps tie: the zero-padded revision ids sort
+            # in chain order, so the tie-break never reorders the chain.
+            .order_by(table.c.applied_at, table.c.schema_version)
         ).scalars()
         recorded = list(rows)
     assert recorded == _chain()
+    assert recorded == sorted(recorded)
     assert recorded[-1] == chain_head(MANIFEST) == db.head_revision()
 
 
@@ -185,10 +202,11 @@ def test_everything_in_finance_belongs_to_the_owner(finance: Finance) -> None:
         assert list(not_owner) == []
         outside = connection.execute(
             text(
-                "SELECT 'class ' || c.relname FROM pg_class c"
+                "SELECT 'class ' || n.nspname || '.' || c.relname FROM pg_class c"
                 " JOIN pg_namespace n ON n.oid = c.relnamespace"
                 " WHERE n.nspname <> 'finance'"
                 " AND pg_get_userbyid(c.relowner) IN (:owner, :reader)"
+                f" AND NOT ({_TOAST_OF_FINANCE})"
                 " UNION ALL SELECT 'proc ' || p.proname FROM pg_proc p"
                 " JOIN pg_namespace n ON n.oid = p.pronamespace"
                 " WHERE n.nspname <> 'finance'"
@@ -204,33 +222,58 @@ def test_everything_in_finance_belongs_to_the_owner(finance: Finance) -> None:
             {"owner": db.OWNER_ROLE, "reader": db.READER_ROLE},
         ).scalars()
         assert list(outside) == []
-        # The control: the schema holds objects to check.
+        # The controls: the schema holds objects to check, and the TOAST exception
+        # matched relations the owner holds, so it is not vacuous.
         tables = connection.execute(
             text("SELECT count(*) FROM pg_tables WHERE schemaname = 'finance'")
         ).scalar_one()
         assert tables > 0
+        toasted = connection.execute(
+            text(
+                "SELECT count(*) FROM pg_class c"
+                " JOIN pg_namespace n ON n.oid = c.relnamespace"
+                f" WHERE pg_get_userbyid(c.relowner) = :owner AND {_TOAST_OF_FINANCE}"
+            ),
+            {"owner": db.OWNER_ROLE},
+        ).scalar_one()
+        assert toasted > 0
 
 
 @pytest.mark.parametrize("role", ROLES)
 def test_neither_role_reaches_outside_finance(finance: Finance, role: str) -> None:
     with finance.engine().connect() as connection:
+        # Each privilege is probed only on the relkinds it applies to. SQL does not
+        # order the conditions of a WHERE, so the relkind test and the probe sit in
+        # one CASE, which does: a probe never sees a relation of the wrong kind.
         relations = connection.execute(
             text(
                 "SELECT n.nspname || '.' || c.relname FROM pg_class c"
                 " JOIN pg_namespace n ON n.oid = c.relnamespace"
                 " WHERE n.nspname NOT IN"
                 " ('finance', 'pg_catalog', 'information_schema', 'pg_toast')"
-                " AND c.relkind IN ('r', 'p', 'v', 'm', 'f')"
-                " AND has_table_privilege(:role, c.oid,"
+                " AND CASE WHEN c.relkind IN ('r', 'p', 'v', 'm', 'f')"
+                " THEN has_table_privilege(:role, c.oid,"
                 " 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')"
-                " UNION ALL SELECT n.nspname || '.' || c.relname FROM pg_class c"
-                " JOIN pg_namespace n ON n.oid = c.relnamespace"
-                " WHERE n.nspname <> 'finance' AND c.relkind = 'S'"
-                " AND has_sequence_privilege(:role, c.oid, 'USAGE, SELECT, UPDATE')"
+                " WHEN c.relkind = 'S'"
+                " THEN has_sequence_privilege(:role, c.oid, 'USAGE, SELECT, UPDATE')"
+                " ELSE false END"
             ),
             {"role": role},
         ).scalars()
         assert list(relations) == []
+        # The control: the sweep reached relations of both kinds outside finance.
+        kinds = set(
+            connection.execute(
+                text(
+                    "SELECT DISTINCT c.relkind FROM pg_class c"
+                    " JOIN pg_namespace n ON n.oid = c.relnamespace"
+                    " WHERE n.nspname NOT IN"
+                    " ('finance', 'pg_catalog', 'information_schema', 'pg_toast')"
+                    " AND c.relkind IN ('r', 'S')"
+                )
+            ).scalars()
+        )
+        assert kinds == {"r", "S"}
         creatable = connection.execute(
             text(
                 "SELECT nspname FROM pg_namespace WHERE nspname <> 'finance'"
@@ -361,12 +404,23 @@ def test_one_visit_runs_the_tick_and_returns_the_session_user(
         assert _session_user_again(uow.connection)
 
 
-def test_a_schema_behind_the_code_fails_with_its_code_alone(
+def test_a_known_revision_that_is_not_the_head_fails_with_the_behind_code_alone(
     finance: Finance, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The tick calls any known revision other than the code's head ``schema_behind``
+    (``jobs/tick.py``). The database stays at the real head and the tick is told the
+    head is the revision before it: rewinding the version table instead would stop at
+    core's readiness check (``schema_version_mismatch``) before the tick runs."""
     _layout(finance.workspace)
-    behind = _chain()[-2]
-    monkeypatch.setattr(tick_module, "head_revision", lambda: behind)
+    chain = _chain()
+    with finance.engine().connect() as connection:
+        recorded = connection.execute(
+            text(f"SELECT version_num FROM {db.SCHEMA}.{db.VERSION_TABLE}")
+        ).scalar_one()
+    assert recorded == chain[-1]
+    told = chain[-2]
+    assert told in db.code_revisions() and told != recorded
+    monkeypatch.setattr(tick_module, "head_revision", lambda: told)
     outcome = _visit(finance)
     assert outcome["state"] != "succeeded"
     assert outcome["last_error"] == "finance_schema_behind"

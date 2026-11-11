@@ -36,6 +36,11 @@ from tests.finance_support import (
 
 T0 = dt.datetime(2063, 1, 18, 12, 0, tzinfo=dt.UTC)
 DECISION = uuid.UUID("01a1b2c3-0000-7000-8000-0000000000d1")
+# Line refs in the ref grammar (``finance.txn:<UUIDv7>``): the rebuild parses every
+# unreversed decision's target. No line carries these keys, so the decision is an
+# orphan, which the rebuild lists and derives the same way in both ledgers.
+LINE_ONE = "finance.txn:01a1b2c3-0000-7000-8000-0000000000e1"
+LINE_TWO = "finance.txn:01a1b2c3-0000-7000-8000-0000000000e2"
 
 
 @pytest.fixture
@@ -86,7 +91,7 @@ def seed(database: DatabaseUnderTest) -> None:
                 insert(schema.decision).values(
                     id=DECISION,
                     kind="include",
-                    target_ref="txn:synthetic-1",
+                    target_ref=LINE_ONE,
                     decided_at=T0,
                 )
             )
@@ -95,14 +100,14 @@ def seed(database: DatabaseUnderTest) -> None:
                     decision_id=DECISION,
                     seq=1,
                     role="leg",
-                    target_ref="txn:synthetic-2",
+                    target_ref=LINE_TWO,
                 )
             )
             conn.execute(
                 insert(schema.decision_target).values(
                     decision_id=DECISION,
                     seq=1,
-                    target_ref="txn:synthetic-1",
+                    target_ref=LINE_ONE,
                     account_slug="ledger",
                     amount=Decimal("-8.50"),
                     currency="CAD",

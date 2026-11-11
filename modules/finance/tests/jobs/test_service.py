@@ -95,7 +95,7 @@ def test_health_pending_is_distinct_from_skipped_off_and_missing_history(
     assert out.pending == 1 and out.skipped_off == 1
 
 
-def test_mutating_dispatch_and_owner_transactions_wait_for_another_writer(
+def test_dispatch_and_owner_transaction_refuse_at_wait_zero_under_another_writer(
     rolled_back_context: Callable[[Role], FinanceContext],
     tmp_path: Path,
     owner_conn: Connection,

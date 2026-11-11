@@ -7,6 +7,7 @@ No database: ``composition`` and ``operations.dispatch`` are replaced by fakes.
 from __future__ import annotations
 
 import json
+import os
 import stat
 from pathlib import Path
 from typing import Any
@@ -89,6 +90,29 @@ def test_a_missing_file_or_a_path_name_is_a_mismatch(tmp_path: Path) -> None:
     (fresh / "state" / "rate.jsonl").unlink()
     with pytest.raises(state_cli.StateFilesRefused, match="manifest_mismatch"):
         state_cli.read_export(fresh)
+
+
+@pytest.mark.parametrize(
+    "which", ["export", "manifest.json", "state", "state/rate.jsonl"]
+)
+def test_nothing_is_read_through_a_symlink(tmp_path: Path, which: str) -> None:
+    out = written(tmp_path)
+    # The bytes behind each link are the export's own, so only the link refuses.
+    path = tmp_path / "export" if which == "export" else out / which
+    moved = tmp_path / "moved"
+    path.rename(moved)
+    path.symlink_to(moved)
+    with pytest.raises(state_cli.StateFilesRefused, match="state_file_refused"):
+        state_cli.read_export(out)
+
+
+def test_a_table_file_that_is_not_a_regular_file_is_refused(tmp_path: Path) -> None:
+    out = written(tmp_path)
+    table = out / "state" / "rate.jsonl"
+    table.unlink()
+    os.mkfifo(table, 0o600)
+    with pytest.raises(state_cli.StateFilesRefused, match="state_file_refused"):
+        state_cli.read_export(out)
 
 
 def _refuse(*_args: object, **_kwargs: object) -> Any:

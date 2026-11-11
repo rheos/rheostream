@@ -109,6 +109,22 @@ def test_a_tag_that_does_not_match_its_column_is_refused() -> None:
     assert transfer.decode_value(ok, ["none", None]) is None
 
 
+@pytest.mark.parametrize("raw", ["Infinity", "-Infinity", "NaN", "sNaN"])
+def test_a_number_that_is_not_finite_is_a_bad_line(raw: str) -> None:
+    for column in (table("job_run").c.seq, table("decision").c.amount, None):
+        with pytest.raises(transfer.LineInvalid, match="not a finite number"):
+            transfer.decode_value(column, ["num", raw])
+
+
+def test_an_integer_outside_bigint_is_a_bad_line() -> None:
+    seq = table("job_run").c.seq
+    assert transfer.decode_value(seq, ["num", str(2**63 - 1)]) == 2**63 - 1
+    assert transfer.decode_value(seq, ["num", str(-(2**63))]) == -(2**63)
+    for raw in (str(2**63), str(-(2**63) - 1), "1E+400"):
+        with pytest.raises(transfer.LineInvalid, match="integer out of range"):
+            transfer.decode_value(seq, ["num", raw])
+
+
 def test_nested_lists_and_maps_round_trip() -> None:
     value = {
         "b": [Decimal("1.5"), "text", None, True, [dt.date(2063, 1, 1)]],
