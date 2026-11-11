@@ -286,6 +286,9 @@ jobs:
       # local embedding runtime is missing, and mypy type-checks against it.
       - name: Sync (frozen)
         run: uv sync --frozen --extra local-embeddings
+      # The finance parser tests call the real pdftotext, which the runner image lacks (#533).
+      - name: Install poppler-utils
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
       # Keyed on the model identifier, so a model change misses the cache instead of
       # restoring the old artifact under the new name. The identifier is
       # embedding/local.py's MODEL_ID and retrieval/rerank.py's immutable revision;
