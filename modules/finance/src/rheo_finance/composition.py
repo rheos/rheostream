@@ -13,12 +13,14 @@ already classified.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from rheo_finance import db, operations
 from rheo_finance.clock import SystemClock
 from rheo_finance.context import FinanceContext, FinancePaths, SnapshotProvider
 from rheo_finance.contracts import Role
 from rheo_finance.derive.snapshot import txn_snapshot
-from rheo_finance.settings import load_settings, settings_path
+from rheo_finance.settings import default_settings, load_settings, settings_path
 
 
 def build_context(
@@ -36,3 +38,25 @@ def build_context(
     return operations.with_databases(
         ctx, owner_url=db.owner_url(), reader_url=db.reader_url()
     )
+
+
+def build_source_context(dsn_file: Path) -> FinanceContext:
+    """An owner context over an old standalone ledger, for the one-off state export.
+
+    ``dsn_file`` is a private env file (mode 0600, not a symlink) holding
+    ``FINANCE_OWNER_DSN``; both connection names use that DSN. Nothing of core is
+    imported: the source is read from a checkout, outside any workspace.
+    """
+    values = db.parse_env_text(db.read_private_file(dsn_file))
+    dsn = values.get(db.OWNER_DSN_KEY, "")
+    if not dsn:
+        raise db.DbError(f"the DSN file has no value for {db.OWNER_DSN_KEY}")
+    url = db.to_sqlalchemy_url(dsn)
+    ctx = FinanceContext(
+        settings=default_settings(),
+        clock=SystemClock(),
+        paths=FinancePaths(data=db.data_dir()),
+        role=Role.OWNER,
+        snapshot_provider=txn_snapshot,
+    )
+    return operations.with_databases(ctx, owner_url=url, reader_url=url)

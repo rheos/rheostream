@@ -55,11 +55,17 @@ def digested_tables() -> list[Table]:
     )
 
 
-def _part(value: object) -> object:
+def canonical_value(value: object) -> object:
+    """One stored value as a tagged JSON pair: ``canonical_part`` for a scalar, a list
+    item by item, a JSON object by sorted key. State lines are tagged with it too
+    (``state.transfer``)."""
     if isinstance(value, list | tuple):
-        return ["list", [_part(each) for each in value]]
+        return ["list", [canonical_value(each) for each in value]]
     if isinstance(value, dict):
-        return ["map", [[str(key), _part(value[key])] for key in sorted(value)]]
+        return [
+            "map",
+            [[str(key), canonical_value(value[key])] for key in sorted(value)],
+        ]
     if isinstance(value, float):
         # Only a JSON number inside ``event.data`` can arrive as a float.
         return ["float", repr(value)]
@@ -79,7 +85,10 @@ def canonical_rows(uow: UnitOfWork, table: Table) -> list[str]:
     rows = uow.execute(select(*(table.c[name] for name in names)))
     return sorted(
         json.dumps(
-            [[name, _part(value)] for name, value in zip(names, row, strict=True)],
+            [
+                [name, canonical_value(value)]
+                for name, value in zip(names, row, strict=True)
+            ],
             ensure_ascii=False,
             separators=(",", ":"),
         )
