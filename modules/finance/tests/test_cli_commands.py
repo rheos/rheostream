@@ -38,16 +38,16 @@ from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
 from rheo_finance.manual.headers import MANUAL_FILES
 from rheo_finance.render import STATUS_MAX
 from rheo_finance.settings import SINKS, parse_settings
-from tests.derive.support import CSV_IDENTIFIER, FIXTURES, NOW
+from tests.derive.support import CSV_IDENTIFIER, FIXTURES
 from tests.finance_support import DatabaseUnderTest
 
 EM = chr(0x2014)
 CSV_FIXTURE = (FIXTURES / "alder_chequing_jump.csv").read_text(encoding="utf-8")
-STAMP = "as of 2063-02-23 12:00 UTC"
-# The coverage matrix runs to the clock's month: the coverage tests read it under a
-# clock in the fixture's own era.
-COVERAGE_NOW = dt.datetime(2039, 2, 24, 12, 0, tzinfo=dt.UTC)
-COVERAGE_STAMP = "as of 2039-02-24 12:00 UTC"
+# Every command runs under one clock in the export fixture's own era: the coverage
+# matrix runs from an account's first month to the clock's month, and it is built
+# at derive time (the module fixture's import), not when coverage is read.
+NOW = dt.datetime(2039, 2, 24, 12, 0, tzinfo=dt.UTC)
+STAMP = "as of 2039-02-24 12:00 UTC"
 # What no command may print: the identifier, the fixture's description words, its
 # amounts and balances, and the Downloads file's own name.
 SECRETS = (
@@ -116,9 +116,10 @@ def _write_manual(data: Path) -> None:
     folder.mkdir(parents=True)
     rows = {
         ACCOUNTS_FILE: (
-            # Months before December 2038 read "missing" with the reason in words.
+            # Months before the row's missing-before date that nothing covers read
+            # "missing" with the reason in words.
             "chequing,Chequing,Alder,chequing,CAD,monthly,,2038-10-01,,,,,,"
-            "2038-12-01,mail_purged",
+            "2039-01-01,mail_purged",
             "spare,Spare,Alder,chequing,CAD,monthly,,,,,,,,,",
         ),
         IDENTIFIERS_FILE: (
@@ -348,13 +349,13 @@ def test_status_json_under_the_reader_carries_the_status_lines(
 
     assert list(lines) == [1, 2, 3, 4, 5, 6, 7, 9, 10]
     assert lines[1] == f"{STAMP}, database current"
-    assert lines[2] == "last import: alder 2063-02-23; no tick yet"
+    assert lines[2] == "last import: alder 2039-02-24; no tick yet"
     assert lines[3] == (
         "documents: 1 unparsed, 0 rejected, 1 needs manual entry, 0 bill gaps"
     )
     assert lines[4].startswith("missing account-months: ")
     assert lines[5] == (
-        "confirm last derive snapshot 2063-02-23: pairing 0, held notice 0,"
+        "confirm last derive snapshot 2039-02-24: pairing 0, held notice 0,"
         " card debit 0, payment 0, presumed paid 0, reattach 0, category 0;"
         " untied card payments 0, credits not applied 0, orphaned decisions 0"
     )
@@ -388,11 +389,11 @@ def test_status_prints_the_same_lines_as_one_fixed_list(
 def test_coverage_json_under_the_reader_is_the_matrix_and_the_counts(
     reader_only: Callable[..., Ran],
 ) -> None:
-    ran = reader_only("coverage", "--json", when=COVERAGE_NOW)
+    ran = reader_only("coverage", "--json")
     assert ran.code == 0, ran.err
     got = json.loads(ran.out)
 
-    assert got["as_of"] == COVERAGE_STAMP
+    assert got["as_of"] == STAMP
     assert got["no_data_accounts"] == 1
     months = got["months"]
     assert {m["account"] for m in months} == {"chequing"}
@@ -410,15 +411,15 @@ def test_coverage_json_under_the_reader_is_the_matrix_and_the_counts(
 def test_coverage_prints_counts_then_a_matrix_with_reasons_in_words(
     reader_only: Callable[..., Ran],
 ) -> None:
-    got = json.loads(reader_only("coverage", "--json", when=COVERAGE_NOW).out)
+    got = json.loads(reader_only("coverage", "--json").out)
     by_state = got["months_by_state"]
-    ran = reader_only("coverage", when=COVERAGE_NOW)
+    ran = reader_only("coverage")
 
     assert ran.code == 0, ran.err
     lines = ran.out.splitlines()
     assert lines[:4] == [
         f"finance coverage: {by_state['have']} have, {by_state['partial']} partial,"
-        f" {by_state['missing']} missing account-months, {COVERAGE_STAMP}",
+        f" {by_state['missing']} missing account-months, {STAMP}",
         f"{by_state['rejected']} rejected, {by_state['unparsed']} unparsed,"
         f" {by_state['not_applicable']} not applicable",
         "1 account with no data",
@@ -435,7 +436,7 @@ def test_coverage_prints_counts_then_a_matrix_with_reasons_in_words(
         row = " ".join("".join(cells[q : q + 3]) for q in range(0, 12, 3))
         assert f"Chequing {year}: {row}" in lines
     # Consecutive months with the same state and reason read as one range.
-    assert "  2038-10 to 2038-11 missing: mail purged" in lines
+    assert "  2038-11 to 2038-12 missing: mail purged" in lines
     for m in got["months"]:
         if m["reason"] is not None:
             month = m["month"][:7]

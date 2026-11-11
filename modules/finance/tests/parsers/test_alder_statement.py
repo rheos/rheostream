@@ -313,7 +313,7 @@ def test_a_renamed_account_still_matches_by_its_number(setup: Setup) -> None:
     side = setup.conn.execute(
         select(statement_period.c.opening, statement_period.c.closing).where(
             statement_period.c.document_id == old,
-            statement_period.c.account_id == account_id("extra-pot"),
+            statement_period.c.account_id == account_id("spare-jar"),
         )
     ).one()
     assert tuple(side) == (Decimal("9.46"), Decimal("0.00"))
@@ -321,7 +321,7 @@ def test_a_renamed_account_still_matches_by_its_number(setup: Setup) -> None:
         select(document_line.c.line_kind, document_line.c.amount)
         .where(
             document_line.c.document_id == old,
-            document_line.c.account_id == account_id("extra-pot"),
+            document_line.c.account_id == account_id("spare-jar"),
         )
         .order_by(document_line.c.line_no)
     ).all()

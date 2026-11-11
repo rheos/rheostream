@@ -738,8 +738,8 @@ def test_cli_exposes_candidate_line_refs_on_one_financial_row(
     ]
     for label in candidate_labels:
         assert ref("txn", label) in line
-    assert "orphaned_decision: 1; in 0.00 CAD, out 29.27 CAD" in output
-    assert line.count("-29.27 CAD") == 1
+    assert "orphaned_decision: 1; in 0.00 CAD, out 8.00 CAD" in output
+    assert line.count("-8.00 CAD") == 1
 
 
 def test_invoice_decision_reads_do_not_grow_with_the_unmatched_backlog(

@@ -155,7 +155,7 @@ def test_two_bills_of_one_month_with_different_amounts_are_not_superseded(
 ) -> None:
     # A bill's money is on its period (the amount due), not on lines. Two bills of one
     # month that print different amounts due are not copies of each other.
-    ledger.accounts(("mobile", "yew line", "bill_vendor", "999000123"))
+    ledger.accounts(("mobile", "Yew", "bill_vendor", "999000123"))
     bill = (FIXTURES / "yew_bill.txt").read_text(encoding="utf-8")
     unpaid = "   Yew prior left   $38.76\n"
     total = "Yew due sum   Yew settle by Jul 19, 2049   $101.40"

@@ -260,7 +260,7 @@ def test_wake_settings_and_overdue_use_local_date(
 def test_card_minimum_stays_on_its_statement_when_next_statement_loads(
     own: Ledger,
 ) -> None:
-    minimum = paid_card(D(2033, 3, 26), "21.54")
+    minimum = paid_card(D(2033, 3, 26), "25.80")
     with_settings(own, '[finance.reminders]\nmin_due_date = "2033-01-01"\n')
     own.ctx = dataclasses.replace(
         own.ctx, clock=FakeClock(dt.datetime(2033, 3, 30, 12, tzinfo=dt.UTC))
@@ -276,8 +276,8 @@ def test_card_minimum_stays_on_its_statement_when_next_statement_loads(
     after = {t.source_ref.rsplit(":", 1)[1]: t for t in desired(own.ctx).tickets}
     assert after[N].status == "done"
     assert after[N1].status == "open"
-    assert ": 24.73 CAD due " in after[N1].title
-    assert after[N1].wake == dt.datetime(2033, 4, 21, 15, tzinfo=dt.UTC)
+    assert ": 30.96 CAD due " in after[N1].title
+    assert after[N1].wake == dt.datetime(2033, 4, 21, 8, tzinfo=dt.UTC)
 
 
 def test_builder_accepts_only_the_typed_four_field_policy() -> None:

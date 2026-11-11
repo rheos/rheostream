@@ -175,7 +175,7 @@ def test_new_period_document_stops_missing_statement_events(ledger: Ledger) -> N
     assert len(ids(ledger, STATEMENT_OVERDUE)) == 1
     new = (
         STATEMENT.replace("12 JUN 2055", "13 JUL 2055")
-        .replace(" 9 MAY 2055", "13 JUN 2055")
+        .replace(" 9 MAY 2055", " 13 JUN 2055")
         .replace("15 MAY", "15 JUN")
         .replace("20 MAY", "20 JUN")
     )
