@@ -26,6 +26,7 @@ MODULES: tuple[str, ...] = (
     "rheo_finance.rates.rowan",
     "rheo_finance.jobs.ops",
     "rheo_finance.jobs.service",
+    "rheo_finance.state.transfer",
 )
 
 

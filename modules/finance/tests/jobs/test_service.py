@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from sqlalchemy import Connection, select
+from sqlalchemy import Connection, Engine, select
 
 from rheo_finance.cli import jobs as jobs_cli
 from rheo_finance.cli.main import main
@@ -95,15 +95,16 @@ def test_health_pending_is_distinct_from_skipped_off_and_missing_history(
     assert out.pending == 1 and out.skipped_off == 1
 
 
-def test_mutating_dispatch_and_owner_transactions_honor_manual_process_lock(
+def test_dispatch_and_owner_transaction_refuse_at_wait_zero_under_another_writer(
     rolled_back_context: Callable[[Role], FinanceContext],
     tmp_path: Path,
     owner_conn: Connection,
+    owner_engine: Engine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import fcntl
-    import os
     from contextlib import AbstractContextManager
+
+    from sqlalchemy import text
 
     from rheo_finance import db, operations
     from rheo_finance.jobs.ops import RecordIn
@@ -111,16 +112,16 @@ def test_mutating_dispatch_and_owner_transactions_honor_manual_process_lock(
 
     ctx = configured(rolled_back_context(Role.SERVICE), tmp_path)
 
-    def bounded(data: Path) -> AbstractContextManager[None]:
-        return db.writer_lock(data, wait_seconds=0)
+    def bounded(connection: Connection) -> AbstractContextManager[None]:
+        return db.writer_lock(connection, wait_seconds=0)
 
     monkeypatch.setattr(operations, "writer_lock", bounded)
-    directory = tmp_path / "locks"
-    directory.mkdir()
-    fd = os.open(directory / "ledger.lock", os.O_RDWR | os.O_CREAT, 0o600)
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     now = ctx.clock.now_utc()
-    try:
+    # Another process's writer: a session lock on the same key, on its own connection.
+    with owner_engine.connect() as other:
+        other.execute(
+            text("SELECT pg_advisory_lock(:key)"), {"key": db.WRITER_LOCK_KEY}
+        )
         with pytest.raises(db.WriterBusy):
             operations.dispatch(
                 "finance.job.record",
@@ -138,5 +139,3 @@ def test_mutating_dispatch_and_owner_transactions_honor_manual_process_lock(
             pytest.fail("owner transaction entered while another writer held the lock")
         assert health(ctx).code == "no_first_tick"
         assert owner_conn.execute(select(job_run)).all() == []
-    finally:
-        os.close(fd)

@@ -6,21 +6,25 @@ it fills. Every value is synthetic; a "PDF" is layout text.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import dataclasses
 import datetime as dt
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
+from typing import NoReturn, cast
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import Connection, Table, delete, func, insert, select, update
+from sqlalchemy import Connection, Delete, Table, delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from rheo_finance.context import UnitOfWork
+from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.derive import run as derive_run
-from rheo_finance.derive import stage3
+from rheo_finance.derive import stage2, stage3
 from rheo_finance.derive.stage3 import CURRENCY_REFUSED, Lines, build_lines
 from rheo_finance.documents.registry import DocumentRefused
 from rheo_finance.manual.cash_lines import CashLines
@@ -573,3 +577,53 @@ def test_every_table_is_cleared_rewritten_state_or_owned_by_the_file_operation()
         set(derive_run.FILE_OWNED),
     ]
     assert sorted(name for group in groups for name in group) == sorted(tables)
+
+
+class StopAtStage2(Exception):
+    """Raised where stage 2 would start, to end a recorded derive there."""
+
+
+class RecordingUow:
+    """A stand-in unit of work that records each statement and runs nothing."""
+
+    def __init__(self) -> None:
+        self.statements: list[object] = []
+
+    def execute(self, statement: object, parameters: object = None) -> None:
+        self.statements.append(statement)
+
+    @contextlib.contextmanager
+    def savepoint(self) -> Iterator[None]:
+        yield
+
+
+@pytest.mark.parametrize("reparse", [False, True], ids=["derive", "rebuild"])
+def test_every_derive_empties_the_manual_entry_errors_whole_before_stage_2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reparse: bool
+) -> None:
+    """Stages 2 and 3 run in full on every derive, so ``manual_entry_error`` is
+    emptied whole before them: a row under a file no loader reads cannot survive."""
+    uow = RecordingUow()
+
+    def stage_2(_uow: object, _data: object) -> NoReturn:
+        raise StopAtStage2
+
+    monkeypatch.setattr(stage2, "load_manual", stage_2)
+    ctx = SimpleNamespace(
+        settings=parse_settings(f'[finance.paths]\narchive = "{tmp_path}"\n'),
+        paths=SimpleNamespace(data=tmp_path),
+    )
+
+    with pytest.raises(StopAtStage2):
+        derive_run.run(
+            cast(UnitOfWork, uow), cast(FinanceContext, ctx), reparse=reparse
+        )
+
+    whole = [
+        each
+        for each in uow.statements
+        if isinstance(each, Delete)
+        and each.table is manual_entry_error
+        and each.whereclause is None
+    ]
+    assert len(whole) == 1

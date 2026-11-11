@@ -38,6 +38,7 @@ from rheo_finance.operations import (
     owner_transaction,
     register,
 )
+from tests.finance_support import DatabaseUnderTest
 
 MakeContext = Callable[[Role], FinanceContext]
 ALL_ROLES = frozenset(Role)
@@ -460,3 +461,221 @@ def test_a_handler_cannot_dispatch_again(
     with pytest.raises(NoDatabases):
         dispatch("finance.probe.outer", {}, Role.OWNER, ctx=make_context(Role.OWNER))
     assert probe_rows(owner_engine, probe_table) == 0
+
+
+# --- core sessions: one role per operation -------------------------------------------
+
+
+class _Result:
+    def scalar_one(self) -> bool:
+        return True
+
+    def scalar(self) -> str:
+        return "seen"
+
+
+class FakeConnection:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def execute(self, statement: Any, parameters: Any = None) -> _Result:
+        self.statements.append(str(statement))
+        return _Result()
+
+
+class FakeSession:
+    """A core-shaped session: a connection inside one transaction, and its ends."""
+
+    def __init__(self, log: list[str]) -> None:
+        self._connection = FakeConnection()
+        self._log = log
+
+    @property
+    def connection(self) -> Connection:
+        return self._connection  # type: ignore[return-value]
+
+    def commit(self) -> None:
+        self._log.append("commit")
+
+    def rollback(self) -> None:
+        self._log.append("rollback")
+
+    def __enter__(self) -> FakeSession:
+        self._log.append("open")
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._log.append("close")
+
+
+def _core_context(role: Role, open_session: Callable[[], Any]) -> FinanceContext:
+    import datetime as dt
+    from pathlib import Path
+
+    from rheo_finance.clock import FakeClock
+    from rheo_finance.context import FinancePaths
+    from rheo_finance.operations import with_core_sessions
+    from rheo_finance.settings import parse_settings
+    from tests.finance_support import no_snapshot
+
+    ctx = FinanceContext(
+        settings=parse_settings(""),
+        clock=FakeClock(dt.datetime(2063, 1, 18, 12, 0, tzinfo=dt.UTC)),
+        paths=FinancePaths(data=Path("/nonexistent-finance-data")),
+        role=role,
+        snapshot_provider=no_snapshot,
+    )
+    return with_core_sessions(ctx, open_session=open_session)
+
+
+@pytest.mark.parametrize(
+    ("connection", "safety", "role"),
+    [
+        ("reader", SafetyClass.READ, "finance_reader"),
+        ("owner", SafetyClass.READ, "finance_owner"),
+        ("owner", SafetyClass.MUTATE, "finance_owner"),
+    ],
+)
+def test_core_mode_sets_the_spec_role_and_commits_once(
+    empty_registry: dict[str, OperationSpec],
+    monkeypatch: pytest.MonkeyPatch,
+    connection: ConnectionName,
+    safety: SafetyClass,
+    role: str,
+) -> None:
+    from rheo_finance import operations
+
+    log: list[str] = []
+    sessions: list[FakeSession] = []
+
+    def open_session() -> FakeSession:
+        sessions.append(FakeSession(log))
+        return sessions[-1]
+
+    # The fake has no psycopg connection to ask; the real check runs in D9.
+    monkeypatch.setattr(operations, "_server_in_transaction", lambda _c: True)
+    roles = ALL_ROLES if connection == "reader" else OWNER_AND_SERVICE
+    register(
+        make_spec(
+            "finance.probe.who",
+            current_user,
+            roles=roles,
+            connection=connection,
+            safety_class=safety,
+        )
+    )
+    out = dispatch(
+        "finance.probe.who", {}, Role.OWNER, ctx=_core_context(Role.OWNER, open_session)
+    )
+    assert out == Answer(value="seen")
+    assert log == ["open", "commit", "close"]
+    statements = sessions[0]._connection.statements
+    assert statements[0] == f"SET LOCAL ROLE {role}"
+    locked = [each for each in statements if "advisory_xact_lock" in each]
+    assert len(locked) == (1 if safety is SafetyClass.MUTATE else 0)
+    assert not any(
+        "RESET" in each or each.startswith("SET ROLE") for each in statements
+    )
+
+
+def test_core_mode_rolls_back_once_when_the_handler_fails(
+    empty_registry: dict[str, OperationSpec],
+) -> None:
+    log: list[str] = []
+
+    def broken(_ctx: FinanceContext, _uow: UnitOfWork, _data: Probe) -> Answer:
+        raise HandlerBroke("synthetic")
+
+    register(make_spec("finance.probe.broken", broken))
+    with pytest.raises(HandlerBroke):
+        dispatch(
+            "finance.probe.broken",
+            {},
+            Role.OWNER,
+            ctx=_core_context(Role.OWNER, lambda: FakeSession(log)),
+        )
+    assert log == ["open", "rollback", "close"]
+
+
+class EngineSession:
+    """A core-shaped session over an engine: one connection, one transaction."""
+
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+        self._connection: Connection | None = None
+
+    def __enter__(self) -> EngineSession:
+        self._connection = self._engine.connect()
+        self._connection.begin()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        assert self._connection is not None
+        if self._connection.in_transaction():
+            self._connection.rollback()
+        self._connection.close()
+
+    @property
+    def connection(self) -> Connection:
+        assert self._connection is not None
+        return self._connection
+
+    def commit(self) -> None:
+        self.connection.commit()
+
+    def rollback(self) -> None:
+        self.connection.rollback()
+
+
+class Who(BaseModel):
+    value: str
+    pid: int
+
+
+def test_core_mode_returns_the_pooled_connection_as_the_session_user(
+    empty_registry: dict[str, OperationSpec],
+    test_database: DatabaseUnderTest,
+) -> None:
+    from sqlalchemy import create_engine
+
+    from tests.finance_support import cluster_url
+
+    def who(_ctx: FinanceContext, uow: UnitOfWork, _data: Probe) -> Who:
+        user, pid = uow.execute(text("SELECT current_user, pg_backend_pid()")).one()
+        return Who(value=str(user), pid=int(pid))
+
+    for connection in ("reader", "owner"):
+        register(
+            OperationSpec(
+                name=f"finance.probe.{connection}",
+                input_model=Probe,
+                output_model=Who,
+                handler=who,
+                safety_class=SafetyClass.READ,
+                roles=ALL_ROLES if connection == "reader" else OWNER_AND_SERVICE,
+                connection=connection,
+                description="A test operation.",
+            )
+        )
+    # One pooled connection, as core's pools hold them, logged in as the cluster user.
+    engine = create_engine(
+        cluster_url().set(database=test_database.owner_url.database),
+        pool_size=1,
+        max_overflow=0,
+    )
+    try:
+        ctx = _core_context(Role.OWNER, lambda: EngineSession(engine))
+        seen: list[Who] = []
+        for name in ("reader", "owner"):
+            out = dispatch(f"finance.probe.{name}", {}, Role.OWNER, ctx=ctx)
+            assert isinstance(out, Who)
+            seen.append(out)
+        assert [each.value for each in seen] == ["finance_reader", "finance_owner"]
+        with engine.connect() as pooled:
+            same, pid = pooled.execute(
+                text("SELECT current_user = session_user, pg_backend_pid()")
+            ).one()
+        assert same is True
+        assert {each.pid for each in seen} == {pid}
+    finally:
+        engine.dispose()

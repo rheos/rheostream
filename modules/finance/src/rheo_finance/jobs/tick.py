@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from psycopg import errors as pg_errors
@@ -20,7 +21,12 @@ from rheo_finance import catalogue
 from rheo_finance.clock import as_utc, local_to_utc
 from rheo_finance.context import FinanceContext
 from rheo_finance.contracts import Role
-from rheo_finance.db import VERSION_TABLE, code_revisions, head_revision
+from rheo_finance.db import (
+    UPGRADE_REMEDY,
+    VERSION_TABLE,
+    code_revisions,
+    head_revision,
+)
 from rheo_finance.derive.fingerprint import fingerprint
 from rheo_finance.jobs.ops import RecordIn
 from rheo_finance.jobs.registry import JOBS, TICK_JOB, JobResult
@@ -32,6 +38,18 @@ from rheo_finance.operations import (
     owner_transaction,
 )
 from rheo_finance.sinks.gate import SinkDisabled
+
+
+class SchemaBehind(OperationError):
+    """The database is at an older revision of the chain than the code."""
+
+
+class SchemaUnknown(OperationError):
+    """The database records a revision the code does not know."""
+
+
+def _nothing() -> None:
+    pass
 
 
 @dataclass(frozen=True)
@@ -109,8 +127,24 @@ def _record_tick(ctx: FinanceContext, started: dt.datetime, result: JobResult) -
     )
 
 
-def tick(ctx: FinanceContext) -> TickResult:
-    """Run due jobs serially as SERVICE. No job may borrow owner authorization."""
+def tick(
+    ctx: FinanceContext,
+    *,
+    checkpoint: Callable[[], None] = _nothing,
+    pass_through: tuple[type[BaseException], ...] = (),
+) -> TickResult:
+    """Run due jobs serially as SERVICE. No job may borrow owner authorization.
+
+    ``checkpoint`` runs before each due job and before the prune: core's job passes
+    its cancellation token's, which raises on a cancel or a lost lease and keeps the
+    lease otherwise.
+
+    A job that fails is recorded ``failed`` and the tick goes on, except for an error
+    of a ``pass_through`` class: that one stops the tick unrecorded and leaves as it
+    is. Core's job passes its cancellation and lease-loss errors, which a model call's
+    heartbeat raises inside a job; this package does not import core, so the caller
+    names them.
+    """
     if ctx.role is not Role.SERVICE:
         raise RoleRefused("jobs tick requires service role")
     catalogue.load_all()
@@ -128,7 +162,7 @@ def tick(ctx: FinanceContext) -> TickResult:
     if version != head_revision():
         known = code_revisions()
         if version is not None and version not in known:
-            raise OperationError("schema_unknown: update the code")
+            raise SchemaUnknown("schema_unknown: update the code")
         if version in known and isinstance(version, str):
             if version == "0040_job_run":
                 with owner_transaction(ctx) as uow:
@@ -140,7 +174,7 @@ def tick(ctx: FinanceContext) -> TickResult:
                 _record_tick(ctx, now, JobResult(ok=False, detail_code="failed"))
             elif version >= "0042_tick_health":
                 _record_tick(ctx, now, JobResult(ok=False, detail_code="schema_behind"))
-        raise OperationError("schema_behind: run finance db migrate")
+        raise SchemaBehind(f"schema_behind: {UPGRADE_REMEDY}")
     with owner_transaction(ctx) as uow:
         rows = PostgresJobRepository(uow).all()
     completed: list[JobRun] = []
@@ -159,11 +193,14 @@ def tick(ctx: FinanceContext) -> TickResult:
                 continue
         elif not _due(rows, name, scheduled):
             continue
+        checkpoint()
         started = as_utc(ctx.clock.now_utc())
         try:
             result = spec.callback(ctx)
         except SinkDisabled:
             result = JobResult(ok=None, detail_code="skipped: sink off")
+        except pass_through:
+            raise
         except Exception:
             # Never persist exception text: it may contain paths, SQL or payloads.
             result = JobResult(ok=False, detail_code="failed")
@@ -187,5 +224,6 @@ def tick(ctx: FinanceContext) -> TickResult:
         ):
             ledger_ready = False
     _record_tick(ctx, now, JobResult(ok=True))
+    checkpoint()
     _prune(ctx, now)
     return TickResult(as_of=now, runs=tuple(completed))

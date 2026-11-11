@@ -252,12 +252,8 @@ SPECS: Final[tuple[KeySpec, ...]] = (
           "Merchants per classification model call."),
     _spec("finance.extract.model_fallback", BOOL, False,
           "Fall back to the masked model extractor when no fixed rule parses a file."),
-    _spec("finance.model.classify_model", STR, None,
-          "Model for classification. Unset: the CLI default."),
-    _spec("finance.model.suggest_model", STR, None,
-          "Model for suggestions. Unset: the CLI default."),
-    _spec("finance.model.extract_model", STR, None,
-          "Model for extraction. Unset: the CLI default."),
+    # Which model each stage uses, and the account it runs as, are core settings
+    # (finance.model.*_model_id, finance.model.account_id), not keys of this file.
     # confirm
     _spec("finance.confirm.bulk_kinds", LIST,
           ("classification", "pairing_single", "reattach_single", "presumed_paid"),
@@ -443,8 +439,10 @@ def _leaves(table: Mapping[str, object], prefix: str) -> Iterator[tuple[str, obj
             yield key, value
 
 
-def parse_settings(text: str, source: Path | None = None) -> Settings:
-    """Parse settings TOML text over the defaults."""
+def _parse(
+    text: str, source: Path | None
+) -> tuple[dict[str, SettingValue | None], frozenset[str]]:
+    """The effective values and the keys the text itself set."""
     where = source.name if source is not None else SETTINGS_FILE_NAME
     try:
         data = tomllib.loads(text, parse_float=Decimal)
@@ -453,22 +451,78 @@ def parse_settings(text: str, source: Path | None = None) -> Settings:
         line = f"line {found[1]}" if found else "an unknown line"
         raise SettingsError(f"{where} has a syntax error at {line}: {exc}") from None
     values: dict[str, SettingValue | None] = {spec.key: spec.default for spec in SPECS}
+    given: set[str] = set()
     for key, raw in _leaves(data, ""):
         spec = SPECS_BY_KEY.get(key)
         if spec is None:
             raise SettingsError(f"{where}: unknown setting {key}")
         values[key] = spec.coerce(raw)
+        given.add(key)
+    return values, frozenset(given)
+
+
+def parse_settings(text: str, source: Path | None = None) -> Settings:
+    """Parse settings TOML text over the defaults."""
+    values, _ = _parse(text, source)
     return Settings(MappingProxyType(values), source)
 
 
+# Under a workspace layout the layout sets these; a settings file may not.
+LAYOUT_PATHS: Final[Mapping[str, str]] = MappingProxyType(
+    {"finance.paths.archive": "archive", "finance.paths.downloads": "inbox"}
+)
+# Under a workspace layout these, when set, must name a file inside its keys/.
+KEY_FILES: Final[tuple[str, ...]] = (
+    "finance.reminders.current_credential_file",
+    "finance.mail.credential_file",
+)
+
+
+def _under_layout(
+    values: dict[str, SettingValue | None],
+    given: frozenset[str],
+    layout: db.FinanceLayout,
+) -> None:
+    for key, part in LAYOUT_PATHS.items():
+        if key in given:
+            raise SettingsError(f"setting {key} is fixed by the workspace layout")
+        values[key] = str(getattr(layout, part))
+    keys = layout.keys.resolve()
+    for key in KEY_FILES:
+        value = values[key]
+        if not isinstance(value, str):
+            continue
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = layout.keys / path
+        try:
+            path.resolve().relative_to(keys)
+        except ValueError:
+            raise SettingsError(
+                f"setting {key} must name a file in the layout's keys directory"
+            ) from None
+        values[key] = str(path)
+
+
 def load_settings(path: Path | None = None) -> Settings:
-    """Read ``path``, default ``$FINANCE_DATA_DIR/settings.toml``; missing: defaults."""
+    """Read ``path``, default ``settings.toml`` in the data directory; missing:
+    defaults.
+
+    Under a bound workspace layout (``db.use_layout``) the archive and the downloads
+    inbox are the layout's, and a credential file must sit in its ``keys/``.
+    """
     target = path or settings_path()
     try:
         text = target.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return default_settings()
-    return parse_settings(text, target)
+        text, source = "", None
+    else:
+        source = target
+    values, given = _parse(text, source)
+    layout = db.bound_layout()
+    if layout is not None:
+        _under_layout(values, given, layout)
+    return Settings(MappingProxyType(values), source)
 
 
 def _canonical(value: SettingValue | None) -> object:

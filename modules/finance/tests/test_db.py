@@ -1,27 +1,25 @@
-"""The ledger database: role privileges, the version table, the chain's fallback DSN
-and the writer lock.
+"""The ledger database: role privileges, the version table, the roles ``env.py``
+prepares, acting as a role, and the writer lock.
 
 The privilege tests use the session's ``ws_*`` database through the conftest
 fixtures, whose connections run as ``finance_owner`` or ``finance_reader``. The
-standalone runtime's tests (``finance db up``, ``db init``, ``db locked``, the compose
-pins and the native PostgreSQL 17 dump and restore seam) went with that runtime, which
-was not imported into rheoStream.
+role-plan, ``acting_as``, ``env.py`` refusal and wait-bound tests use recording fakes
+and need no database. The standalone runtime's tests (``finance db up``, ``db init``,
+``db locked``, the compose pins and the native PostgreSQL 17 dump and restore seam)
+went with that runtime, which was not imported into rheoStream.
 """
 
 from __future__ import annotations
 
-import contextvars
-import os
+import itertools
 import secrets
-import signal
-import subprocess
-import sys
-import time
-from pathlib import Path
+from collections.abc import Iterator
+from typing import Any
 
 import psycopg
 import pytest
 from alembic import command
+from alembic.runtime.environment import EnvironmentContext
 from sqlalchemy import Connection, Engine, text
 from sqlalchemy.exc import DBAPIError
 
@@ -180,68 +178,260 @@ def test_every_owner_relation_is_in_schema_finance(owner_conn: Connection) -> No
     assert in_public.scalar_one() == 0
 
 
-def test_env_py_falls_back_to_the_owner_dsn_in_db_env(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    test_database: DatabaseUnderTest,
-) -> None:
-    dsn = test_database.owner_url.set(drivername="postgresql").render_as_string(
-        hide_password=False
-    )
-    env_file = tmp_path / db.ENV_FILE_NAME
-    env_file.write_text(f"{db.OWNER_DSN_KEY}={dsn}\n", encoding="utf-8")
-    env_file.chmod(0o600)
-    monkeypatch.setenv("FINANCE_DATA_DIR", str(tmp_path))
+# --- recording fakes (no database) ---------------------------------------------------
 
+
+class _Result:
+    def __init__(self, value: Any = None, rows: tuple[Any, ...] = ()) -> None:
+        self._value = value
+        self._rows = rows
+
+    def scalar_one(self) -> Any:
+        return self._value
+
+    def scalar_one_or_none(self) -> Any:
+        return self._value
+
+    def scalars(self) -> Iterator[Any]:
+        return iter(self._rows)
+
+
+class Recording:
+    """A connection that records each statement; each answer is the next scripted
+    value, else None."""
+
+    def __init__(self, *answers: Any) -> None:
+        self.statements: list[str] = []
+        self._answers = list(answers)
+
+    def execute(self, statement: Any, parameters: Any = None) -> _Result:
+        self.statements.append(str(statement))
+        return _Result(self._answers.pop(0) if self._answers else None)
+
+
+class Catalog(Recording):
+    """A connection that answers ``prepare_roles``' catalogue reads."""
+
+    def __init__(
+        self,
+        *,
+        roles: tuple[str, ...],
+        superuser: bool,
+        can_set: bool,
+        schema_owner: str | None,
+    ) -> None:
+        super().__init__()
+        self._roles = roles
+        self._superuser = superuser
+        self._can_set = can_set
+        self._schema_owner = schema_owner
+
+    def execute(self, statement: Any, parameters: Any = None) -> _Result:
+        sql = str(statement)
+        self.statements.append(sql)
+        if "rolname IN" in sql:
+            return _Result(rows=self._roles)
+        if "rolsuper" in sql:
+            return _Result(self._superuser)
+        if "pg_has_role" in sql:
+            return _Result(self._can_set)
+        if "nspowner" in sql:
+            return _Result(self._schema_owner)
+        return _Result()
+
+
+def _as_connection(fake: Recording) -> Connection:
+    return fake  # type: ignore[return-value]
+
+
+# --- acting as a role (L4) ---------------------------------------------------------
+
+
+def test_acting_as_sets_the_role_locally_and_resets_it_on_return() -> None:
+    fake = Recording()
+    with db.acting_as(_as_connection(fake), db.OWNER_ROLE):
+        fake.execute(text("SELECT 1"))
+    assert fake.statements == ["SET LOCAL ROLE finance_owner", "SELECT 1", "RESET ROLE"]
+
+
+def test_acting_as_leaves_the_reset_to_the_rollback_after_an_error() -> None:
+    fake = Recording()
+    with pytest.raises(RuntimeError, match="synthetic"):
+        with db.acting_as(_as_connection(fake), db.READER_ROLE):
+            raise RuntimeError("synthetic")
+    assert fake.statements == ["SET LOCAL ROLE finance_reader"]
+
+
+def test_acting_as_refuses_any_other_role_before_any_sql() -> None:
+    fake = Recording()
+    with pytest.raises(db.DbError):
+        with db.acting_as(_as_connection(fake), "postgres"):
+            pytest.fail("entered as another role")
+    assert fake.statements == []
+
+
+# --- the role plan (L7) ------------------------------------------------------------
+
+PLANS = {
+    (True, True, True): "reuse",
+    (True, True, False): "reuse",
+    (True, False, True): "reuse",
+    (True, False, False): "refuse",
+    (False, True, True): "create",
+    (False, True, False): "refuse",
+    (False, False, True): "create",
+    (False, False, False): "refuse",
+}
+
+
+@pytest.mark.parametrize(
+    ("roles_exist", "can_set_both", "is_superuser"),
+    list(itertools.product((True, False), repeat=3)),
+)
+def test_role_plan_covers_every_input(
+    roles_exist: bool, can_set_both: bool, is_superuser: bool
+) -> None:
+    plan = db.role_plan(
+        roles_exist=roles_exist, can_set_both=can_set_both, is_superuser=is_superuser
+    )
+    assert plan == PLANS[(roles_exist, can_set_both, is_superuser)]
+
+
+def test_prepare_roles_creates_both_roles_and_takes_the_schema_as_superuser() -> None:
+    fake = Catalog(roles=(), superuser=True, can_set=False, schema_owner="postgres")
+    assert db.prepare_roles(_as_connection(fake)) == "create"
+    created = [each for each in fake.statements if "CREATE ROLE" in each]
+    assert [each.split("CREATE ROLE ")[1].split()[0] for each in created] == [
+        "finance_owner",
+        "finance_reader",
+    ]
+    assert all("NOLOGIN NOSUPERUSER" in each for each in created)
+    assert all("duplicate_object OR unique_violation" in each for each in created)
+    assert "ALTER SCHEMA finance OWNER TO finance_owner" in fake.statements
+    assert fake.statements[-1] == (
+        "ALTER DEFAULT PRIVILEGES FOR ROLE finance_owner"
+        " REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
+    )
+    assert not any("pg_has_role" in each for each in fake.statements)
+
+
+def test_prepare_roles_reuses_roles_a_member_may_set_and_leaves_an_owned_schema() -> (
+    None
+):
+    fake = Catalog(
+        roles=(db.OWNER_ROLE, db.READER_ROLE),
+        superuser=False,
+        can_set=True,
+        schema_owner=db.OWNER_ROLE,
+    )
+    assert db.prepare_roles(_as_connection(fake)) == "reuse"
+    assert not any("CREATE ROLE" in each for each in fake.statements)
+    assert not any("ALTER SCHEMA" in each for each in fake.statements)
+
+
+def test_prepare_roles_refuses_without_changing_anything() -> None:
+    fake = Catalog(roles=(), superuser=False, can_set=False, schema_owner=None)
+    with pytest.raises(db.DbError, match="finance_roles_unavailable"):
+        db.prepare_roles(_as_connection(fake))
+    assert not any(
+        word in each
+        for each in fake.statements
+        for word in ("CREATE", "ALTER", "GRANT")
+    )
+
+
+# --- env.py (L8) ---------------------------------------------------------------------
+
+
+def test_env_py_refuses_to_run_without_the_orchestrator_connection() -> None:
     config = db.alembic_config()
     assert "connection" not in config.attributes
-    command.upgrade(config, "head")  # no connection passed: env.py opens its own
+    with pytest.raises(RuntimeError, match="require the orchestrator connection"):
+        command.upgrade(config, "head")
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_env_py_prepares_roles_then_configures_as_the_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+    prepared: list[object] = []
+
+    def configure(_self: EnvironmentContext, **kwargs: Any) -> None:
+        seen.update(kwargs)
+        raise _Stop
+
+    monkeypatch.setattr(EnvironmentContext, "configure", configure)
+    monkeypatch.setattr(db, "prepare_roles", prepared.append)
+    fake = Recording()
+    config = db.alembic_config()
+    config.attributes["connection"] = fake
+    with pytest.raises(_Stop):
+        command.upgrade(config, "head")
+    assert prepared == [fake]
+    assert seen["connection"] is fake
+    assert (seen["version_table_schema"], seen["version_table"]) == (
+        "finance",
+        "alembic_version_finance",
+    )
+    # Configured as the owner; no reset after the error, the caller's rollback has it.
+    assert fake.statements == ["SET LOCAL ROLE finance_owner"]
 
 
 # --- the writer lock ---------------------------------------------------------------
 
 
-def _wait_marker(marker: Path, parent: subprocess.Popen[str]) -> None:
-    deadline = time.monotonic() + 60
-    while not marker.exists() and parent.poll() is None:
-        assert time.monotonic() < deadline, "process marker deadline"
-        time.sleep(0.01)
-    assert marker.exists(), f"parent exited before {marker.name}: {parent.poll()}"
+@pytest.mark.parametrize("wait", [-1.0, -0.001, 300.001, 301.0])
+def test_writer_lock_refuses_a_wait_out_of_bounds_before_any_sql(wait: float) -> None:
+    fake = Recording()
+    with pytest.raises(db.DbError, match="between 0 and 300"):
+        with db.writer_lock(_as_connection(fake), wait_seconds=wait):
+            pytest.fail("entered with an out-of-bounds wait")
+    assert fake.statements == []
 
 
-def test_copied_writer_context_cannot_bypass_another_process(tmp_path: Path) -> None:
-    def enter() -> None:
-        with db.writer_lock(tmp_path, wait_seconds=0):
+def test_writer_lock_polls_the_transaction_lock_until_it_is_granted() -> None:
+    fake = Recording(False, True)
+    with db.writer_lock(_as_connection(fake), wait_seconds=5):
+        pass
+    assert fake.statements == ["SELECT pg_try_advisory_xact_lock(:key)"] * 2
+
+
+def test_writer_lock_raises_writer_busy_once_the_wait_runs_out() -> None:
+    fake = Recording(False, False, False)
+    with pytest.raises(db.WriterBusy, match="writer_busy"):
+        with db.writer_lock(_as_connection(fake), wait_seconds=0):
+            pytest.fail("entered while another writer held the lock")
+    assert len(fake.statements) == 1
+
+
+def test_another_connection_holding_the_lock_refuses_a_writer(
+    owner_engine: Engine,
+) -> None:
+    with owner_engine.connect() as holder:
+        holder.execute(
+            text("SELECT pg_advisory_lock(:key)"), {"key": db.WRITER_LOCK_KEY}
+        )
+        with owner_engine.connect() as writer, writer.begin():
+            with pytest.raises(db.WriterBusy):
+                with db.writer_lock(writer, wait_seconds=0):
+                    pytest.fail("entered while another connection held the lock")
+
+
+def test_the_lock_stacks_on_its_connection_and_ends_with_the_transaction(
+    owner_engine: Engine,
+) -> None:
+    with owner_engine.connect() as first, owner_engine.connect() as second:
+        with first.begin():
+            with db.writer_lock(first, wait_seconds=0):
+                with db.writer_lock(first, wait_seconds=0):
+                    pass
+            # Still held: the lock ends with the transaction, not the block.
+            with second.begin(), pytest.raises(db.WriterBusy):
+                with db.writer_lock(second, wait_seconds=0):
+                    pytest.fail("entered before the first transaction ended")
+        with second.begin(), db.writer_lock(second, wait_seconds=0):
             pass
-
-    with db.writer_lock(tmp_path, wait_seconds=0):
-        saved = contextvars.copy_context()
-        saved.run(enter)  # Real ownership still permits ordinary nested calls.
-    script = r"""
-import sys, time
-from pathlib import Path
-from rheo_finance import db
-root = Path(sys.argv[1])
-with db.writer_lock(root, wait_seconds=0):
-    (root/'holding').touch()
-    while not (root/'release').exists():
-        time.sleep(0.01)
-"""
-    other = subprocess.Popen(
-        [sys.executable, "-c", script, str(tmp_path)], start_new_session=True, text=True
-    )
-    try:
-        _wait_marker(tmp_path / "holding", other)
-        with pytest.raises(db.WriterBusy):
-            enter()
-        with pytest.raises(db.WriterBusy):
-            saved.run(enter)
-    finally:
-        (tmp_path / "release").touch()
-        try:
-            other.wait(timeout=8)
-        except subprocess.TimeoutExpired:
-            os.killpg(other.pid, signal.SIGKILL)
-            other.wait(timeout=8)
-    assert other.returncode == 0
-    saved.run(enter)

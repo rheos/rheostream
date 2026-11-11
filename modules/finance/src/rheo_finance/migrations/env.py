@@ -1,37 +1,28 @@
 """The finance Alembic environment: one chain, its version table in schema ``finance``.
 
-An orchestrator passes its own connection in ``config.attributes["connection"]``
-(``finance db migrate`` does the same); otherwise this connects with the owner DSN
-from ``$FINANCE_DATA_DIR/db.env``.
+Only the connection an orchestrator passes in ``config.attributes["connection"]`` is
+used: core's install and upgrade, and the test harness. ``prepare_roles`` makes sure
+the two roles exist, then every revision runs as ``finance_owner``, which creates the
+version table, and the role is reset before control returns, because core's install
+goes on in the same transaction.
 """
 
 from __future__ import annotations
 
 from alembic import context
-from sqlalchemy import Connection, create_engine
-from sqlalchemy.pool import NullPool
 
-from rheo_finance.db import SCHEMA, VERSION_TABLE, owner_url
+from rheo_finance import db
 
-
-def run(connection: Connection) -> None:
+connection = context.config.attributes.get("connection")
+if connection is None:
+    raise RuntimeError("finance migrations require the orchestrator connection")
+db.prepare_roles(connection)
+with db.acting_as(connection, db.OWNER_ROLE):
     context.configure(
         connection=connection,
         target_metadata=None,
-        version_table=VERSION_TABLE,
-        version_table_schema=SCHEMA,
+        version_table=db.VERSION_TABLE,
+        version_table_schema=db.SCHEMA,
     )
     with context.begin_transaction():
         context.run_migrations()
-
-
-passed = context.config.attributes.get("connection")
-if passed is not None:
-    run(passed)
-else:
-    engine = create_engine(owner_url(), poolclass=NullPool)
-    try:
-        with engine.begin() as connection:
-            run(connection)
-    finally:
-        engine.dispose()

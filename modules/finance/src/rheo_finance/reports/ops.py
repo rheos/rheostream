@@ -54,7 +54,7 @@ from sqlalchemy.exc import ProgrammingError
 from rheo_finance.clock import local_date, render_local
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass, Tiered
-from rheo_finance.db import code_revisions, head_revision
+from rheo_finance.db import UPGRADE_REMEDY, code_revisions, head_revision
 from rheo_finance.documents.filer import DOWNLOADS_KEY, monitor_files_waiting
 from rheo_finance.operations import OperationSpec, register
 from rheo_finance.render import as_of
@@ -131,7 +131,7 @@ def _database(ctx: FinanceContext, facts: dict[str, list[Fact]]) -> str:
         )
     return (
         f"{stamp}, database schema at {revision}, code at {head};"
-        " schema behind code: run finance db migrate"
+        f" schema behind code: {UPGRADE_REMEDY}"
     )
 
 
@@ -139,7 +139,7 @@ def _no_report_views(ctx: FinanceContext) -> str:
     stamp = as_of(ctx.clock, ctx.settings.timezone)
     return (
         f"{stamp}, database schema behind the code (at {head_revision()}), no report"
-        " views yet: run finance db migrate"
+        f" views yet: {UPGRADE_REMEDY}"
     )
 
 

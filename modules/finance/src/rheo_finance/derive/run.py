@@ -12,11 +12,14 @@ Order of work, set by what each step reads:
 
 1. Clear the derived tables that hold rows keyed to accounts, lines and documents: the
    payments, the coverage matrix, the pairing graph, the ``txn`` tables, the source
-   discrepancies, the obligations and the events. The
-   parse cache (``PARSE_CACHE``: lines, periods, rejected periods and the rejection
-   events) is cleared whole with ``reparse``; otherwise stage 1 clears and rewrites a
-   document's rows when it parses that document, and the columns stage 3 writes on a
-   line (``STAGE3_LINE_COLUMNS``) go back to null, as a parse leaves them. State
+   discrepancies, the obligations, the events and the manual entry errors
+   (``manual_entry_error``, whole: stages 2 and 3 run in full on every derive and
+   write the errors of every file they read, so a row under a file none of them reads
+   does not outlive a derive). The parse cache (``PARSE_CACHE``: lines, periods,
+   rejected periods and the rejection events) is cleared whole with ``reparse``;
+   otherwise stage 1 clears and rewrites a document's rows when it parses that
+   document, and the columns stage 3 writes on a line (``STAGE3_LINE_COLUMNS``) go back
+   to null, as a parse leaves them. State
    tables (decisions and their snapshots) are never touched, and neither are the
    registry tables the file operation owns (``document``, ``archive_skip``).
 2. Stage 2, the manual files: accounts and identifiers first. The parsers match
@@ -125,6 +128,7 @@ from rheo_finance.storage.schema import (
     decision_orphan,
     document_line,
     event,
+    manual_entry_error,
     obligation,
     open_item,
     overdrawn_spell,
@@ -156,6 +160,7 @@ CLEARED: Final = (
     payment_application, payment_evidence, payment,
     coverage_table, pair_edge, obligation, txn_source, txn, source_discrepancy,
     document_line, statement_period, rejected_period, event,
+    manual_entry_error,
 )  # fmt: skip
 # Of CLEARED, what stage 1 stores per document: kept for documents a derive does not
 # parse again. ``event`` holds only the rejection events of it (``DOCUMENT_REJECTED``).
@@ -167,8 +172,8 @@ STAGE3_LINE_COLUMNS: Final = ("description_norm", "line_key_id", "refused_decisi
 # Rewritten whole by a loader or a stage.
 REWRITTEN: Final = frozenset(
     {
-        "account", "account_identifier", "manual_entry_error", "filed_year",
-        "own_address", "crypto_label", "payee", "sink_spec",
+        "account", "account_identifier", "filed_year", "own_address",
+        "crypto_label", "payee", "sink_spec",
     }
 )  # fmt: skip
 # State, never truncated (Key decision 3). Input state feeds the fingerprint;

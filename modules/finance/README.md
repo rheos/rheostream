@@ -9,22 +9,65 @@ so; what the ledger does not compute is listed in the design's open questions.
 
 ## Status
 
-Imported, not loaded. This directory holds the code, tests and decision records of
-the standalone project it started as (Float), copied in without its Git history. The
-distribution is `rheo-finance`, the package `rheo_finance`, the module id `finance`.
+Wired, not loaded on the flagship. This directory holds the code, tests and decision
+records of the standalone project it started as (Float), copied in without its Git
+history. The distribution is `rheo-finance`, the package `rheo_finance`, the module id
+`finance`, with a `rheo.modules` entry point and a `finance` console script.
 
-There is no `rheo.modules` entry point and no console script yet, so no deployment
-loads it and nothing runs it. The wiring comes next, in its own change: the manifest,
-roles created at install, the tick as a core scheduled job, workspace paths, a
-Postgres advisory lock for the writer, and a model client over the runtime contract.
-Until then the code still reads its database credentials from
-`$FINANCE_DATA_DIR/db.env`, as the standalone project did.
+Discovery is not loading: core loads only the ids in `modules.installed`, and the
+flagship's list does not name `finance`. Adding it there is the owner's later step.
+How the module runs on core is ADR-0024.
 
 Not imported, because rheoStream owns those jobs: the standalone server runtime (the
 foreground scheduler, the LaunchAgent installer, `finance db up`, `db init`,
 `db migrate` and `db locked`), the native PostgreSQL 17 dump and restore seam, the
 direct `claude -p` model client, and the local parity check against the earlier
 parsers.
+
+## Install and enable
+
+1. Name `finance` in the deployment's `modules.installed`, then install and enable it
+   in the workspace (`core.module.install`, `core.module.enable`). Install runs the
+   frozen chain on core's connection; `migrations/env.py` makes the two NOLOGIN roles,
+   `finance_owner` and `finance_reader`, and runs every revision as the owner.
+2. Set `FINANCE_WORKSPACE_ID` (the workspace's UUID, not a secret) for the `finance`
+   command, and run `finance init-data` once. It creates the layout under the
+   workspace's uploads directory, mode 0700:
+   `<data root>/workspaces/<id>/uploads/finance/{data,archive,inbox,keys}`. Nothing
+   else creates these directories, so a missing volume refuses
+   (`finance_layout_missing`) instead of looking like an empty archive.
+3. Put the settings file in `data/`. The archive and the downloads inbox are the
+   layout's; a settings file that sets either is refused. A credential file must sit in
+   `keys/`, mode 0600; secrets are files there, never deployment variables.
+4. Move the state of an old standalone ledger with `finance state export --out DIR
+   --source-dsn-file FILE` (FILE: a 0600 env file with `FINANCE_OWNER_DSN`), then
+   `finance state import --from DIR` and `finance rebuild` on the workspace.
+
+### Core settings
+
+| Key | Scope | Default |
+| --- | --- | --- |
+| `finance.jobs.enabled` | workspace | false |
+| `finance.model.classify_model_id`, `suggest_model_id`, `extract_model_id` | deployment | empty: the CLI's default model |
+| `finance.model.account_id` | workspace | empty: no model steps |
+
+The `tick` schedule (`finance.tick`, every 15 minutes) is written at enable but
+enqueues only once the workspace itself sets `finance.jobs.enabled` to true with
+`core.settings.set`. The module registers no core operations or tools, so no token,
+package set or agent reaches it, and core's workspace export carries none of its rows.
+
+### A non-superuser application role
+
+`env.py` creates the roles only when the application connects as a superuser. Under
+any other application role, an operator creates both once and grants them to it:
+
+```sql
+CREATE ROLE finance_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+CREATE ROLE finance_reader NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+GRANT finance_owner, finance_reader TO <application role> WITH INHERIT TRUE, SET TRUE;
+```
+
+Install then reuses them; without them it refuses `finance_roles_unavailable`.
 
 ## Principles
 
