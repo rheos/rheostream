@@ -1,0 +1,564 @@
+"""The reader operations behind ``status``, ``coverage`` and the document list:
+``finance.status.get``, ``finance.coverage.get`` and ``finance.document.list`` (FR-48,
+FR-51, Key decision 21).
+
+All three are READ on the reader connection and select from ``report_*`` views only, so
+the reader role's grants are what keeps a base table or a restricted column out of
+them.
+
+``finance.status.get`` returns the status lines that exist so far as ``(line_no,
+text)``. The numbering is SPEC's and stays fixed; lines 8 and 11 to 14 arrive
+with later prompts, so a gap in the numbers is expected.
+
+1. as of, and the database state: ``database current`` when ``report_status``'s schema
+   revision is the code's head. A revision the code knows is behind: run ``finance db
+   migrate``. One it does not know is ahead (a worktree migrated the shared database
+   first): update the code. A database behind migration 0014 has no ``report_status``;
+   the reader cannot read the version table, so status then prints line 1 alone, with
+   the code's head and the fix, rather than failing;
+2. the last import per top-level archive directory, as local dates, and tick age;
+3. unparsed and rejected documents (and those that need manual entry, when any);
+4. missing account-months;
+5. complete last derive queue snapshot, dated, with derived untied/credit/orphan counts;
+6. reminder retry state, never claiming a complete pending intent count;
+7. sinks: ``sinks off: <names>`` naming every sink that is not enabled, and any whose
+   approval is stale, or ``sinks: all enabled``. It is ``finance.sink.state``'s own
+   reading: ``report_sink`` and ``report_sink_spec``, and the ``enabled`` setting from
+   ``$FINANCE_DATA_DIR/settings.toml`` as the gate reads it;
+9. data checks, only when one applies: tick staleness, source discrepancies, the
+   obligation checks (``reports.views``), paid-up arrangements the derive kept
+   active because finishing them would not settle (by slug, with the
+   ``payment_apply`` decision that moved a payment off each, as its ref), accounts
+   with no data, and archive files skipped because their name carries an identifier
+   (by directory; other skip reasons are not fixed by a rename and are not counted
+   here);
+10. intake, only when it applies: monitor-pattern files waiting in Downloads (the
+   filer's count, read from the directory's names and mtimes).
+
+Nothing here prints an identifier, a description, a merchant, a counterparty or a
+skipped file's path: the views carry none of them.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Annotated, Final
+
+from psycopg import errors as pg_errors
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
+from sqlalchemy.exc import ProgrammingError
+
+from rheo_finance.clock import local_date, render_local
+from rheo_finance.context import FinanceContext, UnitOfWork
+from rheo_finance.contracts import Role, SafetyClass, Tiered
+from rheo_finance.db import code_revisions, head_revision
+from rheo_finance.documents.filer import DOWNLOADS_KEY, monitor_files_waiting
+from rheo_finance.operations import OperationSpec, register
+from rheo_finance.render import as_of
+from rheo_finance.reports import views
+from rheo_finance.reports.gaps import bill_issuer
+from rheo_finance.sinks.ops import StateIn
+from rheo_finance.sinks.ops import state as sink_state
+from rheo_finance.storage.schema import (
+    report_coverage,
+    report_document,
+    report_job,
+    report_queue_counts,
+    report_status,
+)
+from rheo_finance.tier import Tier
+
+P = Tier.PUBLIC
+READERS: Final = frozenset({Role.OWNER, Role.MEMBER, Role.SERVICE})
+
+
+@dataclass(frozen=True)
+class Fact:
+    subject: str | None
+    count: int
+    at: dt.datetime | None
+
+
+def _plural(count: int, one: str, many: str) -> str:
+    return f"{count} {one if count == 1 else many}"
+
+
+def _facts(uow: UnitOfWork) -> dict[str, list[Fact]]:
+    found: dict[str, list[Fact]] = defaultdict(list)
+    status_view = report_status.c
+    rows = uow.execute(
+        select(status_view.fact, status_view.subject, status_view.count, status_view.at)
+    )
+    for fact, subject, count, at in rows:
+        found[fact].append(Fact(subject, int(count), at))
+    return found
+
+
+# --- finance.status.get ---------------------------------------------------------------
+
+
+class StatusIn(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class StatusLine(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    line_no: Annotated[int, Tiered(P)]
+    text: Annotated[str, Tiered(P)]
+
+
+class StatusOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    lines: Annotated[list[StatusLine], Tiered(P)]
+
+
+def _database(ctx: FinanceContext, facts: dict[str, list[Fact]]) -> str:
+    stamp = as_of(ctx.clock, ctx.settings.timezone)
+    at = sorted(each.subject or "" for each in facts[views.SCHEMA])
+    head = head_revision()
+    if at == [head]:
+        return f"{stamp}, database current"
+    revision = ", ".join(at) or "no revision"
+    if not set(at) <= code_revisions():
+        return (
+            f"{stamp}, database schema at {revision}, newer than this code"
+            f" (at {head}): update the code"
+        )
+    return (
+        f"{stamp}, database schema at {revision}, code at {head};"
+        " schema behind code: run finance db migrate"
+    )
+
+
+def _no_report_views(ctx: FinanceContext) -> str:
+    stamp = as_of(ctx.clock, ctx.settings.timezone)
+    return (
+        f"{stamp}, database schema behind the code (at {head_revision()}), no report"
+        " views yet: run finance db migrate"
+    )
+
+
+def _imports(ctx: FinanceContext, facts: dict[str, list[Fact]]) -> str:
+    zone = ctx.settings.timezone
+    last = sorted(
+        (each.subject or "", local_date(each.at, zone).isoformat())
+        for each in facts[views.LAST_IMPORT]
+        if each.at is not None
+    )
+    if not last:
+        return "last import: none"
+    return "last import: " + ", ".join(f"{name} {day}" for name, day in last)
+
+
+def _tick_age(
+    ctx: FinanceContext, facts: dict[str, list[Fact]]
+) -> tuple[str, str | None]:
+    latest = next((each.at for each in facts[views.TICK] if each.at is not None), None)
+    if latest is None:
+        return "no tick yet", None
+    elapsed = max(dt.timedelta(0), ctx.clock.now_utc() - latest)
+    minutes = elapsed // dt.timedelta(minutes=1)
+    age = f"tick {minutes} min ago"
+    stale = None
+    if elapsed > dt.timedelta(
+        minutes=ctx.settings.get_int("finance.jobs.tick_stale_minutes")
+    ):
+        stale = f"tick stale: last ran {minutes // 60} hours ago"
+    return age, stale
+
+
+def _backlog(uow: UnitOfWork, facts: dict[str, list[Fact]]) -> str:
+    # Fixed codes only. Never refresh owner eligibility from this reader handler.
+    kinds = (
+        "pairing",
+        "held_notice",
+        "card_debit",
+        "payment",
+        "presumed_paid",
+        "reattach",
+        "category",
+    )
+    rows = uow.execute(select(report_queue_counts)).all()
+    dates = {row.as_of_date for row in rows}
+    counts = {row.kind: row.count for row in rows}
+    if len(rows) != len(kinds) or set(counts) != set(kinds) or len(dates) != 1:
+        snapshot = "confirm last derive snapshot unavailable"
+    else:
+        snapshot = f"confirm last derive snapshot {rows[0].as_of_date.isoformat()}: "
+        snapshot += ", ".join(
+            f"{kind.replace('_', ' ')} {counts[kind]}" for kind in kinds
+        )
+    totals = (
+        ("untied card payments", views.UNTIED_CARD),
+        ("credits not applied", views.UNAPPLIED_CREDIT),
+        ("orphaned decisions", views.DECISION_ORPHAN),
+    )
+    return (
+        snapshot
+        + "; "
+        + ", ".join(
+            f"{label} {sum(each.count for each in facts[fact])}"
+            for label, fact in totals
+        )
+    )
+
+
+def _reminders(
+    ctx: FinanceContext, uow: UnitOfWork, facts: dict[str, list[Fact]]
+) -> str:
+    current = next(
+        each for each in sink_state(ctx, uow, StateIn()).sinks if each.sink == "current"
+    )
+    retries = sum(each.count for each in facts[views.REMINDER_RETRY])
+    pending = f"reminders: {retries} queued retries, pending total unavailable"
+    if not current.enabled:
+        return pending + ", current off"
+    row = uow.execute(
+        select(report_job).where(report_job.c.job == "finance.reminders_sync")
+    ).one_or_none()
+    if row is not None and row.last_detail == "failed":
+        since = row.last_success or next(
+            (each.at for each in facts[views.REMINDER_ATTEMPT] if each.at is not None),
+            None,
+        )
+        stamp = (
+            render_local(since, ctx.settings.timezone)
+            if since is not None
+            else "unknown time"
+        )
+        return (
+            f"reminders not synced since {stamp}; {retries} queued retries,"
+            " pending total unavailable"
+        )
+    if row is not None and row.last_detail == "pending: current not configured":
+        return pending + ", current not configured"
+    if row is not None and row.last_detail == "completed":
+        return (
+            pending
+            + ", last sync "
+            + render_local(row.last_success, ctx.settings.timezone)
+        )
+    return pending + ", no completed sync yet"
+
+
+def _documents(facts: dict[str, list[Fact]]) -> str:
+    counts = {each.subject: each.count for each in facts[views.DOCUMENT_STATUS]}
+    text = (
+        f"documents: {counts.get('unparsed', 0)} unparsed,"
+        f" {counts.get('rejected', 0)} rejected"
+    )
+    manual = counts.get("needs_manual_entry", 0)
+    if manual:
+        text += f", {manual} need{'s' if manual == 1 else ''} manual entry"
+    gaps = sum(
+        each.count
+        for each in facts[views.BILL_GAP]
+        if each.subject is not None and bill_issuer(each.subject)
+    )
+    return text + f", {gaps} bill gaps"
+
+
+def _missing(facts: dict[str, list[Fact]]) -> str:
+    accounts = facts[views.MISSING_MONTHS]
+    total = sum(each.count for each in accounts)
+    if not total:
+        return "missing account-months: none"
+    return (
+        f"missing account-months: {total} across"
+        f" {_plural(len(accounts), 'account', 'accounts')}"
+    )
+
+
+def _sinks(ctx: FinanceContext, uow: UnitOfWork) -> str:
+    sinks = sink_state(ctx, uow, StateIn()).sinks
+    off = [each.sink for each in sinks if not each.enabled]
+    if not off:
+        return "sinks: all enabled"
+    stale = [each.sink for each in sinks if each.approval == "stale"]
+    text = "sinks off: " + " ".join(off)
+    if stale:
+        text += "; approval stale: " + " ".join(stale)
+    return text
+
+
+def _per_payee(facts: list[Fact], one: str, many: str) -> list[str]:
+    """``facts`` as one data-check part, its count and each payee's, or none."""
+    found = sorted((each.subject or "", each.count) for each in facts)
+    if not found:
+        return []
+    where = ", ".join(f"{label} {count}" for label, count in found)
+    return [_plural(sum(count for _, count in found), one, many) + f" ({where})"]
+
+
+def _data_checks(facts: dict[str, list[Fact]]) -> str | None:
+    parts: list[str] = []
+    discrepancies = sum(each.count for each in facts[views.SOURCE_DISCREPANCY])
+    if discrepancies:
+        parts.append(
+            _plural(discrepancies, "source discrepancy", "source discrepancies")
+        )
+    parts += _per_payee(
+        facts[views.DUPLICATE_BILL_MONTH],
+        "duplicate bill month",
+        "duplicate bill months",
+    )
+    parts += _per_payee(
+        facts[views.MANUAL_MISMATCH],
+        "manual bill that differs from its document",
+        "manual bills that differ from their documents",
+    )
+    parts += _per_payee(
+        facts[views.STATEMENT_CONFLICT],
+        "card statement with conflicting copies",
+        "card statements with conflicting copies",
+    )
+    parts += _per_payee(
+        facts[views.TYPED_BILL_UNJOINED],
+        "typed bill that joins no parsed bills",
+        "typed bills that join no parsed bills",
+    )
+    parts += _per_payee(
+        facts[views.INVOICE_DECISION_SUPERSEDED],
+        "invoice decision superseded by a matched line",
+        "invoice decisions superseded by matched lines",
+    )
+    parts += _per_payee(
+        facts[views.INVOICE_DECISION_REFUSED],
+        "invoice decision refused for its currency",
+        "invoice decisions refused for their currency",
+    )
+    unsettled = sorted(
+        each.subject or "" for each in facts[views.ARRANGEMENT_UNSETTLED]
+    )
+    if unsettled:
+        # ``<slug> <decision ref>``: a slug holds no space.
+        by: dict[str, list[str]] = defaultdict(list)
+        for each in facts[views.ARRANGEMENT_UNSETTLED_BY]:
+            slug, _, ref = (each.subject or "").partition(" ")
+            by[slug].append(ref)
+        parts.append(
+            _plural(len(unsettled), "paid-up arrangement", "paid-up arrangements")
+            + " kept active, its finish did not settle: "
+            + ", ".join(
+                slug + (f" (by {', '.join(sorted(by[slug]))})" if by[slug] else "")
+                for slug in unsettled
+            )
+        )
+    no_data = sorted(each.subject or "" for each in facts[views.ACCOUNT_NO_DATA])
+    if no_data:
+        parts.append(
+            _plural(len(no_data), "account", "accounts")
+            + " with no data: "
+            + ", ".join(no_data)
+        )
+    skipped = sorted(
+        (each.subject or "", each.count)
+        for each in facts[views.ARCHIVE_SKIP_IDENTIFIER]
+        if each.count
+    )
+    total = sum(count for _, count in skipped)
+    if total:
+        where = ", ".join(f"{directory} {count}" for directory, count in skipped)
+        parts.append(
+            _plural(total, "archive file", "archive files")
+            + f" skipped: file name carries an identifier, rename them ({where})"
+        )
+    return "; ".join(parts) if parts else None
+
+
+def _intake(ctx: FinanceContext) -> str | None:
+    downloads = ctx.settings.get_path(DOWNLOADS_KEY)
+    waiting = monitor_files_waiting(downloads, ctx.clock.now_utc())
+    if not waiting:
+        return None
+    return _plural(waiting, "monitor file", "monitor files") + " waiting in Downloads"
+
+
+def status(ctx: FinanceContext, uow: UnitOfWork, _data: StatusIn) -> StatusOut:
+    try:
+        with uow.savepoint():
+            facts = _facts(uow)
+    except ProgrammingError as exc:
+        if not isinstance(exc.orig, pg_errors.UndefinedTable):
+            raise
+        return StatusOut(lines=[StatusLine(line_no=1, text=_no_report_views(ctx))])
+    database = _database(ctx, facts)
+    if [each.subject for each in facts[views.SCHEMA]] != [head_revision()]:
+        return StatusOut(lines=[StatusLine(line_no=1, text=database)])
+    tick_age, stale = _tick_age(ctx, facts)
+    checks = "; ".join(part for part in (_data_checks(facts), stale) if part) or None
+    lines: list[tuple[int, str | None]] = [
+        (1, database),
+        (2, _imports(ctx, facts) + "; " + tick_age),
+        (3, _documents(facts)),
+        (4, _missing(facts)),
+        (5, _backlog(uow, facts)),
+        (6, _reminders(ctx, uow, facts)),
+        (7, _sinks(ctx, uow)),
+        (9, checks),
+        (10, _intake(ctx)),
+    ]
+    return StatusOut(
+        lines=[
+            StatusLine(line_no=number, text=text)
+            for number, text in lines
+            if text is not None
+        ]
+    )
+
+
+# --- finance.coverage.get -------------------------------------------------------------
+
+
+class CoverageIn(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # An account slug; None for every account.
+    account: str | None = None
+    year: Annotated[int, Field(ge=1900, le=2999)] | None = None
+
+
+class CoverageMonth(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    account: Annotated[str, Tiered(P)]
+    account_label: Annotated[str, Tiered(P)]
+    month: Annotated[dt.date, Tiered(P)]
+    state: Annotated[str, Tiered(P)]
+    # The reason in words ("running balance break"), or None.
+    reason: Annotated[str | None, Tiered(P)]
+
+
+class CoverageOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    months: Annotated[list[CoverageMonth], Tiered(P)]
+    # Accounts with no coverage month at all, whatever the filters.
+    no_data_accounts: Annotated[int, Tiered(P)]
+
+
+def coverage_get(
+    _ctx: FinanceContext, uow: UnitOfWork, data: CoverageIn
+) -> CoverageOut:
+    query = select(report_coverage).order_by(
+        report_coverage.c.account, report_coverage.c.month
+    )
+    if data.account is not None:
+        query = query.where(report_coverage.c.account == data.account)
+    if data.year is not None:
+        query = query.where(
+            report_coverage.c.month >= dt.date(data.year, 1, 1),
+            report_coverage.c.month <= dt.date(data.year, 12, 31),
+        )
+    months = [
+        CoverageMonth(
+            account=row.account,
+            account_label=row.account_label,
+            month=row.month,
+            state=row.state,
+            reason=row.reason,
+        )
+        for row in uow.execute(query)
+    ]
+    no_data = len(_facts(uow)[views.ACCOUNT_NO_DATA])
+    return CoverageOut(months=months, no_data_accounts=no_data)
+
+
+# --- finance.document.list ------------------------------------------------------------
+
+
+class DocumentListIn(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class DocumentRow(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    path: Annotated[str, Tiered(P)]
+    kind: Annotated[str, Tiered(P)]
+    status: Annotated[str, Tiered(P)]
+    period_start: Annotated[dt.date | None, Tiered(P)]
+    period_end: Annotated[dt.date | None, Tiered(P)]
+    official: Annotated[bool, Tiered(P)]
+    extraction: Annotated[str, Tiered(P)]
+
+
+class DocumentListOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    documents: Annotated[list[DocumentRow], Tiered(P)]
+
+
+def document_list(
+    _ctx: FinanceContext, uow: UnitOfWork, _data: DocumentListIn
+) -> DocumentListOut:
+    rows = uow.execute(select(report_document).order_by(report_document.c.path))
+    return DocumentListOut(
+        documents=[
+            DocumentRow(
+                path=row.path,
+                kind=row.kind,
+                status=row.status,
+                period_start=row.period_start,
+                period_end=row.period_end,
+                official=row.official,
+                extraction=row.extraction,
+            )
+            for row in rows
+        ]
+    )
+
+
+register(
+    OperationSpec(
+        name="finance.status.get",
+        input_model=StatusIn,
+        output_model=StatusOut,
+        handler=status,
+        safety_class=SafetyClass.READ,
+        roles=READERS,
+        connection="reader",
+        tool_name="finance_status",
+        description=(
+            "The status lines built so far, numbered as SPEC fixes them, from the"
+            " report views."
+        ),
+    )
+)
+register(
+    OperationSpec(
+        name="finance.coverage.get",
+        input_model=CoverageIn,
+        output_model=CoverageOut,
+        handler=coverage_get,
+        safety_class=SafetyClass.READ,
+        roles=READERS,
+        connection="reader",
+        tool_name="finance_coverage",
+        description=(
+            "The coverage matrix: account label, month, state and reason in words,"
+            " optionally for one account slug or one year."
+        ),
+    )
+)
+register(
+    OperationSpec(
+        name="finance.document.list",
+        input_model=DocumentListIn,
+        output_model=DocumentListOut,
+        handler=document_list,
+        safety_class=SafetyClass.READ,
+        roles=READERS,
+        connection="reader",
+        tool_name="finance_documents",
+        description=(
+            "Every registered document: path, kind, status, period, official and"
+            " extraction."
+        ),
+    )
+)

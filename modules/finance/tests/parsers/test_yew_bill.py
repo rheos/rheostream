@@ -1,0 +1,234 @@
+"""The Yew bill through ``parse_document`` (FR-3 ``bill_identity``, FR-7).
+
+A synthetic bill (layout text, every value fake) is filed into a temporary archive
+under ``yew/`` and parsed with ``parse_document``; the tests read the archived
+file as text where the real run calls pdftotext. The identity: unpaid balance plus
+current charges equals the total due.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import hashlib
+import uuid
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+from sqlalchemy import Connection, Table, func, select
+
+from rheo_finance.context import UnitOfWork
+from rheo_finance.documents.registry import document_id, file_archive
+from rheo_finance.manual.stage2 import account_id
+from rheo_finance.parsers.base import NotRecognised
+from rheo_finance.parsers.docextract_adapter import reference_bill
+from rheo_finance.parsers.registry import (
+    DOCUMENT_REJECTED,
+    Parsed,
+    parse_document,
+)
+from rheo_finance.storage.refs import format_ref
+from rheo_finance.storage.schema import document, document_line, event, statement_period
+
+from .conftest import ManualAccount, register_accounts
+
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic"
+BILL = FIXTURES / "yew_bill.txt"
+NOW = dt.datetime(2049, 2, 24, 12, 0, tzinfo=dt.UTC)
+NUMBER = "999000123"  # the fake account number the fixture prints
+TOTAL = "Yew due sum   Yew settle by Jul 19, 2049   $101.40"
+UNPAID = "   Yew prior left   $38.76\n"
+
+
+def read_as_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+class Setup:
+    def __init__(self, conn: Connection, tmp_path: Path) -> None:
+        self.conn = conn
+        self.uow = UnitOfWork(conn)
+        self.data = tmp_path / "data"
+        self.archive = tmp_path / "archive"
+        self.archive.mkdir()
+
+    def register(self, number: str = NUMBER) -> None:
+        register_accounts(
+            self.uow,
+            self.data,
+            ManualAccount("mobile", "yew line", "bill_vendor", (number,)),
+        )
+
+    def file(self, text: str) -> uuid.UUID:
+        target = self.archive / "yew" / "2049-06-28.pdf"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        data = text.encode("utf-8")
+        target.write_bytes(data)
+        file_archive(self.uow, self.archive, self.data, NOW)
+        return document_id(hashlib.sha256(data).hexdigest())
+
+    def parse(self, doc: uuid.UUID) -> Parsed:
+        return parse_document(self.uow, doc, self.archive, extract_pdf=read_as_text)
+
+    def count(self, table: Table, doc: uuid.UUID) -> int:
+        query = select(func.count()).select_from(table)
+        return int(self.conn.scalar(query.where(table.c.document_id == doc)) or 0)
+
+    def period(self, doc: uuid.UUID) -> dict[str, object]:
+        row = self.conn.execute(
+            select(statement_period).where(statement_period.c.document_id == doc)
+        ).one()
+        return dict(row._mapping)
+
+    def document_row(self, doc: uuid.UUID) -> dict[str, object]:
+        row = self.conn.execute(select(document).where(document.c.id == doc)).one()
+        return dict(row._mapping)
+
+    def rejected_reasons(self, doc: uuid.UUID) -> list[object]:
+        ref = format_ref("finance", "document", doc)
+        return [
+            data["reason"]
+            for data in self.conn.scalars(
+                select(event.c.data).where(
+                    event.c.type == DOCUMENT_REJECTED, event.c.subject_ref == ref
+                )
+            )
+        ]
+
+
+@pytest.fixture
+def setup(owner_conn: Connection, tmp_path: Path) -> Setup:
+    return Setup(owner_conn, tmp_path)
+
+
+def bill_text() -> str:
+    text = BILL.read_text(encoding="utf-8")
+    assert text.count(TOTAL) == 1 and text.count(UNPAID) == 1
+    return text
+
+
+def test_a_bill_whose_identity_holds_loads_one_tied_out_period(setup: Setup) -> None:
+    setup.register()
+    doc = setup.file(bill_text())
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
+
+    period = setup.period(doc)
+    assert period["account_id"] == account_id("mobile")
+    assert (period["control_kind"], period["tied_out"]) == ("bill_identity", True)
+    assert (period["balance_due"], period["due_date"]) == (
+        Decimal("101.40"), dt.date(2049, 7, 19),
+    )  # fmt: skip
+    # The bill prints no period: it covers its bill-date month.
+    assert (period["period_start"], period["period_end"]) == (
+        dt.date(2049, 6, 1), dt.date(2049, 6, 30),
+    )  # fmt: skip
+    assert period["currency"] == "CAD"
+    assert setup.count(document_line, doc) == 0, "a bill has no ledger lines"
+    row = setup.document_row(doc)
+    assert (row["status"], row["parser_id"], row["extraction"]) == (
+        "parsed", "yew.bill", "fixed_rule",
+    )  # fmt: skip
+    assert (row["period_start"], row["period_end"]) == (
+        dt.date(2049, 6, 1), dt.date(2049, 6, 30),
+    )  # fmt: skip
+
+
+def test_a_bill_whose_identity_fails_is_rejected_with_zero_lines(setup: Setup) -> None:
+    setup.register()
+    doc = setup.file(bill_text().replace(TOTAL, TOTAL.replace("101.40", "101.41")))
+
+    assert setup.parse(doc) == Parsed("rejected", "identity_mismatch")
+
+    assert setup.count(statement_period, doc) == 0
+    assert setup.count(document_line, doc) == 0
+    row = setup.document_row(doc)
+    assert (row["status"], row["reject_reason"]) == ("rejected", "identity_mismatch")
+    assert (row["period_start"], row["period_end"]) == (
+        dt.date(2049, 6, 1), dt.date(2049, 6, 30),
+    )  # fmt: skip
+    assert setup.rejected_reasons(doc) == ["identity_mismatch"]
+
+
+def test_a_bill_printing_no_identity_loads_as_printed(setup: Setup) -> None:
+    """No unpaid balance line: nothing to check, so the printed total stands, and
+    the period is not tied out."""
+    setup.register()
+    doc = setup.file(bill_text().replace(UNPAID, ""))
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
+
+    period = setup.period(doc)
+    assert (period["control_kind"], period["tied_out"]) == ("bill_identity", False)
+    assert period["balance_due"] == Decimal("101.40")
+    assert setup.rejected_reasons(doc) == []
+
+
+def test_a_bill_for_an_unregistered_account_is_rejected(setup: Setup) -> None:
+    setup.register("999000456")
+    doc = setup.file(bill_text())
+
+    assert setup.parse(doc) == Parsed("rejected", "unknown_account")
+    assert setup.count(statement_period, doc) == 0
+    assert setup.rejected_reasons(doc) == ["unknown_account"]
+
+
+def test_a_bill_whose_last_four_two_accounts_hold_is_ambiguous(setup: Setup) -> None:
+    register_accounts(
+        setup.uow,
+        setup.data,
+        ManualAccount("mobile", "yew line", "bill_vendor", (NUMBER,)),
+        ManualAccount("home", "yew line", "bill_vendor", ("999100123",)),
+    )
+    doc = setup.file(bill_text())
+
+    assert setup.parse(doc) == Parsed("rejected", "ambiguous_account")
+    assert setup.count(statement_period, doc) == 0
+    assert setup.rejected_reasons(doc) == ["ambiguous_account"]
+
+
+def test_a_mixed_group_never_puts_the_bill_on_the_account_left_standing(
+    setup: Setup,
+) -> None:
+    """The bill is the home account's. A masked row of the mobile account beside two
+    full numbers ending alike refuses all three, so the bill is unknown, never loaded
+    onto the mobile account that refusing only the masked pair would keep."""
+    register_accounts(
+        setup.uow,
+        setup.data,
+        ManualAccount("mobile", "yew line", "bill_vendor", ("999100123", "XXXXX0123")),
+        ManualAccount("home", "yew line", "bill_vendor", (NUMBER, "999000456")),
+    )
+    doc = setup.file(bill_text())
+
+    assert setup.parse(doc) == Parsed("rejected", "unknown_account")
+    assert setup.count(statement_period, doc) == 0
+
+
+def test_text_that_is_not_a_bill_is_unparsed(setup: Setup) -> None:
+    setup.register()
+    doc = setup.file("A PAGE OF TEXT THAT IS NOT A BILL\n" * 9)
+
+    assert setup.parse(doc) == Parsed("unparsed", "not_recognised")
+    assert setup.count(statement_period, doc) == 0
+
+
+def test_docextract_still_reads_the_fixture_bill() -> None:
+    """An upstream change that stops docextract reading bills (so every bill would
+    come back unparsed) fails here, at the adapter, not only in parse_document."""
+    bill = reference_bill(bill_text())
+    assert (bill["bill_date"], bill["due_date"]) == ("2049-06-28", "2049-07-19")
+    assert bill["total_due"] is not None and bill["unpaid_balance"] is not None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "A PAGE OF TEXT THAT IS NOT A BILL\n",  # no bill-date line: AttributeError
+        "Yew dated   June 28, 2049\n",  # no pay-by date: AttributeError
+        "Yew dated   Someday 2, 2049\nYew settle by   Someday 23, 2049\n",
+    ],
+)
+def test_the_adapter_turns_docextract_failures_into_not_recognised(text: str) -> None:
+    with pytest.raises(NotRecognised):
+        reference_bill(text)

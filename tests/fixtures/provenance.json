@@ -193,5 +193,160 @@
     "path": "tests/fixtures/leads-current-handoff.json",
     "origin": "synthetic",
     "how": "hand-authored Leads to Current handoff acceptance authority: fixture labels, evidence modes, automated test references and seed/recipe steps over an invented Northwind client and Avery Chen contact; no real people, accounts or workspace data"
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/MANIFEST.toml",
+    "origin": "synthetic",
+    "how": "the finance module's own list of its synthetic fixtures, one description per file, read by its private-data guard; no data"
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/alder_chequing_hints.csv",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: headerless Alder chequing CSV export, oldest first, one continuous run: a received transfer with a sender name, the chequing leg of a Neem card payment and a plain purchase, in an invented padded sub-field wording; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/alder_chequing_jump.csv",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: headerless Alder chequing CSV export, newest first, one fake account identifier, with a deliberate running-balance jump (rows missing between two dates); fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/alder_statement_older.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: alder statement layout text in an invented layout: a chequing account under one name, a nicknamed (SPARE JAR) account closed in the period, a two-page account; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/alder_statement_newer.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: alder statement layout text: the same chequing number under another name, an overdrawn spell and three fee types; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/alder_statement_split.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: alder statement layout text, one chequing account with a printed line holding a withdrawal, a deposit and the balance; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/alder_neem_export.csv",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: headerless Alder Neem CSV export, newest first, in an invented six-column order: a masked card, a posting date, separate debit and credit columns; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/alder_neem_statement.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: alder Neem statement layout text, a period crossing the new year, two foreign purchases with their foreign-amount lines, a payment, a refund, a fee and interest, right-column text after amounts; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/alder_neem_statement_no_minimum.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: alder Neem statement layout text that prints no minimum payment; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/alder_neem_transactions.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: alder Neem transaction download layout text (signed amounts, descriptions running on to a second line, a page footer); fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/olive_statement_older.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: olive statement, version 2 (invented labels printed whole): a chequing section with a wrapped cash deposit, a fee, a sent transfer to a payee, a service cost and interest, and a second savings section; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/olive_statement_current.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: olive statement, version 1 (invented labels, a title marked new): a chequing section across two pages with a sent transfer, its reversal by the sender with no payee printed, the same debit again, a wrapped payer name, fees and interest, and a second savings section with no lines; invented dates and amounts."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/card_2038_export_a.csv",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: synthetic card export (control none) for one month that overlaps card_2038_export_b.csv, an equal-rank pair; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/card_2038_export_b.csv",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: synthetic card export (control none) for one month that words one purchase of card_2038_export_a.csv differently; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/card_2039_download.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: synthetic card transaction download (filed as a PDF) overlapping that export, worded and dated differently on some lines; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/card_2039_export.csv",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: synthetic card export (control none) over three months, with two identical same-day lines; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/card_2041_download.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: synthetic card transaction download (filed as a PDF) overlapping two statements, with one line no statement has, and running past the last statement; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/card_statement_2041_05.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: synthetic card statement (summary control) for one period; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/card_statement_2041_06.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: synthetic card statement (summary control) for the next period; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/card_statement_2041_07.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: synthetic card statement (summary control) for the period after the download ends; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/sumac_statement.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: sumac statement layout text: summary, payment information, payments, purchases with a refund netted into new purchases, interest; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/boxwood_bill.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: invented Boxwood energy bill layout text: two payments, a balance forward and current charges whose identity gives the total amount due, and a payment stub; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/yew_bill.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: yew bill layout text in an invented layout whose unpaid balance plus current charges equals the total due; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/fig_history.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: fig transaction history layout text: a Juniper payout in, a USD to CAD conversion with its fee, a CAD card purchase, a USD card purchase from the CAD balance, two sent transfers with a fee (one whose fee exceeds what arrived) and a zero card check; no balance printed; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/fig_statement.csv",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: fig statement CSV in an invented layout, oldest first: the transactions of fig_history.txt (a Juniper payout in, a USD to CAD conversion with its fee, two card purchases, two sent transfers with a fee, a zero card check) with a running balance per currency; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/hazel_activity.csv",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: hazel activity CSV in an invented layout: the November rows of hazel_activity.txt (the conversion pair, a bank deposit, an automatic payment, a received payment with a fee), an October purchase before the statement, a held authorization and a balance per currency; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/hazel_activity.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: hazel activity statement layout text: a CAD and USD balance summary, a bank deposit funding an automatic payment, an exchange pair across the two currency sections, an automatic payment and a received payment with a fee; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/invoice_received.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: invoice received layout text in an invented layout: two items, a partial payment, the amount due; fake values and names."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/juniper_balance.csv",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: juniper balance history CSV in an invented layout, oldest first, no balance column: two payouts with the charges (and one refund) they pay out, a fee per charge, a fee on the first payout itself, and a charge not yet paid out; invented group ids, fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/patient_receipt.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: patient receipt layout text in an invented layout: two payments that sum to the total payments, then a treatment table read past; fake values and names."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/statement_layout.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: tiny bank statement layout with fake values, so the check has a fixture to pass."
   }
 ]

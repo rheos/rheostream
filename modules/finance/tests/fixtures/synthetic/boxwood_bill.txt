@@ -1,0 +1,30 @@
+   Boxwood   Page   1 of 2
+   Sumd rsitam tcon
+   Account number   9990001234
+   Bill date   January 26, 2029
+   Billing period   Dec 19, 2028 to Jan 22, 2029   35 days
+
+   SAMPLE CUSTOMER
+   999 SAMPLE RD
+   SAMPLETOWN ZZ Z0Z 9Z9
+
+   Account summary
+   Previous bill amount   $313.70
+   Box paid in Dec 31, 2028   -$114.66
+   Box paid in Jan 13, 2029   -$38.22
+   Balance forward   $160.82
+   Current charges   $333.84
+   Box total owing   $494.66
+   Sum rsit   February 16, 2029
+
+   Sumdolo rsitame tconse
+   Sumdo rsitam   31 days   $59.73
+   Sumdol rsitam   Band A   $271.14
+   GST   $2.97
+   Charges this bill   $333.84
+
+   Page   2 of 2
+   Sumdol rsitam tcon teturad ipis geli ddoeius
+   Account number   9990001234
+   Box stub owing   $494.66
+   Due date   February 16, 2029

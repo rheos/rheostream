@@ -1,0 +1,71 @@
+   Olive Ledger Sheet (new)
+   100 Sample St., PO Box 100, Anytown, ZZ Z0Z 0Z0
+
+   Olive Dated   October 30, 2054
+
+   Olive ref 99900001
+
+   Page   1 of 2
+
+   SAMPLE A HOLDER
+   PO BOX 1
+   ANYTOWN ZZ Z0Z 0Z0
+
+   Olive totals
+
+   CAD   holdings   USD   holdings   Borrowing
+   Everyday   $6,397.90   Everyday   $0.00   Home loan   $0.00
+   Reserve   $0.00   Borrowed   $0.00
+   Nest   $44.85
+
+   Olive notes
+   Sample message text for the synthetic layout.
+
+OLIVE EVERYDAY
+
+Everyday holders
+Olive Acct No 999000000101   SAMPLE A HOLDER
+Olive On   Detail   Outgo   Income   Running
+01 Oct 54   Olive Start   12,744.09
+04 Oct 54   Mail Send sent to: Sample Payee   6,588.49   6,155.60
+09 Oct 54   Mail Send out undone by sender   6,588.49   12,744.09
+10 Oct 54   Mail Send sent to: Sample Payee   6,588.49   6,155.60
+18 Oct 54   08-15 Mail Send came from: SAMPLE   259.10   6,414.70
+   PAYER
+   ~ page turns ~
+
+   www.example.test
+
+   Olive Dated   October 30, 2054
+
+   Olive ref 99900001
+
+   Page   2 of 2
+
+OLIVE EVERYDAY
+
+Everyday holders
+Olive Acct No 999000000101   SAMPLE A HOLDER
+Olive On   Detail   Outgo   Income   Running
+28 Oct 54   Olive Service Cost   14.95   6,399.75
+28 Oct 54   Olive Monthly Fee   5.98   6,393.77
+28 Oct 54   Olive Interest Paid   4.13   6,397.90
+
+Olive Out And In Totals   $5,820.29   $1,033.75
+   -
+
+OLIVE NEST
+Nest part (Olive nest) holders
+Olive Acct No 999000000102   SAMPLE A HOLDER
+Olive On   Detail   Outgo   Income   Running
+01 Oct 54   Olive Start   44.85
+_
+
+Olive Out And In Totals   $0.00   $0.00
+
+   Olive branch
+   Sample Branch
+   100 Sample St.
+   Anytown, ZZ
+
+   ~ the end ~

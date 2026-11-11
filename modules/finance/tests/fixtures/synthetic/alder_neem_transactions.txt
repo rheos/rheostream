@@ -1,0 +1,28 @@
+   Sumdolorsi on Rsi 99, 9999
+
+Neem activity for Sample Neem Basic card
+Sep 8, 2049 to Oct 28, 2049
+SAMPLE CARDHOLDER
+
+Line size   $3,908.80
+Line left   $2,931.60
+Last paid   $586.32
+Sumd rsitame tcon   Oct 11, 2049
+Owing now   $977.20
+
+SAMPLE CARDHOLDER   XXXX-9991
+
+Neem When   Neem Posted On   Neem What   Neem Unit   Neem Out   Neem In
+2049-10-15   2049-10-17   SAMPLE AI SUBSCRIPTION   CAD   $981.77
+   SAMPLE.TEST ZZ 99901
+
+2049-10-11   2049-10-11   CARD PAID IN --   CAD   -$586.32
+   NOTED
+
+2049-10-07   2049-10-08   SAMPLE BOOKSHOP SAMPLE CITY ZZ   CAD   -$24.43
+
+2049-09-24   2049-09-25   SAMPLE GROCER   CAD   $56.58
+   SAMPLE CITY ZZ 99902
+
+2049-09-19   2049-09-20   OVERLIMIT FEE   CAD   $86.21
+   1 of 1   Sumdol Rsitam Tcons
