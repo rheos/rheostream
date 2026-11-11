@@ -117,8 +117,13 @@ def init_data(data: Path | None = None) -> InitDataResult:
 
 def _cmd_init_data(_args: argparse.Namespace) -> int:
     try:
+        if os.environ.get("FINANCE_WORKSPACE_ID", "").strip():
+            # The workspace's layout, under core's data root.
+            from rheo_finance import composition
+
+            composition.bind_workspace_layout()
         result = init_data()
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, db.DbError) as exc:
         emit_error(Report.from_message(f"finance init-data: failed. {exc}"))
         return 1
     if result.created:

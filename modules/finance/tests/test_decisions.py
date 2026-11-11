@@ -767,17 +767,33 @@ def test_cli_usage_errors_exit_two(
     assert capsys.readouterr().out == ""
 
 
-def test_the_production_context_reads_db_env_and_opens_nothing(
+@pytest.mark.parametrize("value", [None, "", "not-a-uuid"])
+def test_the_production_context_needs_its_workspace_before_anything_opens(
+    monkeypatch: pytest.MonkeyPatch, value: str | None
+) -> None:
+    if value is None:
+        monkeypatch.delenv("FINANCE_WORKSPACE_ID", raising=False)
+    else:
+        monkeypatch.setenv("FINANCE_WORKSPACE_ID", value)
+    with pytest.raises(db.LayoutRefused, match="finance_workspace_not_set"):
+        composition.build_context(Role.OWNER)
+
+
+def test_the_source_context_reads_a_private_dsn_file_and_opens_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (tmp_path / db.ENV_FILE_NAME).write_text(
-        f"{db.OWNER_DSN_KEY}=postgresql://finance_owner:pw@127.0.0.1:1/finance\n"
-        f"{db.READER_DSN_KEY}=postgresql://finance_reader:pw@127.0.0.1:1/finance\n",
+    dsn_file = tmp_path / "source.env"
+    dsn_file.write_text(
+        f"{db.OWNER_DSN_KEY}=postgresql://finance_owner:pw@127.0.0.1:1/finance\n",
         encoding="utf-8",
     )
+    dsn_file.chmod(0o600)
     monkeypatch.setenv("FINANCE_DATA_DIR", str(tmp_path))
-    ctx = composition.build_context(Role.OWNER)
+    ctx = composition.build_source_context(dsn_file)
     assert ctx.role is Role.OWNER
     assert ctx.paths.data == tmp_path
     assert ctx._databases is not None
     assert ctx.snapshot_provider is txn_snapshot
+    dsn_file.chmod(0o644)
+    with pytest.raises(db.LayoutRefused, match="finance_private_file_refused"):
+        composition.build_source_context(dsn_file)

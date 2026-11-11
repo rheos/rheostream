@@ -2,9 +2,11 @@
 
 - No foreign key crosses the boundary of schema ``finance``, in either direction, in
   the migrated database; and none in the ``MetaData`` names a table outside it.
-- No module imports another module's package (``rheo_core``, ``rheo_contracts``,
-  ``rheo_stream``, ``rheostream`` or any other ``rheo*`` package but ``rheo_finance``),
-  and ``pyproject.toml`` and ``uv.lock`` name none.
+- No module imports another module's package (``rheo_stream``, ``rheostream``,
+  ``rheo_current`` or any other ``rheo*`` package but ``rheo_finance``), except that
+  ``rheo_finance.wiring`` (the manifest, the tick job, the composition over core) may
+  import ``rheo_core`` and ``rheo_contracts``; and ``pyproject.toml`` and ``uv.lock``
+  name no ``rheo*`` distribution but ``rheo-core`` and ``rheo-contracts``.
 - An external reference is a plain text column: every ``*_ref`` column is text with no
   foreign key.
 """
@@ -45,6 +47,10 @@ from .source_tree import (
 SCHEMA = "finance"
 OWN_PACKAGE = "rheo_finance"
 OWN_DISTRIBUTION = "rheo-finance"
+# Core, imported by the wiring package alone, and its contracts.
+CORE_PACKAGES = frozenset({"rheo_core", "rheo_contracts"})
+CORE_DISTRIBUTIONS = frozenset({"rheo-core", "rheo-contracts"})
+WIRING = "rheo_finance.wiring"
 
 
 def crossing_foreign_keys(conn: Connection) -> list[str]:
@@ -92,6 +98,10 @@ def is_other_module(name: str) -> bool:
     return top.startswith("rheo") and top != OWN_PACKAGE
 
 
+def in_wiring(module_name: str) -> bool:
+    return module_name == WIRING or module_name.startswith(f"{WIRING}.")
+
+
 def foreign_module_imports(*roots: Path) -> list[str]:
     return sorted(
         {
@@ -100,6 +110,9 @@ def foreign_module_imports(*roots: Path) -> list[str]:
             for module in modules(root)
             for each in imports(module)
             if is_other_module(each.name)
+            and not (
+                in_wiring(module.name) and each.name.split(".")[0] in CORE_PACKAGES
+            )
         }
     )
 
@@ -110,7 +123,9 @@ def foreign_distributions(
     return sorted(
         name
         for name in declared_packages(pyproject, lock)
-        if name.startswith("rheo") and name != OWN_DISTRIBUTION
+        if name.startswith("rheo")
+        and name != OWN_DISTRIBUTION
+        and name not in CORE_DISTRIBUTIONS
     )
 
 
@@ -139,8 +154,16 @@ def test_no_module_imports_another_module() -> None:
 
 def test_no_other_module_is_a_dependency() -> None:
     assert foreign_distributions() == []
-    # The control: the package itself is in the lock and is not counted.
-    assert OWN_DISTRIBUTION in declared_packages()
+    # The control: the package itself and core are in the lock and are not counted.
+    assert {OWN_DISTRIBUTION, *CORE_DISTRIBUTIONS} <= set(declared_packages())
+
+
+def test_the_wiring_package_really_imports_core() -> None:
+    # The control: the allowance is used, so the scan above is not blind to it.
+    wiring = [m for m in modules(PACKAGE) if in_wiring(m.name)]
+    assert {
+        each.name.split(".")[0] for m in wiring for each in imports(m)
+    } >= CORE_PACKAGES
 
 
 # --- each check fails on a planted violation ------------------------------------------
@@ -210,17 +233,25 @@ def test_a_planted_import_of_another_module_is_found(tmp_path: Path) -> None:
         "import rheo_core\nfrom rheo_contracts.party import Party\n"
         "def later():\n    import rheostream.modules\n",
     )
+    # Core is allowed in the wiring package, and only there; no other module is.
+    plant(
+        root,
+        "wiring/planted.py",
+        "import rheo_core\ndef later():\n    import rheo_current\n",
+    )
     assert foreign_module_imports(root) == [
         "rheo_finance.planted: rheo_contracts",
         "rheo_finance.planted: rheo_core",
         "rheo_finance.planted: rheostream",
+        "rheo_finance.wiring.planted: rheo_current",
     ]
 
 
 def test_a_planted_dependency_on_another_module_is_found(tmp_path: Path) -> None:
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
-        '[project]\nname = "rheo-finance"\ndependencies = ["rheo_core>=1"]\n',
+        '[project]\nname = "rheo-finance"\n'
+        'dependencies = ["rheo_core>=1", "rheo-leads"]\n',
         encoding="utf-8",
     )
     lock = tmp_path / "uv.lock"
@@ -232,4 +263,4 @@ def test_a_planted_dependency_on_another_module_is_found(tmp_path: Path) -> None
         '[[package]]\nname = "rheo-leads"\nversion = "1"\n',
         encoding="utf-8",
     )
-    assert foreign_distributions(pyproject, lock) == ["rheo-core", "rheo-stream"]
+    assert foreign_distributions(pyproject, lock) == ["rheo-leads", "rheo-stream"]

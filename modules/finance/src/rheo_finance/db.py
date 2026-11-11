@@ -347,13 +347,6 @@ def parse_env_text(text: str) -> dict[str, str]:
     return values
 
 
-def _env_value(values: dict[str, str], key: str, path: Path) -> str:
-    value = values.get(key, "")
-    if not value:
-        raise DbError(f"{path} has no value for {key}")
-    return value
-
-
 def to_sqlalchemy_url(dsn: str, database: str | None = None) -> URL:
     """A libpq URI as a SQLAlchemy URL on psycopg 3, optionally for another database."""
     from sqlalchemy.engine import make_url
@@ -362,20 +355,6 @@ def to_sqlalchemy_url(dsn: str, database: str | None = None) -> URL:
     if database is not None:
         url = url.set(database=database)
     return url
-
-
-def owner_url(database: str | None = None) -> URL:
-    path = env_file_path()
-    return to_sqlalchemy_url(
-        _env_value(read_env_file(path), OWNER_DSN_KEY, path), database
-    )
-
-
-def reader_url(database: str | None = None) -> URL:
-    path = env_file_path()
-    return to_sqlalchemy_url(
-        _env_value(read_env_file(path), READER_DSN_KEY, path), database
-    )
 
 
 # --- an unreachable server -----------------------------------------------------------

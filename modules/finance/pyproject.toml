@@ -9,15 +9,24 @@ requires-python = ">=3.12,<3.13"
 # resolves from outside the workspace's index. The bounds match `rheo-core`'s, so one
 # version of each resolves for both.
 dependencies = [
+    "rheo-core",
+    "rheo-contracts",
     "sqlalchemy>=2.1,<2.2",
     "psycopg[binary]>=3.3.6,<4",
     "alembic>=1.20.0,<2",
     "pydantic>=2,<3",
 ]
 
-# No `rheo.modules` entry point and no console script yet: the manifest, the role
-# switching and the composition over core land together in the wiring change, so
-# nothing loads or runs this distribution until then.
+# Discovery is not loading: core loads only the ids in `modules.installed`.
+[project.entry-points."rheo.modules"]
+finance = "rheo_finance:MANIFEST"
+
+[project.scripts]
+finance = "rheo_finance.cli.main:main"
+
+[tool.uv.sources]
+rheo-core = { workspace = true }
+rheo-contracts = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

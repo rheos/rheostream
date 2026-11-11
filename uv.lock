@@ -1243,6 +1243,8 @@ dependencies = [
     { name = "alembic" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
+    { name = "rheo-contracts" },
+    { name = "rheo-core" },
     { name = "sqlalchemy" },
 ]
 
@@ -1251,6 +1253,8 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.20.0,<2" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6,<4" },
     { name = "pydantic", specifier = ">=2,<3" },
+    { name = "rheo-contracts", editable = "packages/contracts" },
+    { name = "rheo-core", editable = "packages/core" },
     { name = "sqlalchemy", specifier = ">=2.1,<2.2" },
 ]
 
