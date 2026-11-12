@@ -32,17 +32,25 @@ parsers.
    frozen chain on core's connection; `migrations/env.py` makes the two NOLOGIN roles,
    `finance_owner` and `finance_reader`, and runs every revision as the owner.
 2. Set `FINANCE_WORKSPACE_ID` (the workspace's UUID, not a secret) for the `finance`
-   command, and run `finance init-data` once. It creates the layout under the
-   workspace's uploads directory, mode 0700:
-   `<data root>/workspaces/<id>/uploads/finance/{data,archive,inbox,keys}`. Nothing
-   else creates these directories, so a missing volume refuses
-   (`finance_layout_missing`) instead of looking like an empty archive.
-3. Put the settings file in `data/`. The archive and the downloads inbox are the
-   layout's; a settings file that sets either is refused. A credential file must sit in
-   `keys/`, mode 0600; secrets are files there, never deployment variables.
-4. Move the state of an old standalone ledger with `finance state export --out DIR
-   --source-dsn-file FILE` (FILE: a 0600 env file with `FINANCE_OWNER_DSN`), then
-   `finance state import --from DIR` and `finance rebuild` on the workspace.
+   command, and run `finance init-data` once; from a laptop, `finance remote exec --
+   init-data` sets the variable itself. It creates the layout under the workspace's
+   uploads directory, mode 0700:
+   `<data root>/workspaces/<id>/uploads/finance/{data,archive,inbox,keys}`, with a
+   commented settings template and header-only manual files. Nothing else creates
+   these directories, so a missing volume refuses (`finance_layout_missing`) instead
+   of looking like an empty archive.
+3. Export an old standalone ledger's state on the laptop with `finance state export
+   --out DIR --source-dsn-file FILE` (FILE: a 0600 env file with `FINANCE_OWNER_DSN`),
+   then push the settings, the manual files, the archive and the export in one go:
+   `finance remote push --replace --data OLD_DATA_DIR --archive ARCHIVE_DIR --state
+   DIR`, adding `--keys KEYS_DIR` when the settings name key files. `--replace`
+   replaces init-data's templates with your own files. The archive and the downloads
+   inbox are the layout's; a settings file that sets either is refused, so remove
+   those keys before pushing. A credential file sits in `keys/`, mode 0600; secrets
+   are files there, never deployment variables.
+4. Load the pushed export and rebuild: `finance remote exec -- state import --pushed`,
+   then `finance remote exec -- rebuild`. On the server itself, `finance state import
+   --from DIR` reads an export from any directory.
 
 ### Core settings
 
@@ -69,6 +77,63 @@ GRANT finance_owner, finance_reader TO <application role> WITH INHERIT TRUE, SET
 ```
 
 Install then reuses them; without them it refuses `finance_roles_unavailable`.
+
+## Working from a laptop
+
+The `finance` command on a laptop reaches the module in the worker container over
+ssh and `docker exec` (ADR-0026). It needs a config file outside the repository,
+readable by its owner alone (mode 0600, not a link), named by `--config FILE` or
+`$FINANCE_REMOTE_CONFIG`; there is no default path:
+
+```toml
+destination = "finance-host"          # an ssh_config Host alias, or ops@finance.example.test
+compose_project = "sample-project"    # the worker's com.docker.compose.project label
+compose_service = "worker"            # its com.docker.compose.service label
+workspace_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"  # passed as FINANCE_WORKSPACE_ID
+docker = ["docker"]                   # optional, e.g. ["sudo", "-n", "docker"]
+```
+
+Each command finds the one running container with both labels, then runs `finance`
+in it. The remote account's login shell must be sh-compatible.
+
+- `finance remote push` copies files into the layout. `--archive DIR` and `--inbox
+  DIR` take every regular file, recursively. `--data DIR` takes `settings.toml`,
+  `identities.toml` and `manual/` only, never `db.env`, `dumps/` or anything else
+  beside them. `--state DIR` takes a `finance state export` directory that reads back
+  whole, into `data/transfer`. `--keys DIR` takes the top-level files, each readable
+  by its owner alone, written 0600; keys go only with this flag. Hidden files and
+  links are skipped and counted.
+- `finance remote pull --into DIR` copies `data/packs` into an existing directory.
+- `finance remote exec -- ARGS` runs `finance ARGS` in the container with your
+  terminal, and returns its status.
+
+Nothing on the laptop is changed by a push, and nothing in the container by a pull.
+Each file lands atomically: it is staged under a temporary name, then linked into
+place, so no final name ever holds part of a file. A transfer cut, killed or refused
+before the commit step writes nothing. A refusal during the commit step, whatever its
+code, keeps the files already linked and says how many: `refused. target_appeared (3
+files written before it).` When ssh or the reply fails after the stream was sent, the
+outcome is not known and the message does not say "Nothing was written."
+An existing file with the same bytes is skipped; one with different bytes refuses
+the whole push before anything is written (`target_differs`). `--replace` replaces
+only `data/settings.toml`, `data/identities.toml` and `data/manual/**`; statements,
+inbox files, keys and transfer files are never replaced (give a new key a new name),
+and a pull never replaces a file.
+
+Messages are a code and counts, never a host, path or file name: for example
+`finance remote push: 12 new, 3 identical, 1 replaced, 2 skipped.` or `finance remote
+push: refused. target_differs (2 files). Nothing was written.` The codes are
+`remote_config_not_set`, `remote_config_refused`, `ssh_not_found`, `ssh_failed`,
+`ssh_timeout`, `container_not_found`, `container_ambiguous`, `remote_reply_invalid`,
+`remote_failed`, `argument_refused`, `into_refused`, `source_missing`,
+`source_unreadable`, `source_not_regular`, `source_changed`, `name_refused`,
+`key_mode_refused`, `state_export_invalid`, `nothing_to_push`, `packs_missing`,
+`io_failed`, the receiver's `frame_invalid`, `stream_truncated`, `hash_mismatch`,
+`staging_refused`, `staging_busy`, `staging_cross_device`, `target_outside_layout`,
+`target_not_regular`, `target_differs` and `target_appeared`, and the layout's
+`finance_layout_missing`, `finance_workspace_not_set`,
+`finance_workspace_unavailable` and `finance_module_not_enabled`. Push and pull do not
+show ssh's own diagnostics: use `exec` or plain ssh to see why a connection failed.
 
 ## Principles
 

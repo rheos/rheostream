@@ -35,7 +35,10 @@ INTERACTIVE = (
     "rheo_finance.cli.approve",
     "rheo_finance.cli.bulk",
     "rheo_finance.cli.alias",
+    # finance remote (ADR-0026): the laptop's ssh commands and their server halves.
+    "rheo_finance.cli.remote",
 )
+SSH = "rheo_finance.remote.ssh"
 # The packages named by Key decision 14; the test covers every module regardless.
 FORBIDDEN_PACKAGES = (
     "jobs", "sinks", "model", "mail", "rates", "connectors", "features",
@@ -103,6 +106,27 @@ def test_only_cli_main_imports_an_interactive_command(target: str) -> None:
 
 def test_nothing_imports_cli_main() -> None:
     assert importers(MAIN) == set()
+
+
+def test_only_cli_remote_opens_ssh() -> None:
+    # No job, sink or model step can reach the ssh hop: its one importer is the
+    # command module, which only cli.main imports.
+    assert importers(SSH) == {"rheo_finance.cli.remote"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from rheo_finance.remote import ssh\n",
+        "from rheo_finance.remote.ssh import push\n",
+        "from ..remote import ssh\n",
+        "import importlib\nimportlib.import_module('rheo_finance.remote.ssh')\n",
+    ],
+)
+def test_the_scan_finds_a_planted_ssh_importer(source: str, tmp_path: Path) -> None:
+    path = tmp_path / "x.py"
+    path.write_text(source, encoding="utf-8")
+    assert SSH in imported_names("rheo_finance.jobs.x", path)
 
 
 def test_the_forbidden_packages_hold_no_importer() -> None:

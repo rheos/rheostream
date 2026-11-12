@@ -1,5 +1,6 @@
 """``finance state export`` and ``import`` files (L12): modes, a non-empty ``--out``,
-and a changed byte or count refused before anything is dispatched.
+and a changed byte or count refused before anything is dispatched. ``import
+--pushed`` reads the bound layout's ``data/transfer`` after binding it.
 
 No database: ``composition`` and ``operations.dispatch`` are replaced by fakes.
 """
@@ -14,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from rheo_finance import composition, operations
+from rheo_finance import composition, db, operations
 from rheo_finance.cli import state as state_cli
 from rheo_finance.cli.main import main
 from rheo_finance.state.transfer import ExportOut, ImportOut, TableCount, TableState
@@ -214,6 +215,59 @@ def test_export_refuses_a_non_empty_out_before_any_dispatch(
     assert "out_not_empty" in capsys.readouterr().err
     with pytest.raises(state_cli.StateFilesRefused, match="out_not_empty"):
         state_cli.write_export(out, schema_head="h", derived_digest="d", tables=[])
+
+
+def test_import_pushed_reads_the_bound_layouts_transfer_after_binding_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    layout = db.layout_under(tmp_path / "uploads")
+    layout.data.mkdir(parents=True)
+    state_cli.write_export(
+        layout.data / "transfer",
+        schema_head="head-synthetic",
+        derived_digest="0" * 64,
+        tables=list(LINES.items()),
+    )
+    tokens: list[db.LayoutToken] = []
+    calls: list[str] = []
+
+    def build(_role: object) -> object:
+        calls.append("build_context")
+        tokens.append(db.use_layout(layout))
+        return object()
+
+    def dispatch(name: str, payload: Any, _role: object, *, ctx: object) -> Any:
+        calls.append(name)
+        return ImportOut(
+            tables=tuple(
+                TableCount(name=each["name"], rows=len(each["lines"]))
+                for each in payload["tables"]
+            )
+        )
+
+    monkeypatch.setattr(composition, "build_context", build)
+    monkeypatch.setattr(operations, "dispatch", dispatch)
+    try:
+        assert main(["state", "import", "--pushed"]) == 0
+    finally:
+        for token in reversed(tokens):
+            db.release_layout(token)
+    assert calls == ["build_context", "finance.state.import"]
+    assert "2 tables, 2 rows" in capsys.readouterr().out
+
+
+def test_import_takes_one_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(composition, "build_context", _refuse)
+    out = written(tmp_path)
+    assert main(["state", "import", "--pushed", "--from", str(out)]) == 2
+    assert main(["state", "import"]) == 2
+    assert "one of the arguments --from --pushed is required" in capsys.readouterr().err
 
 
 def test_export_then_import_through_the_commands(

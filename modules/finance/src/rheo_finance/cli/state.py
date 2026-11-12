@@ -9,6 +9,9 @@ and refuses ``manifest_mismatch`` before anything is dispatched, and
 included), a directory component that is not a directory, a file that is not a regular
 file, or a file that fails once opened; ``finance rebuild`` follows it.
 
+``import --pushed`` reads ``<bound layout>/data/transfer``, where ``finance remote
+push --state`` puts an export, after binding the layout.
+
 By default both run on the workspace's own database (``composition.build_context``).
 ``--source-dsn-file`` (export only) reads an old standalone ledger through a private
 DSN file instead. Output is counts and hashes, never a row.
@@ -27,13 +30,19 @@ import re
 import stat
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from rheo_finance.render import Report, emit, emit_error
+
+if TYPE_CHECKING:
+    from rheo_finance.context import FinanceContext
 
 FORMAT: Final = "finance-state/1"
 MANIFEST_NAME: Final = "manifest.json"
 STATE_DIR: Final = "state"
+# Under the bound layout's ``data``: where ``finance remote push --state`` puts an
+# export for ``finance state import --pushed``.
+TRANSFER_DIR: Final = "transfer"
 TABLE_NAME: Final = re.compile(r"[a-z][a-z0-9_]{0,62}")
 DIR_MODE: Final = 0o700
 FILE_MODE: Final = 0o600
@@ -273,12 +282,27 @@ def _cmd_import(args: argparse.Namespace) -> int:
     from rheo_finance.state.transfer import ImportOut
 
     label = "finance state import"
+    ctx: FinanceContext | None = None
+    if args.pushed:
+        # ``finance remote push --state`` put the export in the bound layout, whose
+        # path only the container knows: bind it first, then read.
+        from rheo_finance import db
+
+        ctx = composition.build_context(Role.OWNER)
+        layout = db.bound_layout()
+        if layout is None:
+            emit_error(Report([f"{label}: refused. finance_layout_missing"]))
+            return 1
+        source = layout.data / TRANSFER_DIR
+    else:
+        source = Path(args.from_dir)
     try:
-        head, tables = read_export(Path(args.from_dir))
+        head, tables = read_export(source)
     except StateFilesRefused as exc:
         emit_error(Report([f"{label}: refused. {exc}"]))
         return 1
-    ctx = composition.build_context(Role.OWNER)
+    if ctx is None:
+        ctx = composition.build_context(Role.OWNER)
     payload = {
         "schema_head": head,
         "tables": [{"name": name, "lines": list(lines)} for name, lines in tables],
@@ -315,5 +339,11 @@ def add_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     export.set_defaults(handler=_cmd_export)
     load = sub.add_parser("import", help="load an export into an empty ledger")
-    load.add_argument("--from", dest="from_dir", required=True)
+    source = load.add_mutually_exclusive_group(required=True)
+    source.add_argument("--from", dest="from_dir", help="an export directory")
+    source.add_argument(
+        "--pushed",
+        action="store_true",
+        help="the export finance remote push put in data/transfer",
+    )
     load.set_defaults(handler=_cmd_import)
