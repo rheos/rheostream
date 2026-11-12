@@ -95,6 +95,8 @@ def _run(
     from rheo_finance.wiring.current import bind_reminders
     from rheo_finance.wiring.model import runtime_model_client
 
+    # One bound method, handed to the model client, the context and the tick alike.
+    checkpoint = token.checkpoint
     bound = db.use_layout(db.check_layout(layout_for(core_ctx)))
     try:
         # Reminders go to Current in process, through the worker's registry, which
@@ -103,12 +105,13 @@ def _run(
             ctx = context_over_core(
                 core_ctx,
                 Role.SERVICE,
-                model_client=runtime_model_client(core_ctx, heartbeat=token.checkpoint),
+                model_client=runtime_model_client(core_ctx, heartbeat=checkpoint),
+                progress=checkpoint,
             )
             # The tick's per-job handler records any other error and goes on; these
             # stop the job, so no further job runs after a cancel or under another
             # lease.
-            tick(ctx, checkpoint=token.checkpoint, pass_through=PASS_THROUGH)
+            tick(ctx, checkpoint=checkpoint, pass_through=PASS_THROUGH)
     finally:
         db.release_layout(bound)
 

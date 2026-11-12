@@ -103,6 +103,11 @@ class FinancePaths:
     data: Path
 
 
+def no_progress() -> None:
+    """The progress beat outside a job: there is no lease to renew."""
+    return None
+
+
 @dataclass(frozen=True)
 class FinanceContext:
     """Everything a handler may use besides its input and its unit of work.
@@ -112,6 +117,12 @@ class FinanceContext:
     ``operations.with_databases`` puts them in ``_databases``, which only ``dispatch``
     reads, and the context a handler receives has it cleared, so a handler can neither
     open another connection nor dispatch again.
+
+    ``progress`` is the beat a long step calls once per unit of work (a file, a
+    document, a stage, a series, a reminder key). Under the tick it is the job's
+    cancellation checkpoint, which renews the lease and raises when the job was
+    cancelled or its lease lost; anywhere else it is ``no_progress``. Only the wiring
+    sets it, so the step packages never import core.
     """
 
     settings: Settings
@@ -120,4 +131,5 @@ class FinanceContext:
     role: Role
     snapshot_provider: SnapshotProvider
     model_client: ModelClient | None = field(default=None)
+    progress: Callable[[], None] = field(default=no_progress, repr=False, compare=False)
     _databases: _Databases | None = field(default=None, repr=False, compare=False)

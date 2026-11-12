@@ -76,6 +76,92 @@ def test_nothing_stays_bound_when_the_tick_raises(
     assert db.bound_layout() is None
 
 
+def test_the_run_hands_the_checkpoint_to_the_context_and_the_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # L1 (#546): the context's progress beat is the token's checkpoint, the same
+    # bound method the tick and the model client get.
+    built: list[dict[str, object]] = []
+    ticked: list[dict[str, object]] = []
+    heartbeats: list[object] = []
+
+    def context(*_args: object, **kwargs: object) -> object:
+        built.append(kwargs)
+        return object()
+
+    def tick(_ctx: object, **kwargs: object) -> None:
+        ticked.append(kwargs)
+
+    def model_client(_core: object, *, heartbeat: object) -> None:
+        heartbeats.append(heartbeat)
+
+    _patch_core(monkeypatch, tick)
+    monkeypatch.setattr(wiring_core, "context_over_core", context)
+    monkeypatch.setattr(wiring_model, "runtime_model_client", model_client)
+    token = Token()
+    tick_job._run(uuid.UUID(int=3), token, REGISTRY)  # type: ignore[arg-type]
+    assert len(built) == 1
+    assert len(ticked) == 1
+    progress = built[0]["progress"]
+    assert progress == token.checkpoint
+    assert ticked[0]["checkpoint"] is progress
+    assert heartbeats == [progress]
+    assert heartbeats[0] is progress
+
+
+def test_a_context_built_without_progress_beats_a_no_op() -> None:
+    import datetime as dt
+
+    from rheo_finance.clock import FakeClock
+    from rheo_finance.context import FinanceContext, FinancePaths, no_progress
+    from rheo_finance.contracts import Role
+    from rheo_finance.settings import parse_settings
+
+    ctx = FinanceContext(
+        settings=parse_settings(""),
+        clock=FakeClock(dt.datetime(2063, 1, 18, 12, 0, tzinfo=dt.UTC)),
+        paths=FinancePaths(data=Path("/synthetic/data")),
+        role=Role.SERVICE,
+        snapshot_provider=lambda _uow, _ref: None,
+    )
+    assert ctx.progress is no_progress
+    ctx.progress()  # beats nothing, raises nothing
+
+
+def test_context_over_core_keeps_the_progress_it_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rheo_finance import operations
+    from rheo_finance.context import no_progress
+    from rheo_finance.contracts import Role
+    from rheo_finance.settings import parse_settings
+
+    monkeypatch.setattr(db, "data_dir", lambda: Path("/synthetic/data"))
+    monkeypatch.setattr(wiring_core, "load_settings", lambda _path: parse_settings(""))
+    monkeypatch.setattr(
+        operations, "with_core_sessions", lambda ctx, *, open_session: ctx
+    )
+    beats: list[None] = []
+
+    def beat() -> None:
+        beats.append(None)
+
+    given = wiring_core.context_over_core(
+        CORE_CONTEXT,  # type: ignore[arg-type]
+        Role.SERVICE,
+        model_client=None,
+        progress=beat,
+    )
+    assert given.progress is beat
+    plain = wiring_core.context_over_core(
+        CORE_CONTEXT,  # type: ignore[arg-type]
+        Role.SERVICE,
+        model_client=None,
+    )
+    assert plain.progress is no_progress
+    assert beats == []
+
+
 def test_the_job_hands_the_worker_registry_to_the_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
