@@ -264,6 +264,61 @@ def test_a_failed_reply_read_never_says_nothing_was_written(
     assert (fake.layout.inbox / "a.pdf").read_bytes() == b"synthetic"
 
 
+def _cleanup_wait_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stream process looks alive to ``_stop``, and every wait reaps it, then
+    fails with ECHILD."""
+    real_start = ssh._start
+
+    def start(argv: list[str], *, stdin: int) -> subprocess.Popen[bytes]:
+        proc = real_start(argv, stdin=stdin)
+        real_wait = proc.wait
+
+        def wait(timeout: float | None = None) -> int:
+            real_wait(timeout)
+            raise OSError(errno.ECHILD, "synthetic")
+
+        monkeypatch.setattr(proc, "poll", lambda: None)
+        monkeypatch.setattr(proc, "wait", wait)
+        return proc
+
+    monkeypatch.setattr(ssh, "_start", start)
+
+
+def test_a_failed_cleanup_after_a_push_never_says_nothing_was_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeRemote.install(tmp_path, monkeypatch)
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "a.pdf").write_bytes(b"synthetic")
+    _cleanup_wait_fails(monkeypatch)
+    push = ["remote", "push", "--config", str(fake.config), "--inbox", str(inbox)]
+    assert main(push) == 1
+    assert capsys.readouterr().err == "finance remote push: refused. ssh_failed.\n"
+    assert (fake.layout.inbox / "a.pdf").read_bytes() == b"synthetic"
+
+
+def test_a_failed_cleanup_after_a_pull_keeps_its_known_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeRemote.install(tmp_path, monkeypatch)
+    packs = fake.layout.data / "packs"
+    packs.mkdir()
+    (packs / "pack-a.zip").write_bytes(b"synthetic pack a")
+    (packs / "pack-b.zip").write_bytes(b"synthetic pack b")
+    into = tmp_path / "into"
+    into.mkdir()
+    _cleanup_wait_fails(monkeypatch)
+    pull = ["remote", "pull", "--config", str(fake.config), "--into", str(into)]
+    assert main(pull) == 0
+    captured = capsys.readouterr()
+    assert (captured.out, captured.err) == (
+        "finance remote pull: 2 new, 0 identical.\n",
+        "",
+    )
+    assert (into / "pack-b.zip").read_bytes() == b"synthetic pack b"
+
+
 def _config_cases(tmp_path: Path) -> dict[str, Path]:
     good = write_config(tmp_path / "good.toml", config_values())
     link = tmp_path / "link.toml"

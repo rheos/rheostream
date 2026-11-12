@@ -16,6 +16,7 @@ passes the remote command's own output through.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shlex
@@ -225,9 +226,13 @@ def _start(argv: list[str], *, stdin: int) -> subprocess.Popen[bytes]:
 
 
 def _stop(proc: subprocess.Popen[bytes]) -> None:
-    if proc.poll() is None:
-        proc.kill()
-        proc.wait()
+    """Kill and reap ``proc`` if it still runs. Push and pull call it in a ``finally``,
+    once the outcome is set (a result returned or a refusal raised), so a failure
+    here is ignored: it never replaces that outcome with a generic one."""
+    with contextlib.suppress(OSError):
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
 
 
 class _FdReader:
