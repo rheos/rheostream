@@ -280,24 +280,26 @@ def push(
     local: RemoteRefused | None = None
     try:
         assert proc.stdin is not None and proc.stdout is not None
+        # From the first byte sent to the end of push, the stream may have ended whole
+        # and the receiver committed: closing stdin delivers the end record, with any
+        # bytes a failed flush kept. So any OSError but a broken pipe, from the send or
+        # the close, is the outcome-unknown ssh_failed, never "Nothing was written". A
+        # local refusal (source_changed) cut the stream before its end and wins.
         try:
-            sender.send(proc.stdin, items)
-        except BrokenPipeError:
-            pass  # the receiver refused early; its reply says why
-        except RemoteRefused as exc:
-            local = exc  # source_changed: the receiver sees no end and keeps nothing
-        finally:
-            # Closing stdin is the end of stream that lets the receiver commit. From
-            # here the stream may have ended whole and the receiver committed, so a
-            # local failure is an outcome-unknown code, never "Nothing was written",
-            # unless a local refusal already cut the stream.
             try:
-                proc.stdin.close()
+                sender.send(proc.stdin, items)
             except BrokenPipeError:
-                pass
-            except OSError:
-                if local is None:
-                    raise RemoteRefused("ssh_failed") from None
+                pass  # the receiver refused early; its reply says why
+            except RemoteRefused as exc:
+                local = exc  # the receiver sees no end and keeps nothing
+            finally:
+                try:
+                    proc.stdin.close()
+                except BrokenPipeError:
+                    pass
+        except OSError:
+            if local is None:
+                raise RemoteRefused("ssh_failed") from None
         try:
             reply = proc.stdout.read(REPLY_MAX_BYTES + 1)
         except OSError:

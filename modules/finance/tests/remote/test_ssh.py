@@ -307,6 +307,53 @@ def test_a_failed_stdin_close_after_a_full_send_never_says_nothing_was_written(
     assert (fake.layout.inbox / "a.pdf").read_bytes() == b"synthetic"
 
 
+def test_a_failed_final_flush_whose_bytes_close_delivers_is_outcome_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeRemote.install(tmp_path, monkeypatch)
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "a.pdf").write_bytes(b"synthetic")
+    real_start = ssh._start
+    flushes: list[int] = []
+
+    class _FlushFails:
+        """The flush after the end record fails once and keeps the bytes; close
+        then delivers them and lets the receiver finish."""
+
+        def __init__(self, proc: subprocess.Popen[bytes], real: IO[bytes]) -> None:
+            self._proc = proc
+            self._real = real
+
+        def write(self, data: bytes, /) -> int:
+            return self._real.write(data)
+
+        def flush(self) -> None:
+            flushes.append(1)
+            if len(flushes) == 1:
+                raise OSError(errno.EIO, "synthetic")
+            self._real.flush()
+
+        def close(self) -> None:
+            self._real.close()
+            self._proc.wait(timeout=10)
+
+    def start(argv: list[str], *, stdin: int) -> subprocess.Popen[bytes]:
+        proc = real_start(argv, stdin=stdin)
+        assert proc.stdin is not None
+        monkeypatch.setattr(proc, "stdin", _FlushFails(proc, proc.stdin))
+        return proc
+
+    monkeypatch.setattr(ssh, "_start", start)
+    push = ["remote", "push", "--config", str(fake.config), "--inbox", str(inbox)]
+    assert main(push) == 1
+    captured = capsys.readouterr()
+    assert captured.err == "finance remote push: refused. ssh_failed.\n"
+    assert "Nothing was written" not in captured.out + captured.err
+    assert flushes == [1]
+    assert (fake.layout.inbox / "a.pdf").read_bytes() == b"synthetic"
+
+
 def _cleanup_wait_fails(
     monkeypatch: pytest.MonkeyPatch, *, first_wait_ok: bool = False
 ) -> None:
