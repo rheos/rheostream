@@ -71,6 +71,7 @@ from rheo_core.modules.loader import loaded_manifests
 from rheo_core.modules.readiness import ModuleNotReady
 from rheo_core.operations import dispatch, register_core_operations, transaction
 from rheo_core.operations.refusals import OperationRefused
+from rheo_core.refs.resolver import RESOLVERS, register_resolver
 from rheo_core.settings import resolver as settings_resolver
 from rheo_core.settings.schema import REGISTRY as SETTINGS
 from rheo_core.settings.schema import SettingsRegistry, ValueType, encode_text
@@ -773,8 +774,19 @@ def test_health_names_the_key_set_aside_through_the_worker(
 # --- D9: an item erased in Current (#548) ---------------------------------------------
 
 
-def _erase(rig: Rig, ref: str) -> None:
-    """The owner's approved deletion of the item ``ref`` through core."""
+def _erase(rig: Rig, ref: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The owner's approved deletion of the item ``ref`` through core.
+
+    The approval's ``RecordStateGuard`` resolves the item on the process-wide resolver
+    table, which ``loaded_probe_modules`` leaves alone. Without Current's resolvers
+    there the hold records no revision and the guard refuses, so the approval ends
+    ``refused`` and the item stays. A copy of the table holds them for this test only,
+    registered before the hold, as every other rig that drives a deletion does.
+    """
+    monkeypatch.setattr(RESOLVERS, "_resolvers", dict(RESOLVERS._resolvers))
+    manifest = loaded_manifests()["current"]
+    for name, resolver in manifest.resolvers:
+        register_resolver(manifest.module_id, name, resolver, origin=manifest.module_id)
     held = dispatch(
         rig.owner,
         "core.record.delete",
@@ -783,19 +795,21 @@ def _erase(rig: Rig, ref: str) -> None:
         consumers=rig.consumers,
     )
     assert held.state == "approval_required", held
-    rig.core("core.approval.approve", {"approval_id": str(held.approval_id)})
+    approved = rig.core("core.approval.approve", {"approval_id": str(held.approval_id)})
+    # A guard refusal still answers ``succeeded``; the approval's own state says.
+    assert approved.state == "executed", approved
 
 
 @pytest.mark.parametrize("status", ["open", "done"])
 def test_an_item_erased_in_current_is_filed_again_or_forgotten(
-    rig: Rig, status: Literal["open", "done"]
+    rig: Rig, status: Literal["open", "done"], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rig.desired[:] = [_ticket(ALPHA)]
     rig.approve()
     assert rig.sync() == current.SyncResult("synced")
     old = _row(rig, ALPHA)["external_id"]
     assert old is not None
-    _erase(rig, old)
+    _erase(rig, old, monkeypatch)
     assert _items(rig) == []
     creates = _audit(rig, "current.item.create")
     # A changed period makes the sync read the stored item; an acknowledged,
