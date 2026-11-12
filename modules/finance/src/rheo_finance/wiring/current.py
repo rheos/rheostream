@@ -6,12 +6,14 @@ service context for Current's four item operations and the consumer registry Cur
 writes publish through. Finance's own reads and writes run in ``owner`` blocks as
 ``finance_owner`` on that transaction; each Current operation runs through
 ``call_in_transaction`` in a savepoint, at the session role, because neither finance
-role may touch Current's or core's tables. Nothing commits the transaction but the
-session's ``commit``.
+role may touch Current's or core's tables. Each reminder key's pass runs in a
+savepoint of its own (``key``), so a key refused for itself rolls back alone
+(ADR-0027). Nothing commits the transaction but the session's ``commit``.
 
 A refusal leaves as a fixed ``CurrentError`` code with nothing chained, and one
-content-free log line, because the row annotation that records it is rolled back.
-Imported lazily (the tick job, the CLI's context), never by the manifest.
+content-free log line; a set-aside key's row keeps the code too, while a global
+refusal's annotation rolls back with the sync. Imported lazily (the tick job, the
+CLI's context), never by the manifest.
 """
 
 from __future__ import annotations

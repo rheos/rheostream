@@ -2,7 +2,9 @@
 
 Operation-based callbacks dispatch as SERVICE. Reminder reconciliation is a root
 with its own durable transactions, called only after the derive dispatch commits:
-short ones per step over HTTPS, one per sync when Current is bound in process.
+short ones per step over HTTPS, one per sync when Current is bound in process, with a
+savepoint per key. A sync that set keys aside (``partial``) is recorded like a failed
+one; ``finance jobs health`` names the keys (ADR-0027).
 """
 
 from __future__ import annotations

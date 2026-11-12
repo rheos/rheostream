@@ -42,3 +42,13 @@ call, file names only inside a framed stream checked against one path rule, a re
 that stages and checks everything before it links anything into place, refusal by
 default with `--replace` for the owner's edited inputs alone, keys only with `--keys`,
 and fixed-code messages. It extends ADR-0024's layout and supersedes nothing.
+
+ADR-0027 records that the tick's long steps beat the job's checkpoint so the lease
+holds, and that a reminder sync in process takes a savepoint per key: a key refused
+for itself is set aside with its code and the others commit, a global condition still
+rolls back all, a stored item Current no longer has is filed again for an open period
+and forgotten for a settled one, and `finance jobs health` names each set-aside key.
+It extends ADR-0024 and replaces one bullet of ADR-0025 ("one transaction per sync,
+committed only when synced") and its sentence on a hand-deleted item. ADR-0025 stays
+accepted, because its other decisions stand; ADR-0027 names the one bullet it
+replaces instead of superseding the whole record.

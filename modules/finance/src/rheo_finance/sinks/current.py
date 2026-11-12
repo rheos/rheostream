@@ -4,10 +4,13 @@ Two transports reach Current's four item operations. With nothing bound, each is
 HTTPS POST through ``http.Client``, and the sync commits a short owner transaction
 around each step. Under core, ``rheo_finance.wiring.current`` binds an in-process
 client (``use_in_process``): each operation runs through core's
-``call_in_transaction`` in one transaction that also holds this sink's rows, and the
-sync commits only when every key is synced (ADR-0025). The gate is asked before every
-call on either path, and an update or status change reaches only an item that carries
-this sink's own source pair.
+``call_in_transaction`` in one transaction that also holds this sink's rows, with a
+savepoint per reminder key (ADR-0025, ADR-0027). A key refused for itself
+(``KEY_LOCAL``) is set aside with its code and the others sync; a global code stops
+and rolls back the sync; the sync commits when its key loop finishes. Over HTTPS a
+refusal still stops the keys after it. The gate is asked before every call on either
+path, and an update or status change reaches only an item that carries this sink's
+own source pair.
 """
 
 from __future__ import annotations
