@@ -55,9 +55,10 @@ Two things stood between the tick and the owner opening `finance.jobs.enabled`.
   finds the item gone sets the key aside until the next read.
 - **Health names the keys.** `finance.job.health` returns each key whose row carries a
   code, with the code (`other` for a stored code outside the fixed set) and when it
-  last synced, at most twenty and a count of the rest; `finance jobs health` prints one
-  line per key. The status view is unchanged: its retry count already counts those
-  rows.
+  last synced, at most twenty and a count of the rest; `finance jobs health` lists
+  those twenty set-aside keys with their codes, then a count of the rest, and the
+  others appear there as the keys before them clear when they sync. The status view is
+  unchanged: its retry count already counts those rows.
 
 ## Consequences
 
