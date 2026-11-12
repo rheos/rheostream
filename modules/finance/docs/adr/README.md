@@ -35,3 +35,10 @@ call, an in-process spec that no HTTPS approval opens, one transaction per sync 
 commits only when synced, each call at the session role in a savepoint, and updates
 scoped to the key's own source pair. It extends ADR-0005 and ADR-0014 and supersedes
 nothing.
+
+ADR-0026 records how the laptop reaches the module: `finance remote push`, `pull` and
+`exec` over ssh and `docker exec`, the container found by its compose labels on every
+call, file names only inside a framed stream checked against one path rule, a receiver
+that stages and checks everything before it links anything into place, refusal by
+default with `--replace` for the owner's edited inputs alone, keys only with `--keys`,
+and fixed-code messages. It extends ADR-0024's layout and supersedes nothing.
