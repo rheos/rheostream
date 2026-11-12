@@ -139,3 +139,56 @@ def test_dispatch_and_owner_transaction_refuse_at_wait_zero_under_another_writer
             pytest.fail("owner transaction entered while another writer held the lock")
         assert health(ctx).code == "no_first_tick"
         assert owner_conn.execute(select(job_run)).all() == []
+
+
+# --- #548 L16: health names each set-aside reminder key -------------------------------
+
+SYNCED = dt.datetime(2063, 1, 18, 12, 0, tzinfo=dt.UTC)
+
+
+def test_reminder_errors_keep_fixed_codes_and_cap_the_list() -> None:
+    from rheo_finance.jobs.service import ReminderError, reminder_errors
+
+    rows: list[tuple[str, str, dt.datetime | None]] = [
+        ("finance:alpha:p1", "not_owned", None),
+        ("finance:beta:p1", "synthetic stored text", SYNCED),
+    ] + [(f"finance:gamma:p{n:02d}", "refused", SYNCED) for n in range(23)]
+    shown, more = reminder_errors(rows)
+    assert len(rows) == 25
+    assert (len(shown), more) == (20, 5)
+    assert shown[0] == ReminderError(
+        key="finance:alpha:p1", code="not_owned", last_success_at=None
+    )
+    # A stored code outside the fixed set is never shown as stored.
+    assert shown[1] == ReminderError(
+        key="finance:beta:p1", code="other", last_success_at=SYNCED
+    )
+    assert reminder_errors([]) == ([], 0)
+
+
+def test_the_health_command_prints_one_line_per_set_aside_key() -> None:
+    from zoneinfo import ZoneInfo
+
+    from rheo_finance.jobs.service import HealthOut, ReminderError
+
+    result = HealthOut(
+        code="failed_due_job",
+        failed=1,
+        reminder_errors=[
+            ReminderError(key="finance:alpha:p1", code="not_owned"),
+            ReminderError(
+                key="finance:beta:p1", code="refused", last_success_at=SYNCED
+            ),
+        ],
+        more=3,
+    )
+    assert jobs_cli.health_lines(result, ZoneInfo("UTC")) == [
+        "finance jobs health: failed_due_job failed=1 pending=0 skipped_off=0",
+        "reminder finance:alpha:p1: not_owned, never synced",
+        "reminder finance:beta:p1: refused, last synced 2063-01-18 12:00 UTC",
+        "and 3 more",
+    ]
+    plain = HealthOut(code="healthy")
+    assert jobs_cli.health_lines(plain, ZoneInfo("UTC")) == [
+        "finance jobs health: healthy failed=0 pending=0 skipped_off=0"
+    ]

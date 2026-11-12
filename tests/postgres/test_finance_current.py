@@ -39,6 +39,9 @@ A refused key is set aside (#548):
 - D9: an item erased through Current's approved deletion is filed once more, under a
   new ref, at the next sync that reads it (a changed period); a third sync calls
   nothing. For a settled period it is forgotten and never created again.
+- D10: after two worker visits over D6's setup, the owner's ``finance.job.health``
+  is ``failed_due_job`` and names alpha with ``not_owned``, never synced; after D4's
+  last sync it names no key.
 - D11: in D4 and D5 every call starts at the session role, the first after a key
   rollback included, and so does the next session.
 """
@@ -84,6 +87,7 @@ from rheo_current.storage import tables as current_tables
 from rheo_finance import catalogue, db
 from rheo_finance.contracts import Role
 from rheo_finance.jobs import registry as job_registry
+from rheo_finance.jobs.service import HealthOut, ReminderError
 from rheo_finance.operations import dispatch as finance_dispatch
 from rheo_finance.reminders.desired import DesiredOut, DesiredTicket
 from rheo_finance.reminders.store import PostgresReminderRepository
@@ -367,6 +371,14 @@ def _acknowledging(row: Mapping[str, Any]) -> dict[str, Any]:
     return {name: row[name] for name in ACKNOWLEDGING}
 
 
+def _health(rig: Rig) -> HealthOut:
+    """``finance.job.health`` dispatched by the owner, as ``finance jobs health``."""
+    ctx = context_over_core(rig.operator, Role.OWNER, model_client=None)
+    out = finance_dispatch("finance.job.health", {}, Role.OWNER, ctx=ctx)
+    assert isinstance(out, HealthOut)
+    return out
+
+
 def _assert_session_role(rig: Rig) -> None:
     """D11: every call began at the session role, the first after a key rollback
     included; every call that returned ended there; so does the next session."""
@@ -475,6 +487,7 @@ def test_a_key_refused_for_itself_is_set_aside_and_the_rest_commit(rig: Rig) -> 
     ]
     assert _row(rig, BETA)["last_error_code"] is None
     assert _audit(rig, "current.item.create") == 2
+    assert _health(rig).reminder_errors == []
 
 
 def test_a_refusal_after_a_real_update_rolls_back_that_key_alone(rig: Rig) -> None:
@@ -739,6 +752,22 @@ def test_a_key_refused_on_every_sync_never_blocks_the_others(rig: Rig) -> None:
     assert alpha["external_id"] == foreign
     assert alpha["last_error_code"] == "not_owned"
     assert started <= alpha["last_attempt_at"] <= ended
+
+
+def test_health_names_the_key_set_aside_through_the_worker(
+    rig: Rig, reminders_only: None
+) -> None:
+    rig.desired[:] = [_ticket(ALPHA), _ticket(BETA), _ticket(GAMMA)]
+    rig.approve()
+    _alpha_row_on_an_item(rig, "email")
+    for _ in range(2):
+        assert _visit(rig) == {"state": "succeeded", "last_error": None}
+    out = _health(rig)
+    assert out.code == "failed_due_job"
+    assert out.reminder_errors == [
+        ReminderError(key=ALPHA, code="not_owned", last_success_at=None)
+    ]
+    assert out.more == 0
 
 
 # --- D9: an item erased in Current (#548) ---------------------------------------------
