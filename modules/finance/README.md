@@ -163,14 +163,18 @@ Under core, reminders go to Current in process (ADR-0025), and the
 ignored. Current must be enabled in the workspace, with its `bills` area (Current's
 first migration seeds it). Approve the sink with `finance sink approve current` under
 core: an approval given over HTTPS does not carry over. A sync is one transaction
-with a savepoint per key (ADR-0027). A key Current refuses for itself is set aside with
-its code on its row and the other keys sync; a condition of the whole sync (the sink
-off, Current unavailable) leaves Current and the sink's rows as they were. A set-aside
-key is tried again at every sync with its period's latest fields; a new key refused
-before its item existed is never filed once its period settles. A Current item
-deleted by hand is filed again for an open period the next time its period changes. `finance jobs health` lists each set-aside key and its code. Status line 6's
-"not synced since" is the last time every key synced. Over HTTPS a refusal still stops
-the keys after it.
+with a savepoint per key (ADR-0027). A key Current refuses for itself is set aside
+with its code on its row and the other keys sync; a condition of the whole sync (the
+sink off, Current unavailable) leaves Current and the sink's rows as they were. A
+set-aside key is tried again at every sync with its period's latest fields. A new key
+refused before its item existed is not filed while its period stays settled or out of
+the desired set, and is filed if the period reopens. That holds in process only: over
+HTTPS such a claim is still created and then closed. A Current item deleted by hand
+is filed again for an open period the next time its period changes. `finance jobs
+health` lists the first twenty set-aside keys with their codes, then a count of the
+rest; the others appear there as the keys before them clear when they sync. Status
+line 6's queued retries count every one of them, and its "not synced since" is the
+last time every key synced. Over HTTPS a refusal still stops the keys after it.
 
 Current's preview lists exact pending changes, including priority becoming overdue
 at local midnight. Its confirmation code can change at that boundary; refresh the

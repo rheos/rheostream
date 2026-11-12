@@ -70,7 +70,7 @@ refusal still stops the keys after it, the earlier keys having committed in thei
 steps, and `not_found` is still `refused`; only the read that clears a stored code
 applies there too. A claim over HTTPS may front a create whose answer was lost, so its
 retry replays the snapshot it was claimed with, which Current folds into the item it
-may already hold, and one whose period settles is still created and closed. A refused
-key is retried every tick with no backoff. One pdftotext call, one derive stage or one
-rates reply that alone runs past 40 seconds can still lose the lease; those are tracked
-separately.
+may already hold, and one whose period settles or leaves the desired set is still
+created and closed. A refused key is retried every tick with no backoff. One pdftotext
+call, one derive stage or one rates reply that alone runs past 40 seconds can still
+lose the lease; those are tracked separately.
