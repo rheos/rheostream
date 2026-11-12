@@ -1,6 +1,7 @@
 # ADR-0025: Reminders reach Current in process
 Status: accepted
 Date: 2026-11-11
+Partly replaced by ADR-0027: "One transaction per sync, committed only when synced"
 
 ## Context
 

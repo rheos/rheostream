@@ -9,7 +9,10 @@ Decision, Consequences). ADRs 0001 to 0009 were written in Phase 1. The remainin
 next-numbered ADR in the PR of the phase that first builds them. A changed
 decision gets a new ADR, and the old one's `Status:` becomes `superseded-by-NNNN`; old bodies are
 not rewritten. A decision that a later ADR narrows without replacing keeps its status and gains an
-`Amended-by: ADR-NNNN` line after `Date:`; its body is not rewritten either.
+`Amended-by: ADR-NNNN` line after `Date:`; its body is not rewritten either. A record whose single
+decision a later ADR replaces while its other decisions stand keeps `Status: accepted` and gains a
+`Partly replaced by ADR-NNNN` line after `Date:` naming the replaced decision; its body is not
+rewritten.
 
 ADR-0017 superseded ADR-0007 for private server residency and scheduling. ADR-0021
 supersedes ADR-0017: Float runs as a rheoStream module in the main workspace
@@ -50,5 +53,6 @@ rolls back all, a stored item Current no longer has is filed again for an open p
 and forgotten for a settled one, and `finance jobs health` names each set-aside key.
 It extends ADR-0024 and replaces one bullet of ADR-0025 ("one transaction per sync,
 committed only when synced") and its sentence on a hand-deleted item. ADR-0025 stays
-accepted, because its other decisions stand; ADR-0027 names the one bullet it
-replaces instead of superseding the whole record.
+accepted, because its other decisions stand, and carries a `Partly replaced by
+ADR-0027` line; ADR-0027 names the one bullet it replaces instead of superseding the
+whole record.

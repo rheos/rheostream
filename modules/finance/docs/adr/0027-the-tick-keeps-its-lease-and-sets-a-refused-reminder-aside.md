@@ -62,7 +62,8 @@ Two things stood between the tick and the owner opening `finance.jobs.enabled`.
 Replaces one bullet of ADR-0025, "One transaction per sync, committed only when
 synced", and its Consequences sentence on a hand-deleted item or a repeating refusal
 stopping every key. ADR-0025 stays accepted: its other decisions stand, so this record
-names the bullet it replaces instead of superseding the whole record. Over HTTPS a
+names the bullet it replaces instead of superseding the whole record, and ADR-0025
+carries a `Partly replaced by ADR-0027` line naming that bullet. Over HTTPS a
 refusal still stops the keys after it, the earlier keys having committed in their own
 steps, and `not_found` is still `refused`; only the latest-fields create and the read
 that clears a stored code apply there too. A claim over HTTPS may front a create whose
