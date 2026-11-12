@@ -86,9 +86,10 @@ IN_PROCESS_SPEC: Final = SinkSpec(
 class CurrentError(Exception):
     """Fixed local codes only; remote text and HTTP exception text never escape.
 
-    ``current_unavailable`` (Current or its session cannot be reached in process) and
-    ``not_owned`` (an item that does not carry this sink's source pair) join the HTTPS
-    path's codes. ``logged`` marks a code whose log line is already written (the
+    ``current_unavailable`` (Current or its session cannot be reached in process),
+    ``not_owned`` (an item that does not carry this sink's source pair) and, in process
+    only, ``not_found`` (Current has no item with that id) join the HTTPS path's
+    codes. ``logged`` marks a code whose log line is already written (the
     in-process session logs each refused call), so the sync logs it only otherwise.
     """
 
@@ -784,18 +785,31 @@ def _reconcile(ctx: FinanceContext, ref: str, intent: Target, steps: _Steps) -> 
             PostgresCurrentTicketRepository(uow).save(_acknowledged(row, intent, now))
         return
     # Each mutation gets a fresh read; only a just-returned create can supply it.
+    fields: dict[str, object] = {}
     with steps.begin() as uow:
         sink = steps.sink(uow)
-        remote = fresh if fresh is not None else sink.get(ref_)
-        fields: dict[str, object] = {}
-        if remote.title != intent.create.title:
-            fields["title"] = intent.create.title
-        if remote.due_on != intent.create.due_on:
-            fields["due_on"] = intent.create.due_on.isoformat()
-        if remote.priority != intent.create.priority:
-            fields["priority"] = intent.create.priority
-        if fields:
-            remote = sink.mutate("update", ref_, fields, fresh=remote, source_ref=ref)
+        read: RemoteItem | None = fresh
+        if read is None:
+            try:
+                read = sink.get(ref_)
+            except CurrentError as exc:
+                # Only this read of the stored id treats the item as gone; a write
+                # that finds it gone sets the key aside until the next read.
+                if exc.code != "not_found":
+                    raise
+        if read is not None:
+            if read.title != intent.create.title:
+                fields["title"] = intent.create.title
+            if read.due_on != intent.create.due_on:
+                fields["due_on"] = intent.create.due_on.isoformat()
+            if read.priority != intent.create.priority:
+                fields["priority"] = intent.create.priority
+            if fields:
+                read = sink.mutate("update", ref_, fields, fresh=read, source_ref=ref)
+    if read is None:
+        _refile(ctx, ref, row, intent, steps, now)
+        return
+    remote = read
     if remote.status != intent.status:
         with steps.begin() as uow:
             remote = steps.sink(uow).mutate(
@@ -817,6 +831,39 @@ def _reconcile(ctx: FinanceContext, ref: str, intent: Target, steps: _Steps) -> 
         persisted = store.get(ref)
         assert persisted is not None
         store.save(_acknowledged(persisted, intent, now))
+
+
+def _refile(
+    ctx: FinanceContext,
+    ref: str,
+    row: SinkTicket,
+    intent: Target,
+    steps: _Steps,
+    now: dt.datetime,
+) -> None:
+    """Current no longer has the stored item (the owner deleted it). A settled
+    period is forgotten, never created again (ADR-0014); an open one is claimed
+    afresh and created once more, which Current folds into any holder of the pair
+    (ADR-0027). Runs inside the key's savepoint, so a refused create rolls it back."""
+    with steps.begin() as uow:
+        store = PostgresCurrentTicketRepository(uow)
+        if intent.status == "done":
+            store.save(
+                _acknowledged(row.model_copy(update={"external_id": None}), intent, now)
+            )
+            return
+        store.save(
+            row.model_copy(
+                update={
+                    "external_id": None,
+                    "state": "post_pending",
+                    "create": intent.create,
+                }
+            )
+        )
+    # The pass again: the claim is post_pending, so it creates, then converges from
+    # the create's answer and never reads the stored id again.
+    _reconcile(ctx, ref, intent, steps)
 
 
 def preview_builder(uow: UnitOfWork) -> list[PreviewItem]:

@@ -59,7 +59,10 @@ def _refusal_code(exc: Exception) -> str | None:
     if isinstance(exc, ModuleNotReady):
         return "current_unavailable"
     if isinstance(exc, OperationRefused):
-        return "record_stale" if exc.state == "record_stale" else "refused"
+        if exc.state == "record_stale":
+            return "record_stale"
+        # Current has no item with that id (ADR-0027: the sink files it again).
+        return "not_found" if exc.state == "not_found" else "refused"
     if isinstance(exc, StaleRecord):
         return "record_stale"
     if isinstance(exc, StorageRefusal):

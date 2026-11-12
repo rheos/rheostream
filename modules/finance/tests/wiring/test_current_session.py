@@ -1,10 +1,10 @@
 """The in-process reminder session over core, with no database (RS-6c, ADR-0025).
 
 - L2: each exception raised under ``call_in_transaction`` leaves as its fixed code
-  with nothing chained, and a planted refusal detail reaches neither the error nor the
-  log line; a storage error and any other exception pass unchanged; an operation
-  outside the four is refused before any call; ``create`` reaches
-  ``current.item.create``.
+  with nothing chained (Current's ``not_found`` as ``not_found``, #548 L12), and a
+  planted refusal detail reaches neither the error nor the log line; a storage error
+  and any other exception pass unchanged; an operation outside the four is refused
+  before any call; ``create`` reaches ``current.item.create``.
 - L3: over a recording connection, a call in an owner block runs at the session role
   inside a savepoint and returns the block to ``finance_owner``; a refused call sends
   nothing after the rollback; a call outside a block sends no ``SET``; blocks do not
@@ -127,7 +127,8 @@ def _patch_call(
 MAPPED = [
     (ModuleNotReady("module_unavailable", DETAIL), "current_unavailable"),
     (OperationRefused("record_stale", DETAIL), "record_stale"),
-    (OperationRefused("not_found", DETAIL), "refused"),
+    # #548 L12: Current has no item with that id, a code of its own.
+    (OperationRefused("not_found", DETAIL), "not_found"),
     (OperationRefused("area_retired", DETAIL), "refused"),
     (OperationRefused("consumers_missing", DETAIL), "refused"),
     (OperationRefused("operation_not_permitted", DETAIL), "refused"),

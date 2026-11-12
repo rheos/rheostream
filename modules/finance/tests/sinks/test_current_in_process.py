@@ -22,7 +22,10 @@
 - a key refused for itself is set aside: its savepoint rolls back, its row keeps
   the code, the other keys sync and the session commits once (``partial``);
 - a global code stops the sync with nothing committed and the later keys unattempted;
-- ``KEY_LOCAL`` and ``GLOBAL`` split ``CURRENT_CODES``.
+- ``KEY_LOCAL`` and ``GLOBAL`` split ``CURRENT_CODES``;
+- a stored item Current no longer has, met on the read, is created once more for an
+  open period with the sink's pair and forgotten for a settled one; one gone before
+  its update is set aside as ``not_found``, never created.
 
 Values are synthetic.
 """
@@ -36,6 +39,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar, cast
 
 import pytest
@@ -754,6 +758,97 @@ def test_a_global_code_stops_the_sync_and_commits_nothing(
     # Gamma is never attempted.
     assert transport.operations() == [*CLOSE, "get"]
     assert session.events == ["key", "released", "key", "rolled back"]
+
+
+# --- #548 L14: a stored item Current no longer has ---------------------------------
+
+SNAPSHOT = _row().create
+
+
+def _refile_rig(
+    monkeypatch: pytest.MonkeyPatch, *, status: str, due: dt.date = SNAPSHOT.due_on
+) -> dict[str, SinkTicket]:
+    """One key with a stored item ``ref-old``; the period is wanted ``status``."""
+    rows = {
+        KEY: _row().model_copy(
+            update={
+                "external_id": "ref-old",
+                "state": "open",
+                "last_title": SNAPSHOT.title,
+                "last_due_on": SNAPSHOT.due_on,
+                "last_priority": SNAPSHOT.priority,
+                "last_status": "open",
+            }
+        )
+    }
+    monkeypatch.setattr(_MemoryStore, "rows", rows)
+    monkeypatch.setattr(current, "PostgresCurrentTicketRepository", _MemoryStore)
+    monkeypatch.setattr(current, "PostgresReminderRepository", _NoFacts)
+    wanted = current.Target(SNAPSHOT.model_copy(update={"due_on": due}), "open")
+    monkeypatch.setattr(
+        current,
+        "desired_tickets",
+        lambda _ctx, _facts: SimpleNamespace(
+            tickets=[SimpleNamespace(source_ref=KEY)] if status == "open" else []
+        ),
+    )
+    monkeypatch.setattr(current, "target", lambda _ticket, _registered: wanted)
+    monkeypatch.setattr(current, "is_enabled", lambda _uow, _sink: True)
+    _open_gate(monkeypatch, IN_PROCESS_DIGEST)
+    return rows
+
+
+def _sync_in_session(transport: FakeTransport) -> current.SyncResult:
+    session = _Session(transport)
+    with _bound(cast(FakeBinding, _Binding(session))):
+        return current.sync_reminders(_context())
+
+
+def test_an_open_period_whose_item_is_gone_is_filed_once_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A changed due date makes the sync read the stored item (an acknowledged,
+    # unchanged key makes no call at all).
+    rows = _refile_rig(monkeypatch, status="open", due=dt.date(2063, 1, 20))
+    transport = FakeTransport(
+        current.CurrentError("not_found", logged=True),
+        {
+            "action": "created",
+            "item": _item() | {"ref": "ref-new", "due_on": "2063-01-20"},
+        },
+    )
+    assert _sync_in_session(transport) == current.SyncResult("synced")
+    assert transport.operations() == ["get", "create"]
+    sent = transport.calls[1][1]
+    assert sent["source_kind"] == current.SOURCE_KIND
+    assert sent["source_ref"] == sent["fingerprint"] == KEY
+    assert (rows[KEY].external_id, rows[KEY].state) == ("ref-new", "open")
+    assert rows[KEY].last_error_code is None
+
+
+def test_a_settled_period_whose_item_is_gone_is_forgotten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _refile_rig(monkeypatch, status="done")
+    transport = FakeTransport(current.CurrentError("not_found", logged=True))
+    assert _sync_in_session(transport) == current.SyncResult("synced")
+    assert transport.operations() == ["get"]
+    row = rows[KEY]
+    assert (row.state, row.external_id, row.last_status) == ("done", None, "done")
+
+
+def test_an_item_gone_before_its_update_is_set_aside_not_filed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _refile_rig(monkeypatch, status="open", due=dt.date(2063, 1, 20))
+    transport = FakeTransport(
+        {"item": _item() | {"ref": "ref-old"}},
+        current.CurrentError("not_found", logged=True),
+    )
+    assert _sync_in_session(transport) == current.SyncResult("partial", "not_found")
+    assert transport.operations() == ["get", "update"]
+    assert rows[KEY].external_id == "ref-old"
+    assert rows[KEY].last_error_code == "not_found"
 
 
 def test_the_key_local_and_global_codes_split_every_code() -> None:

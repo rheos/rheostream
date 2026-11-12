@@ -36,6 +36,9 @@ A refused key is set aside (#548):
   alpha's item exists and the planted detail is kept nowhere.
 - D8: a global code (``ModuleNotReady``) after alpha's real create rolls every key
   back: no item, row, audit row or event.
+- D9: an item erased through Current's approved deletion is filed once more, under a
+  new ref, at the next sync that reads it (a changed period); a third sync calls
+  nothing. For a settled period it is forgotten and never created again.
 - D11: in D4 and D5 every call starts at the session role, the first after a key
   rollback included, and so does the next session.
 """
@@ -736,6 +739,68 @@ def test_a_key_refused_on_every_sync_never_blocks_the_others(rig: Rig) -> None:
     assert alpha["external_id"] == foreign
     assert alpha["last_error_code"] == "not_owned"
     assert started <= alpha["last_attempt_at"] <= ended
+
+
+# --- D9: an item erased in Current (#548) ---------------------------------------------
+
+
+def _erase(rig: Rig, ref: str) -> None:
+    """The owner's approved deletion of the item ``ref`` through core."""
+    held = dispatch(
+        rig.owner,
+        "core.record.delete",
+        {"ref": ref},
+        registry=rig.surfaces.operations,
+        consumers=rig.consumers,
+    )
+    assert held.state == "approval_required", held
+    rig.core("core.approval.approve", {"approval_id": str(held.approval_id)})
+
+
+@pytest.mark.parametrize("status", ["open", "done"])
+def test_an_item_erased_in_current_is_filed_again_or_forgotten(
+    rig: Rig, status: Literal["open", "done"]
+) -> None:
+    rig.desired[:] = [_ticket(ALPHA)]
+    rig.approve()
+    assert rig.sync() == current.SyncResult("synced")
+    old = _row(rig, ALPHA)["external_id"]
+    assert old is not None
+    _erase(rig, old)
+    assert _items(rig) == []
+    creates = _audit(rig, "current.item.create")
+    # A changed period makes the sync read the stored item; an acknowledged,
+    # unchanged key makes no call.
+    rig.desired[:] = [
+        _ticket(ALPHA, status="done")
+        if status == "done"
+        else _ticket(ALPHA, due=date(2063, 2, 20))
+    ]
+    assert rig.sync() == current.SyncResult("synced")
+    row = _row(rig, ALPHA)
+    if status == "done":
+        # A settled period is never created again.
+        assert _items(rig) == []
+        assert (row["state"], row["external_id"], row["last_status"]) == (
+            "done",
+            None,
+            "done",
+        )
+        assert _audit(rig, "current.item.create") == creates
+        return
+    items = _items(rig)
+    assert [(i["source_kind"], i["source_ref"]) for i in items] == [
+        (current.SOURCE_KIND, ALPHA)
+    ]
+    assert row["external_id"] is not None and row["external_id"] != old
+    assert row["state"] == "open" and row["last_error_code"] is None
+    assert _audit(rig, "current.item.create") == creates + 1
+    # A third sync calls nothing and files nothing more.
+    calls = len(rig.spy.calls)
+    assert rig.sync() == current.SyncResult("synced")
+    assert len(rig.spy.calls) == calls
+    assert len(_items(rig)) == 1
+    assert _audit(rig, "current.item.create") == creates + 1
 
 
 # --- D8: package sets -----------------------------------------------------------------
