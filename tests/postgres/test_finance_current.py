@@ -44,6 +44,8 @@ A refused key is set aside (#548):
   last sync it names no key.
 - D11: in D4 and D5 every call starts at the session role, the first after a key
   rollback included, and so does the next session.
+- D12: a new key refused on its create, whose period then settles or leaves the
+  desired set, is acknowledged with no call: no item, no create audit, no code.
 """
 
 from collections.abc import Callable, Iterator, Mapping
@@ -488,6 +490,31 @@ def test_a_key_refused_for_itself_is_set_aside_and_the_rest_commit(rig: Rig) -> 
     ]
     assert _row(rig, BETA)["last_error_code"] is None
     assert _audit(rig, "current.item.create") == 2
+    assert _health(rig).reminder_errors == []
+
+
+@pytest.mark.parametrize("left", ["settled", "gone"])
+def test_a_claim_whose_period_ends_before_its_create_files_nothing(
+    rig: Rig, left: str
+) -> None:
+    rig.desired[:] = [_ticket(BETA)]
+    rig.approve()
+    rig.core("current.area.update", {"key": "bills", "retired": True})
+    assert rig.sync() == current.SyncResult("partial", "refused")
+    assert _row(rig, BETA)["state"] == "post_pending"
+    rig.desired[:] = [_ticket(BETA, status="done")] if left == "settled" else []
+    calls = len(rig.spy.calls)
+    # The claim fronts no item: it is acknowledged with no call, and nothing is filed.
+    assert rig.sync() == current.SyncResult("synced")
+    assert len(rig.spy.calls) == calls
+    assert _items(rig) == [] and _audit(rig, "current.item.create") == 0
+    beta = _row(rig, BETA)
+    assert (beta["state"], beta["external_id"], beta["last_status"]) == (
+        "done",
+        None,
+        "done",
+    )
+    assert beta["last_error_code"] is None
     assert _health(rig).reminder_errors == []
 
 

@@ -36,6 +36,9 @@ Two things stood between the tick and the owner opening `finance.jobs.enabled`.
   savepoint rolls back, its row keeps the code and the attempt time (a new key gets a
   `post_pending` claim with the code), and the loop goes on. The sync commits when the
   loop finishes and reports `partial`, which the job records as `ok=false, failed`.
+  A claim is created from the period's latest wanted fields, not the snapshot it was
+  claimed with. A claim fronts no item in process, so one whose period settles or
+  leaves the desired set before its first create is acknowledged with no call.
 - **A global condition still rolls back all.** `sink_off`, `not_configured`,
   `current_unavailable`, the HTTPS transport's own codes, a payload refusal, a storage
   error, a lost lease and a cancel stop the sync and leave Current and the sink rows
@@ -44,8 +47,10 @@ Two things stood between the tick and the owner opening `finance.jobs.enabled`.
   of its own. When the read of a stored item finds it gone, an open period is claimed
   afresh and created once more, which Current folds into any holder of the pair; a
   settled period is forgotten and never created again (ADR-0014). The read happens
-  only when the period's wanted state changed: an acknowledged, unchanged key makes no
-  call. A write that finds the item gone sets the key aside until the next read.
+  only when the period's wanted state changed or the key still carries a code: an
+  acknowledged, unchanged key with no code makes no call, and a key whose fields went
+  back to the acknowledged ones is read once, which clears its code. A write that
+  finds the item gone sets the key aside until the next read.
 - **Health names the keys.** `finance.job.health` returns each key whose row carries a
   code, with the code (`other` for a stored code outside the fixed set) and when it
   last synced, at most twenty and a count of the rest; `finance jobs health` prints one
@@ -57,9 +62,12 @@ Two things stood between the tick and the owner opening `finance.jobs.enabled`.
 Replaces one bullet of ADR-0025, "One transaction per sync, committed only when
 synced", and its Consequences sentence on a hand-deleted item or a repeating refusal
 stopping every key. ADR-0025 stays accepted: its other decisions stand, so this record
-names the bullet it replaces instead of superseding the whole record. Over HTTPS
-nothing changes: a refusal still stops the keys after it, the earlier keys having
-committed in their own steps, and `not_found` is still `refused`. A refused key is
+names the bullet it replaces instead of superseding the whole record. Over HTTPS a
+refusal still stops the keys after it, the earlier keys having committed in their own
+steps, and `not_found` is still `refused`; only the latest-fields create and the read
+that clears a stored code apply there too. A claim over HTTPS may front a create whose
+answer was lost, so one whose period settles is still created, which Current folds,
+and closed. A refused key is
 retried every tick with no backoff. One pdftotext call, one derive stage or one rates
 reply that alone runs past 40 seconds can still lose the lease; those are tracked
 separately.

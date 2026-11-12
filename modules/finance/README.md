@@ -165,9 +165,10 @@ first migration seeds it). Approve the sink with `finance sink approve current` 
 core: an approval given over HTTPS does not carry over. A sync is one transaction
 with a savepoint per key (ADR-0027). A key Current refuses for itself is set aside with
 its code on its row and the other keys sync; a condition of the whole sync (the sink
-off, Current unavailable) leaves Current and the sink's rows as they were. A Current
-item deleted by hand is filed again for an open period the next time its period
-changes. `finance jobs health` lists each set-aside key and its code. Status line 6's
+off, Current unavailable) leaves Current and the sink's rows as they were. A set-aside
+key is tried again at every sync with its period's latest fields; a new key refused
+before its item existed is never filed once its period settles. A Current item
+deleted by hand is filed again for an open period the next time its period changes. `finance jobs health` lists each set-aside key and its code. Status line 6's
 "not synced since" is the last time every key synced. Over HTTPS a refusal still stops
 the keys after it.
 

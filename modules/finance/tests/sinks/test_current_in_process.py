@@ -25,7 +25,14 @@
 - ``KEY_LOCAL`` and ``GLOBAL`` split ``CURRENT_CODES``;
 - a stored item Current no longer has, met on the read, is created once more for an
   open period with the sink's pair and forgotten for a settled one; one gone before
-  its update is set aside as ``not_found``, never created.
+  its update is set aside as ``not_found``, never created;
+- L17: in process a claim whose period settles or leaves the desired set before its
+  first create is acknowledged with no call (over HTTPS it is still created and
+  closed);
+- L18: a claim set aside is created from the latest wanted fields, not its first
+  snapshot;
+- L19: a key that carries a code is read once more even when its wanted fields are
+  back at the acknowledged ones, and the read clears the code.
 
 Values are synthetic.
 """
@@ -849,6 +856,109 @@ def test_an_item_gone_before_its_update_is_set_aside_not_filed(
     assert transport.operations() == ["get", "update"]
     assert rows[KEY].external_id == "ref-old"
     assert rows[KEY].last_error_code == "not_found"
+
+
+# --- #548 L17-L19: a set-aside key on its next sync ---------------------------------
+
+
+def _claim_rig(
+    monkeypatch: pytest.MonkeyPatch, wanted: current.Target | None
+) -> dict[str, SinkTicket]:
+    """One key whose first create was refused: a ``post_pending`` claim with no item,
+    carrying ``refused`` and the first snapshot. ``wanted`` is the period now; None
+    when it has left the desired set."""
+    rows = {KEY: _row().model_copy(update={"last_error_code": "refused"})}
+    monkeypatch.setattr(_MemoryStore, "rows", rows)
+    monkeypatch.setattr(current, "PostgresCurrentTicketRepository", _MemoryStore)
+    monkeypatch.setattr(current, "PostgresReminderRepository", _NoFacts)
+    monkeypatch.setattr(
+        current,
+        "desired_tickets",
+        lambda _ctx, _facts: SimpleNamespace(
+            tickets=[] if wanted is None else [SimpleNamespace(source_ref=KEY)]
+        ),
+    )
+    monkeypatch.setattr(current, "target", lambda _ticket, _registered: wanted)
+    monkeypatch.setattr(current, "is_enabled", lambda _uow, _sink: True)
+    _open_gate(monkeypatch, IN_PROCESS_DIGEST)
+    return rows
+
+
+@pytest.mark.parametrize("left", ["settled", "gone"])
+def test_a_claim_whose_period_ends_before_its_create_is_closed_with_no_call(
+    monkeypatch: pytest.MonkeyPatch, left: str
+) -> None:
+    """L17: in process the claim fronts no item, so nothing is filed to be closed."""
+    wanted = current.Target(SNAPSHOT, "done") if left == "settled" else None
+    rows = _claim_rig(monkeypatch, wanted)
+    transport = FakeTransport()
+    assert _sync_in_session(transport) == current.SyncResult("synced")
+    assert transport.calls == []
+    row = rows[KEY]
+    assert (row.state, row.external_id, row.last_status) == ("done", None, "done")
+    assert row.last_error_code is None and row.settled_at is not None
+
+
+def test_over_https_a_claim_whose_period_settled_is_still_created_and_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L17's HTTPS control: a claim there may front a create whose answer was lost,
+    so it is created (Current folds it) and closed."""
+    rows = _claim_rig(monkeypatch, current.Target(SNAPSHOT, "done"))
+    transport = FakeTransport(
+        {"action": "created", "item": _item() | {"ref": "ref-new"}},
+        {"item": _item(revision=2) | {"ref": "ref-new", "status": "done"}},
+    )
+    steps = current._Steps(
+        begin=_block,
+        sink=lambda uow: current.CurrentSink(uow, transport=transport),
+        unready=lambda _uow: None,
+    )
+    assert current._sync(_context(), steps) == current.SyncResult("synced")
+    assert transport.operations() == ["create", "set_status"]
+    assert (rows[KEY].external_id, rows[KEY].state) == ("ref-new", "done")
+
+
+def test_a_set_aside_claim_is_created_from_the_latest_wanted_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L18: the amount and due date changed while the key was set aside."""
+    newer = SNAPSHOT.model_copy(
+        update={
+            "body": "Type: bill-due\nAmount/detail: 75.00 CAD\nDate: due 2063-01-20",
+            "due_on": dt.date(2063, 1, 20),
+        }
+    )
+    rows = _claim_rig(monkeypatch, current.Target(newer, "open"))
+    transport = FakeTransport(
+        {
+            "action": "created",
+            "item": _item() | {"ref": "ref-new", "due_on": "2063-01-20"},
+        }
+    )
+    assert _sync_in_session(transport) == current.SyncResult("synced")
+    assert transport.operations() == ["create"]
+    sent = transport.calls[0][1]
+    assert (sent["body"], sent["due_on"]) == (newer.body, "2063-01-20")
+    assert rows[KEY].create == newer
+    assert (rows[KEY].external_id, rows[KEY].last_error_code) == ("ref-new", None)
+
+
+def test_a_key_back_at_its_acknowledged_fields_is_read_and_its_code_cleared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L19: an update was refused after the fields changed; they are now back at the
+    acknowledged ones. One read confirms the item and clears the code; then the key
+    makes no call."""
+    rows = _refile_rig(monkeypatch, status="open")
+    rows[KEY] = rows[KEY].model_copy(update={"last_error_code": "refused"})
+    transport = FakeTransport({"item": _item() | {"ref": "ref-old"}})
+    assert _sync_in_session(transport) == current.SyncResult("synced")
+    assert transport.operations() == ["get"]
+    assert rows[KEY].last_error_code is None
+    again = FakeTransport()
+    assert _sync_in_session(again) == current.SyncResult("synced")
+    assert again.calls == []
 
 
 def test_the_key_local_and_global_codes_split_every_code() -> None:

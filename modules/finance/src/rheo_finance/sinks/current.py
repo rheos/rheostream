@@ -774,7 +774,26 @@ def _reconcile(ctx: FinanceContext, ref: str, intent: Target, steps: _Steps) -> 
                 update={"state": "post_pending", "create": intent.create}
             )
             store.save(row)
-        if _same(row, intent) and row.state != "post_pending":
+        in_process = steps.key is not None
+        if row.state == "post_pending" and intent.status == "done" and in_process:
+            # In process a claim never fronts an item: its create and its external id
+            # commit in one key savepoint. A period that settled, or left the desired
+            # set, before its first create is acknowledged with no call (ADR-0027).
+            # Over HTTPS a claim may front a create whose answer was lost, so it is
+            # still created, which Current folds, and then closed.
+            store.save(_acknowledged(row, intent, now))
+            return
+        if row.state == "post_pending" and row.create != intent.create:
+            # A claim set aside keeps its first snapshot; the create sends the latest.
+            row = row.model_copy(update={"create": intent.create})
+            store.save(row)
+        if (
+            _same(row, intent)
+            and row.state != "post_pending"
+            and row.last_error_code is None
+        ):
+            # A key that still carries a code is read once more, which confirms and
+            # clears it, even when its wanted fields are back at the acknowledged ones.
             return
     fresh: RemoteItem | None = None
     if row.state == "post_pending":
