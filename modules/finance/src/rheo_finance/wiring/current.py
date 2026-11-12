@@ -6,12 +6,14 @@ service context for Current's four item operations and the consumer registry Cur
 writes publish through. Finance's own reads and writes run in ``owner`` blocks as
 ``finance_owner`` on that transaction; each Current operation runs through
 ``call_in_transaction`` in a savepoint, at the session role, because neither finance
-role may touch Current's or core's tables. Nothing commits the transaction but the
-session's ``commit``.
+role may touch Current's or core's tables. Each reminder key's pass runs in a
+savepoint of its own (``key``), so a key refused for itself rolls back alone
+(ADR-0027). Nothing commits the transaction but the session's ``commit``.
 
 A refusal leaves as a fixed ``CurrentError`` code with nothing chained, and one
-content-free log line, because the row annotation that records it is rolled back.
-Imported lazily (the tick job, the CLI's context), never by the manifest.
+content-free log line; a set-aside key's row keeps the code too, while a global
+refusal's annotation rolls back with the sync. Imported lazily (the tick job, the
+CLI's context), never by the manifest.
 """
 
 from __future__ import annotations
@@ -59,7 +61,10 @@ def _refusal_code(exc: Exception) -> str | None:
     if isinstance(exc, ModuleNotReady):
         return "current_unavailable"
     if isinstance(exc, OperationRefused):
-        return "record_stale" if exc.state == "record_stale" else "refused"
+        if exc.state == "record_stale":
+            return "record_stale"
+        # Current has no item with that id (ADR-0027: the sink files it again).
+        return "not_found" if exc.state == "not_found" else "refused"
     if isinstance(exc, StaleRecord):
         return "record_stale"
     if isinstance(exc, StorageRefusal):
@@ -93,6 +98,18 @@ class _Session:
                 yield UnitOfWork(self._connection)
         finally:
             self._in_block = False
+
+    @contextmanager
+    def key(self) -> Iterator[None]:
+        """One reminder key's savepoint. Taken at the session role, outside any owner
+        block, so rolling back to it also undoes any role set after it. Finance's
+        writer lock was taken before it and stays held; Current's lifecycle lock,
+        if a rolled-back key released it, is taken again by the next key's first
+        write, so the order stays writer lock, then lifecycle lock."""
+        if self._in_block:
+            raise RuntimeError("a reminder key savepoint is taken outside owner blocks")
+        with self._connection.begin_nested():
+            yield
 
     def call(self, operation: str, inputs: dict[str, object]) -> dict[str, object]:
         if operation not in current.OPERATIONS:

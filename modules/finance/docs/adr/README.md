@@ -9,7 +9,10 @@ Decision, Consequences). ADRs 0001 to 0009 were written in Phase 1. The remainin
 next-numbered ADR in the PR of the phase that first builds them. A changed
 decision gets a new ADR, and the old one's `Status:` becomes `superseded-by-NNNN`; old bodies are
 not rewritten. A decision that a later ADR narrows without replacing keeps its status and gains an
-`Amended-by: ADR-NNNN` line after `Date:`; its body is not rewritten either.
+`Amended-by: ADR-NNNN` line after `Date:`; its body is not rewritten either. A record whose single
+decision a later ADR replaces while its other decisions stand keeps `Status: accepted` and gains a
+`Partly replaced by ADR-NNNN` line after `Date:` naming the replaced decision; its body is not
+rewritten.
 
 ADR-0017 superseded ADR-0007 for private server residency and scheduling. ADR-0021
 supersedes ADR-0017: Float runs as a rheoStream module in the main workspace
@@ -42,3 +45,14 @@ call, file names only inside a framed stream checked against one path rule, a re
 that stages and checks everything before it links anything into place, refusal by
 default with `--replace` for the owner's edited inputs alone, keys only with `--keys`,
 and fixed-code messages. It extends ADR-0024's layout and supersedes nothing.
+
+ADR-0027 records that the tick's long steps beat the job's checkpoint so the lease
+holds, and that a reminder sync in process takes a savepoint per key: a key refused
+for itself is set aside with its code and the others commit, a global condition still
+rolls back all, a stored item Current no longer has is filed again for an open period
+and forgotten for a settled one, and `finance jobs health` names each set-aside key.
+It extends ADR-0024 and replaces one bullet of ADR-0025 ("one transaction per sync,
+committed only when synced") and its sentence on a hand-deleted item. ADR-0025 stays
+accepted, because its other decisions stand, and carries a `Partly replaced by
+ADR-0027` line; ADR-0027 names the one bullet it replaces instead of superseding the
+whole record.

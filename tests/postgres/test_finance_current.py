@@ -1,33 +1,58 @@
-"""Finance's reminders reach Current in process (RS-6c, ADR-0025).
+"""Finance's reminders reach Current in process (RS-6c, ADR-0025, ADR-0027).
 
 Both modules installed and enabled through core's real operations, Current's real
-handlers through ``call_in_transaction``, the worker's real visit for D4 and D7. The
+handlers through ``call_in_transaction``, the worker's real visit where named. The
 reminders come from a patched ``desired_tickets`` and payee registry: synthetic labels,
-round synthetic amounts, keys ``finance:alpha:<period>`` and ``finance:beta:<period>``.
-The approval goes through the real ``finance.sink.approve`` under the binding, so it
-pins the in-process digest. A spy around ``call_in_transaction`` records each call and
-whether the connection is at the session role before and after it.
+round synthetic amounts, keys ``finance:alpha:<period>``, ``finance:beta:<period>``
+and ``finance:gamma:<period>``. The approval goes through the real
+``finance.sink.approve`` under the binding, so it pins the in-process digest. A spy
+around ``call_in_transaction`` records each call and whether the connection is at the
+session role before and after it.
 
-- D1: one sync creates exactly two items with the pair and provenance ``agent``; a
-  second sync makes no call and changes nothing.
-- D2: an item that already holds a key's pair, with no sink row, is folded into.
-- D3: a real refusal (a retired area) after an update rolls back the whole sync.
-- D3b: a refusal after a real create rolls that create back too.
-- D4: a planted refusal detail is kept nowhere; through a worker visit the sync's row
-  is ``ok=false, failed`` and the tick is recorded; ``ModuleNotReady`` under a call is
-  ``current_unavailable`` and the job still succeeds.
-- D5: a sink row pointing at an item with another source pair is never changed; the
-  control with the pair is.
-- D6: every call starts and ends at the session role, and so does the next session.
-- D7: the tick in one worker visit syncs, and a second visit creates nothing new.
-- D8: no ``finance.`` name in the loaded registries or the token sets.
+RS-6c, kept:
+
+- one sync creates exactly two items with the pair and provenance ``agent``; a second
+  sync makes no call and changes nothing; every call starts and ends at the session
+  role, and so does the next session;
+- an item that already holds a key's pair, with no sink row, is folded into;
+- ``ModuleNotReady`` under a call is ``current_unavailable`` and the job still
+  succeeds; the tick in one worker visit syncs, and a second visit creates nothing new;
+- a sink row pointing at an item with another source pair is never changed (now set
+  aside, ``partial``); the control with the pair is;
+- no ``finance.`` name in the loaded registries or the token sets.
+
+A refused key is set aside (#548):
+
+- D4: a real refusal (a retired area) of a new key's create leaves alpha's update
+  committed and acknowledged, beta with no item, audit or event and a ``post_pending``
+  claim carrying ``refused``; a rerun calls only beta's create; once the area is
+  restored beta is created once and its code cleared.
+- D5: a refusal after alpha's real update rolls back alpha's key alone (item, audit,
+  events and the row's acknowledging columns as they were) while beta is created.
+- D6: a row pointing at a foreign item is set aside on every sync, and the other keys
+  sync once and then make no call; the foreign item never changes.
+- D7: through a worker visit, a planted refusal on beta's create alone: the job
+  succeeds, the sync's row is ``ok=false, failed``, the tick is recorded ``ok=true``,
+  alpha's item exists and the planted detail is kept nowhere.
+- D8: a global code (``ModuleNotReady``) after alpha's real create rolls every key
+  back: no item, row, audit row or event.
+- D9: an item erased through Current's approved deletion is filed once more, under a
+  new ref, at the next sync that reads it (a changed period); a third sync calls
+  nothing. For a settled period it is forgotten and never created again.
+- D10: after two worker visits over D6's setup, the owner's ``finance.job.health``
+  is ``failed_due_job`` and names alpha with ``not_owned``, never synced; after D4's
+  last sync it names no key.
+- D11: in D4 and D5 every call starts at the session role, the first after a key
+  rollback included, and so does the next session.
+- D12: a new key refused on its create, whose period then settles or leaves the
+  desired set, is acknowledged with no call: no item, no create audit, no code.
 """
 
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import pytest
@@ -48,6 +73,7 @@ from rheo_core.modules.loader import loaded_manifests
 from rheo_core.modules.readiness import ModuleNotReady
 from rheo_core.operations import dispatch, register_core_operations, transaction
 from rheo_core.operations.refusals import OperationRefused
+from rheo_core.refs.resolver import RESOLVERS, register_resolver
 from rheo_core.settings import resolver as settings_resolver
 from rheo_core.settings.schema import REGISTRY as SETTINGS
 from rheo_core.settings.schema import SettingsRegistry, ValueType, encode_text
@@ -64,6 +90,7 @@ from rheo_current.storage import tables as current_tables
 from rheo_finance import catalogue, db
 from rheo_finance.contracts import Role
 from rheo_finance.jobs import registry as job_registry
+from rheo_finance.jobs.service import HealthOut, ReminderError
 from rheo_finance.operations import dispatch as finance_dispatch
 from rheo_finance.reminders.desired import DesiredOut, DesiredTicket
 from rheo_finance.reminders.store import PostgresReminderRepository
@@ -82,25 +109,47 @@ pytestmark = pytest.mark.postgres
 PERIOD = "bill-2063-02"
 ALPHA = f"finance:alpha:{PERIOD}"
 BETA = f"finance:beta:{PERIOD}"
+GAMMA = f"finance:gamma:{PERIOD}"
 PAYEES = frozenset({"Sample Utility", "Sample Card"})
 PLANTED = "synthetic planted detail"
 SETTINGS_TEXT = (
     '[finance.reminders]\nmin_due_date = "2063-01-01"\n'
     "[finance.sinks.current]\nenabled = true\n"
 )
+# A row's acknowledging columns: what a key that was set aside must leave as it was.
+ACKNOWLEDGING = (
+    "state",
+    "external_id",
+    "last_title",
+    "last_due_on",
+    "last_priority",
+    "last_status",
+    "last_success_at",
+    "settled_at",
+    "create_title",
+    "create_body",
+    "create_due_on",
+    "create_priority",
+)
 
 
-def _ticket(key: str, *, due: date = date(2063, 2, 15)) -> DesiredTicket:
+def _ticket(
+    key: str,
+    *,
+    due: date = date(2063, 2, 15),
+    amount: Decimal = Decimal("50.00"),
+    status: Literal["open", "done"] = "open",
+) -> DesiredTicket:
     label = "Sample Utility" if ":alpha:" in key else "Sample Card"
     return DesiredTicket(
         payee_label=label,
-        amount=Decimal("50.00"),
+        amount=amount,
         due_date=due,
         period=PERIOD,
         title=f"{label} due",
         body="synthetic",
         source_ref=key,
-        status="open",
+        status=status,
         wake=None,
         severity="normal",
     )
@@ -294,14 +343,11 @@ def _audit(rig: Rig, operation: str | None = None) -> int:
         return int(connection.execute(select(func.count()).where(clause)).scalar_one())
 
 
-def _outbox(rig: Rig) -> int:
+def _outbox(rig: Rig, kind: str | None = None) -> int:
     outbox = work_tables.outbox_event
+    clause = outbox.c.type.like("current.%") if kind is None else outbox.c.type == kind
     with rig.engine().connect() as connection:
-        return int(
-            connection.execute(
-                select(func.count()).where(outbox.c.type.like("current.%"))
-            ).scalar_one()
-        )
+        return int(connection.execute(select(func.count()).where(clause)).scalar_one())
 
 
 def _rows(rig: Rig) -> list[dict[str, Any]]:
@@ -318,6 +364,32 @@ def _snapshot(rig: Rig) -> tuple[object, ...]:
 
 def _creates(rig: Rig) -> int:
     return sum(1 for name, _, _ in rig.spy.calls if name == "current.item.create")
+
+
+def _row(rig: Rig, key: str) -> dict[str, Any]:
+    return next(row for row in _rows(rig) if row["source_ref"] == key)
+
+
+def _acknowledging(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {name: row[name] for name in ACKNOWLEDGING}
+
+
+def _health(rig: Rig) -> HealthOut:
+    """``finance.job.health`` dispatched by the owner, as ``finance jobs health``."""
+    ctx = context_over_core(rig.operator, Role.OWNER, model_client=None)
+    out = finance_dispatch("finance.job.health", {}, Role.OWNER, ctx=ctx)
+    assert isinstance(out, HealthOut)
+    return out
+
+
+def _assert_session_role(rig: Rig) -> None:
+    """D11: every call began at the session role, the first after a key rollback
+    included; every call that returned ended there; so does the next session."""
+    assert rig.spy.calls
+    assert all(before is True for _, before, _ in rig.spy.calls)
+    assert all(after in {True, None} for _, _, after in rig.spy.calls)
+    with open_unit_of_work(rig.operator) as uow:
+        assert _session_user(uow.connection)
 
 
 # --- D1, D6: dedup and the session role -----------------------------------------------
@@ -376,43 +448,131 @@ def test_an_item_already_holding_the_pair_is_folded_into(rig: Rig) -> None:
     assert [r["external_id"] for r in _rows(rig)] == [held_ref]
 
 
-# --- D3, D3b: a refusal rolls the whole sync back -------------------------------------
+# --- D4, D5, D8, D11: a refused key is set aside (#548) -------------------------------
 
 
-def test_a_real_refusal_after_an_update_rolls_the_whole_sync_back(rig: Rig) -> None:
+def test_a_key_refused_for_itself_is_set_aside_and_the_rest_commit(rig: Rig) -> None:
     rig.desired[:] = [_ticket(ALPHA)]
     rig.approve()
     assert rig.sync() == current.SyncResult("synced")
     rig.core("current.area.update", {"key": "bills", "retired": True})
     rig.desired[:] = [_ticket(ALPHA, due=date(2063, 2, 20)), _ticket(BETA)]
     # The approval pins the spec, which has not changed, so the gate stays open.
-    before = _snapshot(rig)
-    assert rig.sync() == current.SyncResult("failed", "refused")
-    names = [name for name, _, _ in rig.spy.calls]
-    # The update ran, and was rolled back with the refused create.
-    assert "current.item.update" in names and names[-1] == "current.item.create"
-    # The spy writes a call's after-role only when the real call returned, so the
-    # update really ran before the refusal rolled it back.
-    update = next(call for call in rig.spy.calls if call[0] == "current.item.update")
-    assert update[2] is not None
-    assert _snapshot(rig) == before
-    assert _items(rig)[0]["due_on"] == date(2063, 2, 15)
+    assert rig.sync() == current.SyncResult("partial", "refused")
+    # Alpha's update committed with its acknowledgement.
+    items = _items(rig)
+    assert [i["source_ref"] for i in items] == [ALPHA]
+    assert items[0]["due_on"] == date(2063, 2, 20)
+    alpha = _row(rig, ALPHA)
+    assert alpha["last_due_on"] == date(2063, 2, 20)
+    assert alpha["last_error_code"] is None
+    # Beta's refused create left no item, audit or event, and a claim with its code.
+    assert _audit(rig, "current.item.create") == 1
+    assert _outbox(rig, "current.item.created") == 1
+    beta = _row(rig, BETA)
+    assert (beta["state"], beta["external_id"], beta["last_error_code"]) == (
+        "post_pending",
+        None,
+        "refused",
+    )
+    _assert_session_role(rig)
+    # A rerun calls nothing for alpha, and beta is refused again.
+    calls = len(rig.spy.calls)
+    assert rig.sync() == current.SyncResult("partial", "refused")
+    assert [name for name, _, _ in rig.spy.calls[calls:]] == ["current.item.create"]
+    assert len(_items(rig)) == 1
+    # The area restored, beta is created once and its code cleared.
+    rig.core("current.area.update", {"key": "bills", "retired": False})
+    assert rig.sync() == current.SyncResult("synced")
+    assert [(i["source_kind"], i["source_ref"]) for i in _items(rig)] == [
+        (current.SOURCE_KIND, ALPHA),
+        (current.SOURCE_KIND, BETA),
+    ]
+    assert _row(rig, BETA)["last_error_code"] is None
+    assert _audit(rig, "current.item.create") == 2
+    assert _health(rig).reminder_errors == []
 
 
-def test_a_refusal_after_a_real_create_rolls_that_create_back(rig: Rig) -> None:
+@pytest.mark.parametrize("left", ["settled", "gone"])
+def test_a_claim_whose_period_ends_before_its_create_files_nothing(
+    rig: Rig, left: str
+) -> None:
+    rig.desired[:] = [_ticket(BETA)]
     rig.approve()
-    creates: list[int] = []
+    rig.core("current.area.update", {"key": "bills", "retired": True})
+    assert rig.sync() == current.SyncResult("partial", "refused")
+    assert _row(rig, BETA)["state"] == "post_pending"
+    rig.desired[:] = [_ticket(BETA, status="done")] if left == "settled" else []
+    calls = len(rig.spy.calls)
+    # The claim fronts no item: it is acknowledged with no call, and nothing is filed.
+    assert rig.sync() == current.SyncResult("synced")
+    assert len(rig.spy.calls) == calls
+    assert _items(rig) == [] and _audit(rig, "current.item.create") == 0
+    beta = _row(rig, BETA)
+    assert (beta["state"], beta["external_id"], beta["last_status"]) == (
+        "done",
+        None,
+        "done",
+    )
+    assert beta["last_error_code"] is None
+    assert _health(rig).reminder_errors == []
 
-    def fail(name: str, _index: int) -> BaseException | None:
-        if name != "current.item.create":
-            return None
-        creates.append(1)
-        return OperationRefused("synthetic_state") if len(creates) == 2 else None
 
-    rig.spy.fail = fail
+def test_a_refusal_after_a_real_update_rolls_back_that_key_alone(rig: Rig) -> None:
+    rig.desired[:] = [_ticket(ALPHA)]
+    rig.approve()
+    assert rig.sync() == current.SyncResult("synced")
+    item_before = _items(rig)[0]
+    row_before = _acknowledging(_row(rig, ALPHA))
+    created = _outbox(rig, "current.item.created")
+    assert created == 1
+    rig.desired[:] = [
+        _ticket(ALPHA, amount=Decimal("60.00"), status="done"),
+        _ticket(BETA),
+    ]
+    rig.spy.fail = lambda name, _index: (
+        OperationRefused("synthetic_state")
+        if name == "current.item.set_status"
+        else None
+    )
     rig.spy.after_real = True
-    assert rig.sync() == current.SyncResult("failed", "refused")
-    assert len(creates) == 2
+    calls = len(rig.spy.calls)
+    assert rig.sync() == current.SyncResult("partial", "refused")
+    names = [name for name, _, _ in rig.spy.calls[calls:]]
+    # Alpha's update really ran (the spy kept its after-role) before its status
+    # change was refused; then beta was created.
+    update = next(c for c in rig.spy.calls[calls:] if c[0] == "current.item.update")
+    assert update[2] is True
+    assert "current.item.set_status" in names and names[-1] == "current.item.create"
+    # Alpha's item, its audit and events, and its row are as they were.
+    assert next(i for i in _items(rig) if i["source_ref"] == ALPHA) == item_before
+    assert _audit(rig, "current.item.update") == 0
+    assert _audit(rig, "current.item.set_status") == 0
+    assert _outbox(rig, "current.item.completed") == 0
+    alpha = _row(rig, ALPHA)
+    assert _acknowledging(alpha) == row_before
+    assert alpha["last_error_code"] == "refused"
+    # Beta created and acknowledged beside it.
+    assert _outbox(rig, "current.item.created") == created + 1
+    beta = _row(rig, BETA)
+    assert (beta["state"], beta["last_error_code"]) == ("open", None)
+    assert beta["external_id"] is not None
+    _assert_session_role(rig)
+
+
+def test_a_global_code_after_a_real_create_rolls_back_every_key(rig: Rig) -> None:
+    rig.approve()
+    rig.spy.fail = lambda name, index: (
+        ModuleNotReady("module_unavailable", PLANTED)
+        if name == "current.item.create" and index == 1
+        else None
+    )
+    assert rig.sync() == current.SyncResult("failed", "current_unavailable")
+    # Alpha's create really returned before beta's call stopped the sync.
+    assert [(name, after) for name, _, after in rig.spy.calls] == [
+        ("current.item.create", True),
+        ("current.item.create", None),
+    ]
     assert _items(rig) == [] and _rows(rig) == []
     assert _audit(rig) == 0 and _outbox(rig) == 0
 
@@ -502,16 +662,19 @@ def test_a_refusal_through_the_worker_keeps_only_fixed_codes(
     rig: Rig, reminders_only: None
 ) -> None:
     rig.approve()
-    rig.spy.fail = lambda name, _i: (
+    # Beta's create only: alpha's goes through.
+    rig.spy.fail = lambda name, index: (
         OperationRefused("area_retired", PLANTED)
-        if name == "current.item.create"
+        if name == "current.item.create" and index == 1
         else None
     )
     assert _visit(rig) == {"state": "succeeded", "last_error": None}
     assert _job_runs(rig, "finance.reminders_sync") == [(False, "failed")]
-    assert _job_runs(rig, "finance.tick")
+    assert [ok for ok, _ in _job_runs(rig, "finance.tick")] == [True]
     assert PLANTED not in _everything_as_text(rig)
-    assert _items(rig) == [] and _rows(rig) == []
+    assert [i["source_ref"] for i in _items(rig)] == [ALPHA]
+    assert _row(rig, ALPHA)["last_error_code"] is None
+    assert _row(rig, BETA)["last_error_code"] == "refused"
 
 
 def test_module_not_ready_under_a_call_is_unavailable_and_the_job_succeeds(
@@ -542,19 +705,8 @@ def test_the_tick_syncs_through_one_worker_visit(
 # --- D5: scope ----------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("kind", "expected"),
-    [
-        ("email", current.SyncResult("failed", "not_owned")),
-        (current.SOURCE_KIND, current.SyncResult("synced")),
-    ],
-    ids=["foreign", "control"],
-)
-def test_a_row_pointing_at_a_foreign_item_never_changes_it(
-    rig: Rig, kind: str, expected: current.SyncResult
-) -> None:
-    rig.desired[:] = [_ticket(ALPHA)]
-    rig.approve()
+def _alpha_row_on_an_item(rig: Rig, kind: str) -> str:
+    """A sink row for alpha pointing at a new item of source kind ``kind``."""
     held = rig.core(
         "current.item.create",
         {
@@ -577,6 +729,24 @@ def test_a_row_pointing_at_a_foreign_item_never_changes_it(
                 create_priority="normal",
             )
         )
+    assert isinstance(ref, str)
+    return ref
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("email", current.SyncResult("partial", "not_owned")),
+        (current.SOURCE_KIND, current.SyncResult("synced")),
+    ],
+    ids=["foreign", "control"],
+)
+def test_a_row_pointing_at_a_foreign_item_never_changes_it(
+    rig: Rig, kind: str, expected: current.SyncResult
+) -> None:
+    rig.desired[:] = [_ticket(ALPHA)]
+    rig.approve()
+    _alpha_row_on_an_item(rig, kind)
     revision = _items(rig)[0]["revision"]
     assert rig.sync() == expected
     after = _items(rig)[0]["revision"]
@@ -585,6 +755,122 @@ def test_a_row_pointing_at_a_foreign_item_never_changes_it(
     else:
         assert after == revision and _audit(rig, "current.item.update") == 0
         assert [name for name, _, _ in rig.spy.calls] == ["current.item.get"]
+
+
+def test_a_key_refused_on_every_sync_never_blocks_the_others(rig: Rig) -> None:
+    rig.desired[:] = [_ticket(ALPHA), _ticket(BETA), _ticket(GAMMA)]
+    rig.approve()
+    foreign = _alpha_row_on_an_item(rig, "email")
+    revision = next(i for i in _items(rig) if i["source_kind"] == "email")["revision"]
+    assert rig.sync() == current.SyncResult("partial", "not_owned")
+    ours = [i["source_ref"] for i in _items(rig) if i["source_kind"] != "email"]
+    assert ours == [BETA, GAMMA]
+    calls = len(rig.spy.calls)
+    started = datetime.now(UTC)
+    assert rig.sync() == current.SyncResult("partial", "not_owned")
+    ended = datetime.now(UTC)
+    # Only alpha's read: beta and gamma are synced and make no call.
+    assert [name for name, _, _ in rig.spy.calls[calls:]] == ["current.item.get"]
+    ours = [i["source_ref"] for i in _items(rig) if i["source_kind"] != "email"]
+    assert ours == [BETA, GAMMA]
+    held = next(i for i in _items(rig) if i["source_kind"] == "email")
+    assert held["revision"] == revision
+    assert _audit(rig, "current.item.update") == 0
+    alpha = _row(rig, ALPHA)
+    assert alpha["external_id"] == foreign
+    assert alpha["last_error_code"] == "not_owned"
+    assert started <= alpha["last_attempt_at"] <= ended
+
+
+def test_health_names_the_key_set_aside_through_the_worker(
+    rig: Rig, reminders_only: None
+) -> None:
+    rig.desired[:] = [_ticket(ALPHA), _ticket(BETA), _ticket(GAMMA)]
+    rig.approve()
+    _alpha_row_on_an_item(rig, "email")
+    for _ in range(2):
+        assert _visit(rig) == {"state": "succeeded", "last_error": None}
+    out = _health(rig)
+    assert out.code == "failed_due_job"
+    assert out.reminder_errors == [
+        ReminderError(key=ALPHA, code="not_owned", last_success_at=None)
+    ]
+    assert out.more == 0
+
+
+# --- D9: an item erased in Current (#548) ---------------------------------------------
+
+
+def _erase(rig: Rig, ref: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The owner's approved deletion of the item ``ref`` through core.
+
+    The approval's ``RecordStateGuard`` resolves the item on the process-wide resolver
+    table, which ``loaded_probe_modules`` leaves alone. Without Current's resolvers
+    there the hold records no revision and the guard refuses, so the approval ends
+    ``refused`` and the item stays. A copy of the table holds them for this test only,
+    registered before the hold, as every other rig that drives a deletion does.
+    """
+    monkeypatch.setattr(RESOLVERS, "_resolvers", dict(RESOLVERS._resolvers))
+    manifest = loaded_manifests()["current"]
+    for name, resolver in manifest.resolvers:
+        register_resolver(manifest.module_id, name, resolver, origin=manifest.module_id)
+    held = dispatch(
+        rig.owner,
+        "core.record.delete",
+        {"ref": ref},
+        registry=rig.surfaces.operations,
+        consumers=rig.consumers,
+    )
+    assert held.state == "approval_required", held
+    approved = rig.core("core.approval.approve", {"approval_id": str(held.approval_id)})
+    # A guard refusal still answers ``succeeded``; the approval's own state says.
+    assert approved.state == "executed", approved
+
+
+@pytest.mark.parametrize("status", ["open", "done"])
+def test_an_item_erased_in_current_is_filed_again_or_forgotten(
+    rig: Rig, status: Literal["open", "done"], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig.desired[:] = [_ticket(ALPHA)]
+    rig.approve()
+    assert rig.sync() == current.SyncResult("synced")
+    old = _row(rig, ALPHA)["external_id"]
+    assert old is not None
+    _erase(rig, old, monkeypatch)
+    assert _items(rig) == []
+    creates = _audit(rig, "current.item.create")
+    # A changed period makes the sync read the stored item; an acknowledged,
+    # unchanged key makes no call.
+    rig.desired[:] = [
+        _ticket(ALPHA, status="done")
+        if status == "done"
+        else _ticket(ALPHA, due=date(2063, 2, 20))
+    ]
+    assert rig.sync() == current.SyncResult("synced")
+    row = _row(rig, ALPHA)
+    if status == "done":
+        # A settled period is never created again.
+        assert _items(rig) == []
+        assert (row["state"], row["external_id"], row["last_status"]) == (
+            "done",
+            None,
+            "done",
+        )
+        assert _audit(rig, "current.item.create") == creates
+        return
+    items = _items(rig)
+    assert [(i["source_kind"], i["source_ref"]) for i in items] == [
+        (current.SOURCE_KIND, ALPHA)
+    ]
+    assert row["external_id"] is not None and row["external_id"] != old
+    assert row["state"] == "open" and row["last_error_code"] is None
+    assert _audit(rig, "current.item.create") == creates + 1
+    # A third sync calls nothing and files nothing more.
+    calls = len(rig.spy.calls)
+    assert rig.sync() == current.SyncResult("synced")
+    assert len(rig.spy.calls) == calls
+    assert len(_items(rig)) == 1
+    assert _audit(rig, "current.item.create") == creates + 1
 
 
 # --- D8: package sets -----------------------------------------------------------------

@@ -63,7 +63,7 @@ from typing import Annotated, Final, Literal
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete, insert, select, update
 
-from rheo_finance.context import FinanceContext, UnitOfWork
+from rheo_finance.context import FinanceContext, UnitOfWork, no_progress
 from rheo_finance.contracts import Role, SafetyClass, Tiered
 from rheo_finance.documents.issuers import Placement, place, skip_directory
 from rheo_finance.manual.accounts import IDENTIFIERS_FILE, AccountIdentifierRow
@@ -226,8 +226,11 @@ def _sha256(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def walk(root: Path, check: PathCheck) -> Walk:
-    """Read the archive under ``root``; write nothing."""
+def walk(
+    root: Path, check: PathCheck, *, progress: Callable[[], None] = no_progress
+) -> Walk:
+    """Read the archive under ``root``; write nothing. ``progress`` beats once per
+    listed entry, before it is checked or hashed."""
     result = Walk()
 
     def unlisted(error: OSError) -> None:
@@ -240,6 +243,8 @@ def walk(root: Path, check: PathCheck) -> Walk:
         result.skipped[skip_directory(relative / "_"), "unreadable"] += 1
 
     for path in _entries(root, unlisted):
+        # Outside every except below: a lost lease or a cancel leaves the walk.
+        progress()
         relative = PurePosixPath(path.relative_to(root).as_posix())
         directory = skip_directory(relative)
         # The identifier check comes first: whatever else is wrong with a path that
@@ -299,12 +304,17 @@ def _new_row(found: Found, now: dt.datetime) -> dict[str, object]:
 
 
 def file_archive(
-    uow: UnitOfWork, root: Path, data_dir: Path, now: dt.datetime
+    uow: UnitOfWork,
+    root: Path,
+    data_dir: Path,
+    now: dt.datetime,
+    *,
+    progress: Callable[[], None] = no_progress,
 ) -> Filed:
     """Walk the archive at ``root``, register new bytes, follow moved ones, withhold
     stored paths the check now refuses and rewrite ``archive_skip``."""
     check = PathCheck(registered_identifiers(uow, data_dir))
-    walked = walk(root, check)
+    walked = walk(root, check, progress=progress)
     paths_by_sha: dict[str, list[Found]] = {}
     for found in walked.found:
         paths_by_sha.setdefault(found.sha256, []).append(found)
@@ -449,9 +459,14 @@ def file_documents(ctx: FinanceContext, uow: UnitOfWork, _data: FileIn) -> FileO
     now = ctx.clock.now_utc()
     check = PathCheck(registered_identifiers(uow, ctx.paths.data))
     downloads = filer.file_downloads(
-        uow, ctx.settings.get_path(filer.DOWNLOADS_KEY), root, check, now
+        uow,
+        ctx.settings.get_path(filer.DOWNLOADS_KEY),
+        root,
+        check,
+        now,
+        progress=ctx.progress,
     )
-    filed = file_archive(uow, root, ctx.paths.data, now)
+    filed = file_archive(uow, root, ctx.paths.data, now, progress=ctx.progress)
     return FileOut(
         registered=filed.registered,
         known=filed.known,

@@ -5,7 +5,8 @@ writes the job row after it returns: the tick commits in short sessions of its o
 (``jobs.tick`` dispatches each step on a fresh core session), and the reminder sync in
 one session of its own, bound here to Current in process with the worker's consumer
 registry (``wiring.current``). It checks the cancellation token before each due job,
-before the prune and while a model call waits.
+before the prune, while a model call waits and inside each long step, through the
+context's ``progress`` beat (ADR-0027).
 
 The worker stores ``str(exc)`` of whatever a handler raises, so every failure leaves
 here as ``FinanceJobFailed`` carrying a fixed code and nothing chained; cancellation,
@@ -95,6 +96,8 @@ def _run(
     from rheo_finance.wiring.current import bind_reminders
     from rheo_finance.wiring.model import runtime_model_client
 
+    # One bound method, handed to the model client, the context and the tick alike.
+    checkpoint = token.checkpoint
     bound = db.use_layout(db.check_layout(layout_for(core_ctx)))
     try:
         # Reminders go to Current in process, through the worker's registry, which
@@ -103,12 +106,13 @@ def _run(
             ctx = context_over_core(
                 core_ctx,
                 Role.SERVICE,
-                model_client=runtime_model_client(core_ctx, heartbeat=token.checkpoint),
+                model_client=runtime_model_client(core_ctx, heartbeat=checkpoint),
+                progress=checkpoint,
             )
             # The tick's per-job handler records any other error and goes on; these
             # stop the job, so no further job runs after a cancel or under another
             # lease.
-            tick(ctx, checkpoint=token.checkpoint, pass_through=PASS_THROUGH)
+            tick(ctx, checkpoint=checkpoint, pass_through=PASS_THROUGH)
     finally:
         db.release_layout(bound)
 

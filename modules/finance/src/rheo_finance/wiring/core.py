@@ -14,6 +14,7 @@ exist. Nothing here creates a directory: ``finance init-data`` does.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from typing import Final
 from uuid import UUID
 
@@ -25,7 +26,12 @@ from rheo_core.storage.routing import open_unit_of_work
 
 from rheo_finance import db, operations
 from rheo_finance.clock import SystemClock
-from rheo_finance.context import FinanceContext, FinancePaths, SnapshotProvider
+from rheo_finance.context import (
+    FinanceContext,
+    FinancePaths,
+    SnapshotProvider,
+    no_progress,
+)
 from rheo_finance.contracts import Role
 from rheo_finance.derive.snapshot import txn_snapshot
 from rheo_finance.model.client import ModelClient
@@ -46,8 +52,12 @@ def context_over_core(
     *,
     model_client: ModelClient | None,
     snapshot_provider: SnapshotProvider = txn_snapshot,
+    progress: Callable[[], None] | None = None,
 ) -> FinanceContext:
-    """The finance context on ``core_ctx``'s workspace, under the bound layout."""
+    """The finance context on ``core_ctx``'s workspace, under the bound layout.
+
+    ``progress`` is the job's checkpoint when a tick builds it; the CLI passes none,
+    so its long steps beat a no-op."""
     data = db.data_dir()
     ctx = FinanceContext(
         settings=load_settings(settings_path(data)),
@@ -56,6 +66,7 @@ def context_over_core(
         role=role,
         snapshot_provider=snapshot_provider,
         model_client=model_client,
+        progress=progress if progress is not None else no_progress,
     )
     return operations.with_core_sessions(
         ctx, open_session=lambda: open_unit_of_work(core_ctx)

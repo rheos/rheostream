@@ -43,7 +43,7 @@ from typing import Final
 
 from sqlalchemy import select, update
 
-from rheo_finance.context import UnitOfWork
+from rheo_finance.context import UnitOfWork, no_progress
 from rheo_finance.derive.precedence import supersede
 from rheo_finance.documents.registry import WITHHELD_PATH
 from rheo_finance.parsers import docextract_adapter
@@ -124,9 +124,11 @@ def parse_all(
     *,
     extract_pdf: Callable[[Path], str] = pdf_text,
     reparse: bool = False,
+    progress: Callable[[], None] = no_progress,
 ) -> Parsing:
     """Parse every registered document that needs it (every one with ``reparse``),
-    then supersede repeated copies."""
+    then supersede repeated copies. ``progress`` beats once per document, before its
+    bytes are checked."""
     registry = registry_digest(uow)
     docextract = docextract_adapter.docextract_version()
     hint_patterns = patterns.patterns_digest()
@@ -150,6 +152,7 @@ def parse_all(
         ).order_by(document.c.id)
     ).all()
     for row in rows:
+        progress()
         inputs = parse_inputs(
             row.issuer, row.format, registry, docextract, hint_patterns
         )
