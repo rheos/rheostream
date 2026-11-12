@@ -783,8 +783,11 @@ def _reconcile(ctx: FinanceContext, ref: str, intent: Target, steps: _Steps) -> 
             # still created, which Current folds, and then closed.
             store.save(_acknowledged(row, intent, now))
             return
-        if row.state == "post_pending" and row.create != intent.create:
-            # A claim set aside keeps its first snapshot; the create sends the latest.
+        if in_process and row.state == "post_pending" and row.create != intent.create:
+            # In process a claim set aside fronts no item, so its create sends the
+            # latest wanted fields. Over HTTPS the claim keeps its first snapshot: a
+            # create whose answer was lost is replayed byte for byte, so Current folds
+            # it into the item it may already hold.
             row = row.model_copy(update={"create": intent.create})
             store.save(row)
         if (

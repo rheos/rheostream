@@ -60,7 +60,7 @@ from rheo_finance.operations import OperationError, RoleRefused
 from rheo_finance.reminders.desired import DesiredOut
 from rheo_finance.reminders.policy import PayloadRefused
 from rheo_finance.sinks import current
-from rheo_finance.sinks.current_store import CreateSnapshot, SinkTicket
+from rheo_finance.sinks.current_store import CreateSnapshot, SinkTicket, Status
 from rheo_finance.sinks.spec import SinkSpec, spec_digest
 
 KEY = "finance:alpha:p1"
@@ -942,6 +942,33 @@ def test_a_set_aside_claim_is_created_from_the_latest_wanted_fields(
     assert (sent["body"], sent["due_on"]) == (newer.body, "2063-01-20")
     assert rows[KEY].create == newer
     assert (rows[KEY].external_id, rows[KEY].last_error_code) == ("ref-new", None)
+
+
+@pytest.mark.parametrize("status", ["open", "done"], ids=["changed", "paid"])
+def test_over_https_a_claim_replays_its_first_create_snapshot(
+    monkeypatch: pytest.MonkeyPatch, status: Status
+) -> None:
+    """L18's HTTPS control: the claim may front a create whose answer was lost, so
+    the retry sends the claim's first snapshot, which Current folds, even after the
+    amount changed or the period was paid."""
+    newer = SNAPSHOT.model_copy(update={"body": "Type: bill-due\nAmount/detail: 0.00"})
+    rows = _claim_rig(monkeypatch, current.Target(newer, status))
+    transport = FakeTransport(
+        {"action": "created", "item": _item() | {"ref": "ref-new"}},
+        {"item": _item(revision=2) | {"ref": "ref-new", "status": "done"}},
+    )
+    steps = current._Steps(
+        begin=_block,
+        sink=lambda uow: current.CurrentSink(uow, transport=transport),
+        unready=lambda _uow: None,
+    )
+    assert current._sync(_context(), steps) == current.SyncResult("synced")
+    closes = ["set_status"] if status == "done" else []
+    assert transport.operations() == ["create", *closes]
+    sent = transport.calls[0][1]
+    assert sent["body"] == SNAPSHOT.body != newer.body
+    assert rows[KEY].create == SNAPSHOT
+    assert (rows[KEY].external_id, rows[KEY].last_status) == ("ref-new", status)
 
 
 def test_a_key_back_at_its_acknowledged_fields_is_read_and_its_code_cleared(
