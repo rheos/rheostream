@@ -49,7 +49,9 @@ Two things stood between the tick and the owner opening `finance.jobs.enabled`.
   settled period is forgotten and never created again (ADR-0014). The read happens
   only when the period's wanted state changed or the key still carries a code: an
   acknowledged, unchanged key with no code makes no call, and a key whose fields went
-  back to the acknowledged ones is read once, which clears its code. A write that
+  back to the acknowledged ones is read once, which clears its code. That read checks
+  the item's source pair as every mutation does, so an item that is not the key's
+  keeps it set aside with `not_owned`, even when every field matches. A write that
   finds the item gone sets the key aside until the next read.
 - **Health names the keys.** `finance.job.health` returns each key whose row carries a
   code, with the code (`other` for a stored code outside the fixed set) and when it

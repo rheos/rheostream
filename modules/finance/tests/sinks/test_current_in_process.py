@@ -988,6 +988,29 @@ def test_a_key_back_at_its_acknowledged_fields_is_read_and_its_code_cleared(
     assert again.calls == []
 
 
+@pytest.mark.parametrize("owner", ["foreign", "own"])
+def test_a_stored_code_is_cleared_only_by_the_keys_own_matching_item(
+    monkeypatch: pytest.MonkeyPatch, owner: str
+) -> None:
+    """L20 (#561): a key carrying ``not_owned`` whose stored ref names an item that
+    matches every wanted field. The read checks the source pair before it
+    acknowledges: a foreign item keeps the code, so health, which lists every row
+    carrying one, still names the key; the key's own item clears it."""
+    rows = _refile_rig(monkeypatch, status="open")
+    rows[KEY] = rows[KEY].model_copy(update={"last_error_code": "not_owned"})
+    holder = OTHER_KEY if owner == "foreign" else KEY
+    transport = FakeTransport({"item": _item(key=holder) | {"ref": "ref-old"}})
+    result = _sync_in_session(transport)
+    assert transport.operations() == ["get"]
+    assert rows[KEY].external_id == "ref-old"
+    if owner == "foreign":
+        assert result == current.SyncResult("partial", "not_owned")
+        assert rows[KEY].last_error_code == "not_owned"
+    else:
+        assert result == current.SyncResult("synced")
+        assert rows[KEY].last_error_code is None
+
+
 def test_the_key_local_and_global_codes_split_every_code() -> None:
     assert current.KEY_LOCAL | current.GLOBAL == current.CURRENT_CODES
     assert current.KEY_LOCAL & current.GLOBAL == set()

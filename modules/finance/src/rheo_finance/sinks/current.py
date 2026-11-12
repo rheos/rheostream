@@ -822,6 +822,11 @@ def _reconcile(ctx: FinanceContext, ref: str, intent: Target, steps: _Steps) -> 
                 # that finds it gone sets the key aside until the next read.
                 if exc.code != "not_found":
                     raise
+            else:
+                # Checked as every mutation checks it, before a match with no
+                # mutation acknowledges the key and clears its code: a foreign item
+                # keeps the key set aside with ``not_owned``.
+                _owned(read, ref)
         if read is not None:
             if read.title != intent.create.title:
                 fields["title"] = intent.create.title
