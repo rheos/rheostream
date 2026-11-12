@@ -26,22 +26,24 @@ def _context() -> FinanceContext:
     return build_context(Role.SERVICE)
 
 
-def health_lines(result: HealthOut, zone: ZoneInfo) -> list[str]:
-    """The health line, then one line per set-aside reminder key (ADR-0027)."""
-    lines = [
-        f"finance jobs health: {result.code} failed={result.failed} "
-        f"pending={result.pending} skipped_off={result.skipped_off}"
-    ]
+def health_report(result: HealthOut, zone: ZoneInfo) -> Report:
+    """The health line as the headline; one detail line per set-aside reminder key
+    (ADR-0027), then ``and N more``. Twenty keys and the count fit no headline."""
+    detail: list[str] = []
     for each in result.reminder_errors:
         synced = (
             "never synced"
             if each.last_success_at is None
             else f"last synced {render_local(each.last_success_at, zone)}"
         )
-        lines.append(f"reminder {each.key}: {each.code}, {synced}")
+        detail.append(f"reminder {each.key}: {each.code}, {synced}")
     if result.more:
-        lines.append(f"and {result.more} more")
-    return lines
+        detail.append(f"and {result.more} more")
+    headline = (
+        f"finance jobs health: {result.code} failed={result.failed} "
+        f"pending={result.pending} skipped_off={result.skipped_off}"
+    )
+    return Report([headline], detail)
 
 
 def _health(_args: argparse.Namespace) -> int:
@@ -54,7 +56,7 @@ def _health(_args: argparse.Namespace) -> int:
         result = health(ctx)
     except Exception:
         result = HealthOut(code="database_error")
-    emit(Report(health_lines(result, zone)))
+    emit(health_report(result, zone))
     return 0 if result.code == "healthy" else 1
 
 

@@ -182,13 +182,51 @@ def test_the_health_command_prints_one_line_per_set_aside_key() -> None:
         ],
         more=3,
     )
-    assert jobs_cli.health_lines(result, ZoneInfo("UTC")) == [
+    report = jobs_cli.health_report(result, ZoneInfo("UTC"))
+    assert report.headline == (
         "finance jobs health: failed_due_job failed=1 pending=0 skipped_off=0",
+    )
+    assert report.detail == (
         "reminder finance:alpha:p1: not_owned, never synced",
         "reminder finance:beta:p1: refused, last synced 2063-01-18 12:00 UTC",
         "and 3 more",
-    ]
-    plain = HealthOut(code="healthy")
-    assert jobs_cli.health_lines(plain, ZoneInfo("UTC")) == [
+    )
+    plain = jobs_cli.health_report(HealthOut(code="healthy"), ZoneInfo("UTC"))
+    assert plain.lines() == [
         "finance jobs health: healthy failed=0 pending=0 skipped_off=0"
     ]
+
+
+def test_the_health_command_prints_twenty_keys_and_the_rest_counted(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The full capped result through ``finance jobs health``: twenty keys and the
+    count go to the report's detail, so the headline budget never refuses them."""
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+
+    from rheo_finance.jobs import service
+    from rheo_finance.jobs.service import REMINDER_ERRORS_SHOWN, reminder_errors
+
+    rows = [(f"finance:gamma:p{n:02d}", "refused", SYNCED) for n in range(25)]
+    shown, more = reminder_errors(rows)
+    result = service.HealthOut(
+        code="failed_due_job", failed=1, reminder_errors=shown, more=more
+    )
+    stand_in = SimpleNamespace(settings=SimpleNamespace(timezone=ZoneInfo("UTC")))
+    monkeypatch.setattr(jobs_cli, "_context", lambda: stand_in)
+    monkeypatch.setattr(service, "health", lambda _ctx: result)
+
+    assert main(["jobs", "health"]) == 1
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    lines = captured.out.splitlines()
+    assert lines[:2] == [
+        "finance jobs health: failed_due_job failed=1 pending=0 skipped_off=0",
+        "",
+    ]
+    keys = [f"finance:gamma:p{n:02d}" for n in range(REMINDER_ERRORS_SHOWN)]
+    assert lines[2:-1] == [
+        f"reminder {key}: refused, last synced 2063-01-18 12:00 UTC" for key in keys
+    ]
+    assert lines[-1] == "and 5 more"
