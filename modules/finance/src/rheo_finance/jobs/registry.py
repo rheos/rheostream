@@ -1,7 +1,8 @@
 """Job declarations. A callback owns its work, never the scheduler transaction.
 
 Operation-based callbacks dispatch as SERVICE. Reminder reconciliation is a root
-with its own durable transactions, called only after the derive dispatch commits.
+with its own durable transactions, called only after the derive dispatch commits:
+short ones per step over HTTPS, one per sync when Current is bound in process.
 """
 
 from __future__ import annotations
@@ -72,7 +73,8 @@ def _reminders(ctx: FinanceContext) -> JobResult:
     with owner_transaction(ctx) as uow:
         if not is_enabled(uow, "current"):
             return JobResult(ok=None, detail_code="skipped: sink off")
-    # The root retains its own gate and per-request checks; no outer transaction.
+    # The root retains its own gate and per-request checks; no outer transaction
+    # here (in process the sync opens its own one).
     out = current.sync_reminders(ctx)
     if out.state == "synced":
         return JobResult(ok=True)
