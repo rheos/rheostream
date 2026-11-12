@@ -132,7 +132,9 @@ def rebuild(ctx: FinanceContext, uow: UnitOfWork, _data: LedgerIn) -> RebuildOut
     if root is None or not root.is_dir():
         raise DocumentRefused(f"the {ARCHIVE_KEY} directory does not exist")
     taken = fingerprint(uow, ctx).digest
-    filed = file_archive(uow, root, ctx.paths.data, ctx.clock.now_utc())
+    filed = file_archive(
+        uow, root, ctx.paths.data, ctx.clock.now_utc(), progress=ctx.progress
+    )
     out = derive_run.run(
         uow, ctx, extract_pdf=docextract_adapter.pdf_text, reparse=True
     )

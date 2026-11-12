@@ -608,6 +608,9 @@ def _sync(ctx: FinanceContext, steps: _Steps) -> SyncResult:
         if unready is not None:
             return unready
     for ref in sorted(wanted.keys() | existing.keys()):
+        # Renews a tick's lease before each key; outside the except below, so a lost
+        # lease or a cancel leaves the sync and its session rolls back.
+        ctx.progress()
         intent = wanted.get(ref) or _absent(existing[ref])
         failure: str | None = None
         try:

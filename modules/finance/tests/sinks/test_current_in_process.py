@@ -20,6 +20,7 @@ Values are synthetic.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 import logging
@@ -536,3 +537,55 @@ def test_the_sync_logs_a_code_once_and_never_the_key_or_item(
             assert planted not in record.getMessage()
             assert planted not in repr(record.args)
     assert PLANTED_KEY not in caplog.text and PLANTED_REF not in caplog.text
+
+
+# --- #546 L6: the sync beats once per key -------------------------------------------
+
+THREE_KEYS = ("finance:alpha:p1", "finance:beta:p1", "finance:gamma:p1")
+
+
+def _settled(key: str) -> SinkTicket:
+    """A row acknowledged as done, so its key's pass reads it and returns."""
+    row = _row(key)
+    return row.model_copy(
+        update={
+            "state": "done",
+            "last_title": row.create.title,
+            "last_due_on": row.create.due_on,
+            "last_priority": row.create.priority,
+            "last_status": "done",
+        }
+    )
+
+
+@pytest.mark.parametrize("in_process", [False, True], ids=["https", "in-process"])
+def test_the_sync_beats_before_each_key(
+    monkeypatch: pytest.MonkeyPatch, in_process: bool
+) -> None:
+    events: list[str] = []
+    rows = {key: _settled(key) for key in THREE_KEYS}
+    monkeypatch.setattr(_MemoryStore, "rows", rows)
+    monkeypatch.setattr(current, "PostgresCurrentTicketRepository", _MemoryStore)
+    monkeypatch.setattr(current, "PostgresReminderRepository", _NoFacts)
+    monkeypatch.setattr(
+        current, "desired_tickets", lambda _ctx, _facts: DesiredOut(tickets=[])
+    )
+
+    @contextmanager
+    def begin() -> Iterator[UnitOfWork]:
+        events.append("begin")
+        yield NO_UOW
+
+    session = FakeSession()
+    steps = current._Steps(
+        begin=begin,
+        sink=lambda uow: current.CurrentSink(
+            uow, transport=session if in_process else None
+        ),
+        unready=lambda _uow: None,
+    )
+    ctx = dataclasses.replace(_context(), progress=lambda: events.append("beat"))
+
+    assert current._sync(ctx, steps) == current.SyncResult("synced")
+    # The preamble's block, then a beat before each key's first block.
+    assert events == ["begin"] + ["beat", "begin"] * 3

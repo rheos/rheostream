@@ -49,7 +49,7 @@ from typing import Final
 
 from sqlalchemy import select
 
-from rheo_finance.context import UnitOfWork
+from rheo_finance.context import UnitOfWork, no_progress
 from rheo_finance.documents.issuers import file_format
 from rheo_finance.identities import layout
 from rheo_finance.parsers.base import NoTextLayer, NotRecognised
@@ -240,11 +240,13 @@ def file_downloads(
     now: dt.datetime,
     *,
     extract_pdf: Callable[[Path], str] | None = None,
+    progress: Callable[[], None] = no_progress,
 ) -> DownloadsFiled:
     """Copy the dateable files in ``downloads`` into ``archive``.
 
     ``extract_pdf`` turns a PDF into its layout text; by default ``pdf_text``,
-    looked up when the scan runs.
+    looked up when the scan runs. ``progress`` beats once per listed entry, before
+    it is read.
     """
     if downloads is None or not downloads.is_dir():
         return DownloadsFiled()
@@ -262,6 +264,8 @@ def file_downloads(
     refused: list[str] = []
     unrecognised: list[str] = []
     for path, info in entries:
+        # Outside every except below: a lost lease or a cancel leaves the scan.
+        progress()
         if is_monitor_file(path.name):
             counts["skipped"] += 1
             counts["waiting"] += _waiting(info, now)

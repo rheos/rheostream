@@ -22,12 +22,24 @@ under the session's temporary data root.
 - D7: a database at a known revision other than the code's head fails the job with
   the fixed ``schema_behind`` code alone.
 - D8: no ``finance.*`` name reaches core's operation or tool registries.
+
+The long steps renew the lease (#546, ADR-0027), over a filing step that hashes four
+archive files while the worker's clock moves 25 s per file (100 s in all, longer than
+the 60 s lease) and a thief calls ``acquire_lease`` after each hash:
+
+- D9: the thief never gets the job; it succeeds on its first attempt.
+- D10: right after each file's beat at least 40 s of lease remain, and after each
+  25 s step the lease is still ahead of the clock.
+- D11: a thief that takes the lease once it lapses makes the next file's beat raise
+  ``JobLeaseLost``: no document and no ``job_run`` row commit, and the job stays
+  leased to the thief, unfinished.
 """
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Final
+from pathlib import Path
+from typing import Any, Final
 from uuid import UUID
 
 import pytest
@@ -52,15 +64,17 @@ from rheo_core.storage.data_root import Purpose, workspace_dir_for
 from rheo_core.storage.repositories import upsert_workspace_setting
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_index import DueWorkspace
-from rheo_core.work.jobs import enqueue_job
+from rheo_core.work.jobs import acquire_lease, enqueue_job
 from rheo_core.work.kinds import JobKindRegistry
-from rheo_core.work.loop import visit_workspace
+from rheo_core.work.loop import HEARTBEAT_SECONDS, LEASE_SECONDS, visit_workspace
 from rheo_core.work.schedules import run_due_schedules
 from rheo_finance import db
+from rheo_finance.documents import registry as documents_registry
+from rheo_finance.jobs import registry as job_registry
 from rheo_finance.jobs import tick as tick_module
 from rheo_finance.wiring.manifest import JOBS_ENABLED_KEY, MANIFEST, install_check
 from rheo_finance.wiring.tick_job import TICK_JOB_KIND, TickPayload, finance_tick_job
-from sqlalchemy import Connection, Engine, select, text
+from sqlalchemy import Connection, Engine, Row, select, text
 
 pytestmark = pytest.mark.postgres
 
@@ -360,16 +374,19 @@ def _layout(workspace: UUID) -> db.FinanceLayout:
     return layout
 
 
-def _visit(finance: Finance) -> dict[str, object]:
+def _enqueue(finance: Finance) -> UUID:
     with finance.engine().begin() as connection:
         _open_gate(connection)
-        job_id = enqueue_job(
+        return enqueue_job(
             connection,
             kind=TICK_JOB_KIND,
             payload={"workspace_id": str(finance.workspace)},
             now=datetime.now(UTC),
             max_attempts=3,
         )
+
+
+def _drain(finance: Finance, clock: Callable[[], datetime]) -> None:
     kinds = JobKindRegistry()
     kinds.register(TICK_JOB_KIND, TickPayload, finance_tick_job)
     visit_workspace(
@@ -378,9 +395,14 @@ def _visit(finance: Finance) -> dict[str, object]:
         consumers=ConsumerRegistry(),
         backend=finance.cluster.backend,
         owner="finance-tick-test",
-        clock=_advancing_clock(),
+        clock=clock,
         jitter=None,
     )
+
+
+def _visit(finance: Finance) -> dict[str, object]:
+    job_id = _enqueue(finance)
+    _drain(finance, _advancing_clock())
     with finance.engine().connect() as connection:
         job = connection.execute(
             select(work_tables.job.c.state, work_tables.job.c.last_error).where(
@@ -424,6 +446,161 @@ def test_a_known_revision_that_is_not_the_head_fails_with_the_behind_code_alone(
     outcome = _visit(finance)
     assert outcome["state"] != "succeeded"
     assert outcome["last_error"] == "finance_schema_behind"
+
+
+# --- #546: the long steps renew the lease -----------------------------------------
+
+THIEF: Final = "finance-thief-test"
+STEP: Final = timedelta(seconds=25)
+FILES: Final = 4
+
+
+@dataclass
+class _Probe:
+    """One hash in the archive walk: the lease just after that file's beat, the
+    clock after the step's advance, the lease then and what the thief got."""
+
+    beaten_until: datetime
+    beaten_at: datetime
+    at: datetime
+    until: datetime
+    stolen: object
+
+
+class _Clock:
+    """The worker's clock, moved only by the walk's hash wrapper."""
+
+    def __init__(self) -> None:
+        self.now = datetime.now(UTC) + timedelta(seconds=1)
+        self.start = self.now
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+def _lease_until(finance: Finance, job_id: UUID) -> datetime:
+    with finance.engine().connect() as connection:
+        until = connection.execute(
+            select(work_tables.job.c.lease_until).where(work_tables.job.c.id == job_id)
+        ).scalar_one()
+    assert isinstance(until, datetime)
+    return until
+
+
+def _job_row(finance: Finance, job_id: UUID) -> Row[Any]:
+    job = work_tables.job
+    with finance.engine().connect() as connection:
+        return connection.execute(
+            select(
+                job.c.state,
+                job.c.last_error,
+                job.c.lease_owner,
+                job.c.attempts,
+                job.c.finished_at,
+            ).where(job.c.id == job_id)
+        ).one()
+
+
+def _walk_under_a_thief(
+    finance: Finance, monkeypatch: pytest.MonkeyPatch, *, steal_on: int | None
+) -> tuple[UUID, _Clock, list[_Probe]]:
+    """Run the tick with only the filing job over ``FILES`` archive files. Each hash
+    moves the clock ``STEP`` on; then a thief tries for the lease, at the clock, or,
+    on hash ``steal_on``, just after the lease runs out."""
+    layout = _layout(finance.workspace)
+    for n in range(FILES):
+        target = layout.archive / "alder" / f"2055-0{n + 1}-12.pdf"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(f"Sample statement {n}\n".encode())
+    monkeypatch.setattr(
+        tick_module,
+        "JOBS",
+        {"finance.file_downloads": job_registry.JOBS["finance.file_downloads"]},
+    )
+    clock = _Clock()
+    job_id = _enqueue(finance)
+    probes: list[_Probe] = []
+    hashed = documents_registry._sha256
+
+    def sha256(path: Path) -> str:
+        beaten_at = clock.now
+        beaten_until = _lease_until(finance, job_id)
+        clock.now += STEP
+        at = clock.now
+        if steal_on == len(probes) + 1:
+            at = _lease_until(finance, job_id) + timedelta(seconds=1)
+        with finance.engine().begin() as connection:
+            stolen = acquire_lease(
+                connection, owner=THIEF, now=at, lease_seconds=LEASE_SECONDS
+            )
+        probes.append(
+            _Probe(beaten_until, beaten_at, at, _lease_until(finance, job_id), stolen)
+        )
+        return hashed(path)
+
+    monkeypatch.setattr(documents_registry, "_sha256", sha256)
+    _drain(finance, clock)
+    return job_id, clock, probes
+
+
+def test_a_long_filing_step_keeps_its_lease_from_a_second_claimant(
+    finance: Finance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_id, _clock, probes = _walk_under_a_thief(finance, monkeypatch, steal_on=None)
+    assert len(probes) == FILES
+    assert [probe.stolen for probe in probes] == [None] * FILES
+    row = _job_row(finance, job_id)
+    assert (row.state, row.last_error, row.lease_owner, row.attempts) == (
+        "succeeded",
+        None,
+        None,
+        1,
+    )
+    with finance.engine().connect() as connection:
+        documents = connection.execute(
+            text("SELECT count(*) FROM finance.document")
+        ).scalar_one()
+    assert documents == FILES
+
+
+def test_each_beat_renews_the_lease_through_a_step_longer_than_it(
+    finance: Finance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _job_id, clock, probes = _walk_under_a_thief(finance, monkeypatch, steal_on=None)
+    assert len(probes) == FILES
+    floor = timedelta(seconds=LEASE_SECONDS - HEARTBEAT_SECONDS)
+    for probe in probes:
+        # Right after the file's beat at least 40 s remain; after the 25 s step the
+        # lease is still ahead of the clock.
+        assert probe.beaten_until >= probe.beaten_at + floor
+        assert probe.until > probe.at
+    assert probes[-1].until > probes[0].beaten_until
+    assert clock.now - clock.start == STEP * FILES
+    assert clock.now - clock.start > timedelta(seconds=LEASE_SECONDS)
+
+
+def test_a_lease_lost_mid_step_commits_nothing_and_leaves_the_thief_its_job(
+    finance: Finance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_id, _clock, probes = _walk_under_a_thief(finance, monkeypatch, steal_on=2)
+    # The second hash let the thief in; the third file's beat raised, so no third
+    # hash ran.
+    assert len(probes) == 2
+    assert probes[0].stolen is None
+    assert probes[1].stolen is not None
+    row = _job_row(finance, job_id)
+    assert (row.state, row.lease_owner, row.finished_at) == ("leased", THIEF, None)
+    with finance.engine().connect() as connection:
+        documents = connection.execute(
+            text("SELECT count(*) FROM finance.document")
+        ).scalar_one()
+        runs = connection.execute(
+            text(
+                "SELECT count(*) FROM finance.job_run"
+                " WHERE job IN ('finance.file_downloads', 'finance.tick')"
+            )
+        ).scalar_one()
+    assert (documents, runs) == (0, 0)
 
 
 # --- package sets ---------------------------------------------------------------
