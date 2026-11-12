@@ -114,6 +114,7 @@ OUTBOUND_ALLOWED: dict[str, str] = {
     "rheo_finance.parsers.docextract_adapter": "subprocess via docextract: pdftotext",
     "rheo_finance.parsers.vendored.pdftext": "subprocess: pdftotext -layout, the"
     " vendored text extraction the adapter calls",
+    "rheo_finance.remote.ssh": "subprocess: ssh, the one hop to the worker container",
 }
 
 
@@ -154,7 +155,15 @@ def test_only_the_allowed_modules_reach_the_network_or_start_a_process() -> None
     found = outbound_modules(PACKAGE, SCRIPTS)
     assert set(found) - set(OUTBOUND_ALLOWED) == set(), found
     # The control: the modules that do so today are found, so the scan is not blind.
-    assert {"rheo_finance.http", "rheo_finance.parsers.vendored.pdftext"} <= set(found)
+    assert {
+        "rheo_finance.http",
+        "rheo_finance.parsers.vendored.pdftext",
+        "rheo_finance.remote.ssh",
+    } <= set(found)
+    # The rest of the remote commands start no process: only ssh does.
+    remote = {name for name in found if name.startswith("rheo_finance.remote.")}
+    assert remote == {"rheo_finance.remote.ssh"}
+    assert "rheo_finance.cli.remote" not in found
 
 
 @pytest.mark.parametrize(

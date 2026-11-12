@@ -25,6 +25,7 @@ from rheo_finance.cli import ledger as ledger_cli
 from rheo_finance.cli import lines as lines_cli
 from rheo_finance.cli import owed as owed_cli
 from rheo_finance.cli import rate as rate_cli
+from rheo_finance.cli import remote as remote_cli
 from rheo_finance.cli import report as report_cli
 from rheo_finance.cli import sink as sink_cli
 from rheo_finance.cli import state as state_cli
@@ -78,7 +79,9 @@ def build_parser() -> argparse.ArgumentParser:
     rate_cli.add_parser(commands)
     report_cli.add_parser(commands)
     state_cli.add_parser(commands)
-    # cli.approve is imported here and nowhere else (the import-graph guard).
+    # cli.remote and cli.approve are imported here and nowhere else (the import-graph
+    # guard), so no job, sink or model step can open ssh or record an approval.
+    remote_cli.add_parser(commands)
     sink_cli.add_parser(commands, approve=approve_cli.cmd_approve)
     return parser
 

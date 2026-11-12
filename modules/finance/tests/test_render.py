@@ -444,6 +444,11 @@ def test_the_scan_passes_ordinary_code() -> None:
     assert bypasses(source) == []
 
 
+# The one binary stream (ADR-0026): ``finance remote send-packs`` writes frames, not
+# text, to stdout for the laptop's receiver, and writes nothing else there.
+BINARY_STREAM = {"cli/remote.py": ["sys.stdout"]}
+
+
 def test_no_module_writes_around_the_choke_point() -> None:
     """Only ``render`` touches stdout or stderr; everything else calls ``emit``."""
     offenders: list[str] = []
@@ -451,7 +456,14 @@ def test_no_module_writes_around_the_choke_point() -> None:
         if path == SRC / "render.py":
             continue
         source = path.read_text(encoding="utf-8")
-        offenders += bypasses(source, str(path.relative_to(SRC)))
+        name = str(path.relative_to(SRC))
+        found = bypasses(source, name)
+        if name in BINARY_STREAM:
+            # Exactly the allowed use, once: a second one is an offender.
+            whats = [each.partition(" ")[2] for each in found]
+            assert whats == BINARY_STREAM[name], found
+            continue
+        offenders += found
     assert offenders == []
 
 
