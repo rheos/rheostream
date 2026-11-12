@@ -116,7 +116,7 @@ class _Session:
                 "finance_current_call_refused operation=%s code=%s", operation, code
             )
             # Outside the except block: nothing of the refusal is kept as context.
-            raise current.CurrentError(code) from None
+            raise current.CurrentError(code, logged=True) from None
         if self._in_block:
             self._connection.execute(text(f"SET LOCAL ROLE {db.OWNER_ROLE}"))
         dumped: dict[str, object] = output.model_dump(mode="json")

@@ -11,6 +11,9 @@
 - L6: the commit rule. The session commits only when the sync is ``synced``; a
   session that cannot open gives ``pending`` for ``not_configured`` and ``failed``
   otherwise; a role other than owner or service is refused before the session opens.
+- L7: a code the sink raises itself (``not_owned`` after a call returns) is logged
+  once by the sync, code alone, with no key or item ref in the line; a code the
+  session already logged is not logged again.
 
 Values are synthetic.
 """
@@ -19,10 +22,11 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
-from typing import cast
+from typing import ClassVar, cast
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
@@ -32,6 +36,7 @@ from rheo_finance.clock import SystemClock
 from rheo_finance.context import FinanceContext, FinancePaths, UnitOfWork
 from rheo_finance.contracts import Role
 from rheo_finance.operations import OperationError, RoleRefused
+from rheo_finance.reminders.desired import DesiredOut
 from rheo_finance.reminders.policy import PayloadRefused
 from rheo_finance.sinks import current
 from rheo_finance.sinks.current_store import CreateSnapshot, SinkTicket
@@ -429,3 +434,105 @@ def test_nothing_bound_keeps_the_https_steps(monkeypatch: pytest.MonkeyPatch) ->
     assert current.in_process() is None
     assert current.sync_reminders(_context()) == current.SyncResult("synced")
     assert seen[0].sink(NO_UOW).transport is None
+
+
+# --- L7: the sync logs a code nobody logged, once -----------------------------------
+
+PLANTED_KEY = "finance:plantedkeytoken:p1"
+PLANTED_REF = "planted-item-ref-7"
+SYNC_LOGGER = "rheo_finance.sinks.current"
+
+
+class _MemoryStore:
+    """The sink rows in a dict, in place of ``PostgresCurrentTicketRepository``."""
+
+    rows: ClassVar[dict[str, SinkTicket]] = {}
+
+    def __init__(self, _uow: UnitOfWork) -> None:
+        pass
+
+    def all(self) -> tuple[SinkTicket, ...]:
+        return tuple(self.rows.values())
+
+    def get(self, source_ref: str) -> SinkTicket | None:
+        return self.rows.get(source_ref)
+
+    def insert_if_absent(self, ticket: SinkTicket) -> bool:
+        return self.rows.setdefault(ticket.source_ref, ticket) is ticket
+
+    def save(self, ticket: SinkTicket) -> None:
+        self.rows[ticket.source_ref] = ticket
+
+
+class _NoFacts:
+    def __init__(self, _uow: UnitOfWork) -> None:
+        pass
+
+    def registered_payees(self) -> frozenset[str]:
+        return frozenset()
+
+
+@contextmanager
+def _block() -> Iterator[UnitOfWork]:
+    yield NO_UOW
+
+
+@pytest.mark.parametrize(
+    ("answer", "code", "lines"),
+    [
+        # The read returns an item with another pair: the scope check raises
+        # ``not_owned`` after the call, where no session logs it.
+        (
+            {"item": _item(key=OTHER_KEY) | {"ref": PLANTED_REF, "title": "x"}},
+            "not_owned",
+            ["finance_current_sync_stopped code=not_owned"],
+        ),
+        # A code nobody logged (the HTTPS path's) is logged by the sync.
+        (
+            current.CurrentError("refused"),
+            "refused",
+            ["finance_current_sync_stopped code=refused"],
+        ),
+        # The session already logged this refusal: no second line.
+        (current.CurrentError("refused", logged=True), "refused", []),
+    ],
+    ids=["not-owned", "unlogged", "session-logged"],
+)
+def test_the_sync_logs_a_code_once_and_never_the_key_or_item(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    answer: dict[str, object] | current.CurrentError,
+    code: str,
+    lines: list[str],
+) -> None:
+    _open_gate(monkeypatch, IN_PROCESS_DIGEST)
+    rows = {
+        PLANTED_KEY: _row(PLANTED_KEY).model_copy(
+            update={"external_id": PLANTED_REF, "state": "open"}
+        )
+    }
+    monkeypatch.setattr(_MemoryStore, "rows", rows)
+    monkeypatch.setattr(current, "PostgresCurrentTicketRepository", _MemoryStore)
+    monkeypatch.setattr(current, "PostgresReminderRepository", _NoFacts)
+    monkeypatch.setattr(
+        current, "desired_tickets", lambda _ctx, _facts: DesiredOut(tickets=[])
+    )
+    transport = FakeTransport(answer)
+    steps = current._Steps(
+        begin=_block,
+        sink=lambda uow: current.CurrentSink(uow, transport=transport),
+        unready=lambda _uow: None,
+    )
+    with caplog.at_level(logging.DEBUG):
+        result = current._sync(_context(), steps)
+    assert result == current.SyncResult("failed", code)
+    assert transport.operations() == ["get"]
+    # The row annotation still records the code (it rolls back only in core mode).
+    assert rows[PLANTED_KEY].last_error_code == code
+    assert [r.getMessage() for r in caplog.records if r.name == SYNC_LOGGER] == lines
+    for record in caplog.records:
+        assert record.exc_info is None
+        for planted in (PLANTED_KEY, PLANTED_REF):
+            assert planted not in record.getMessage()
+            assert planted not in repr(record.args)
+    assert PLANTED_KEY not in caplog.text and PLANTED_REF not in caplog.text

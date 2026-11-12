@@ -137,6 +137,8 @@ def test_a_refusal_leaves_as_its_fixed_code_alone(
             session.call("update", {"ref": "sample-1"})
     error = caught.value
     assert error.code == code and str(error) == code
+    # Marked as logged, so the sync does not log the same refusal again.
+    assert error.logged is True
     assert error.__cause__ is None and error.__context__ is None
     assert error.__suppress_context__ is True
     assert DETAIL not in repr(error)

@@ -36,9 +36,12 @@ lets a service edit any item, not only the ones it filed.
 - **Scope.** An update or status change reaches only an item that carries
   `float.obligation` and the key's own `finance:<token>:<period>` pair, checked on
   every read before the write and on each create answer; otherwise `not_owned`.
-- **Fixed codes.** A refusal leaves as `current_unavailable`, `record_stale` or
-  `refused`, with nothing of its state or detail kept, and one log line naming the
-  operation and the code. Storage errors pass unchanged.
+- **Fixed codes.** A refusal leaves as `current_unavailable`, `record_stale`,
+  `refused`, `protocol_error` (an answer the sink cannot read) or `not_owned` (the
+  scope check above), with nothing of its state or detail kept. Each is logged once:
+  a refused call by the session, naming the operation and the code; a code the sink
+  raises after a call returns, by the sync, with the code alone. Storage errors pass
+  unchanged.
 - **HTTPS stays** the path when nothing is bound: the module's own HTTP tests and the
   source export.
 

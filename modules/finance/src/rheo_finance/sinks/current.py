@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextvars
 import datetime as dt
 import json
+import logging
 import re
 import shlex
 from collections.abc import Callable
@@ -66,6 +67,7 @@ REQUESTS = tuple(
 )
 ALLOWLIST = tuple((r.method, r.path) for r in REQUESTS)
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_LOG = logging.getLogger(__name__)
 
 # The spec an approval pins when the sink runs in process. The four request templates
 # are the operations the transport may call; no host and no key file. Every HTTPS spec
@@ -86,11 +88,13 @@ class CurrentError(Exception):
 
     ``current_unavailable`` (Current or its session cannot be reached in process) and
     ``not_owned`` (an item that does not carry this sink's source pair) join the HTTPS
-    path's codes.
+    path's codes. ``logged`` marks a code whose log line is already written (the
+    in-process session logs each refused call), so the sync logs it only otherwise.
     """
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, logged: bool = False) -> None:
         self.code = code
+        self.logged = logged
         super().__init__(code)
 
 
@@ -610,6 +614,10 @@ def _sync(ctx: FinanceContext, steps: _Steps) -> SyncResult:
             _reconcile(ctx, ref, intent, steps)
         except CurrentError as exc:
             failure = exc.code
+            if not exc.logged:
+                # In process the row annotation below rolls back, so this line is the
+                # code's only record: the code alone, never the key, the item or text.
+                _LOG.info("finance_current_sync_stopped code=%s", failure)
         if failure is not None:
             with steps.begin() as uow:
                 store = PostgresCurrentTicketRepository(uow)

@@ -338,11 +338,12 @@ def test_one_sync_creates_each_item_once_and_a_rerun_changes_nothing(
     assert [r["state"] for r in rows] == ["open", "open"]
     assert all(r["external_id"] for r in rows)
     assert _audit(rig, "current.item.create") == 2
-    before = (items, _audit(rig), _outbox(rig), rows)
+    before = _snapshot(rig)
     calls = len(rig.spy.calls)
     assert rig.sync() == current.SyncResult("synced")
     assert len(rig.spy.calls) == calls
-    assert (_items(rig), _audit(rig), _outbox(rig)) == before[:3]
+    # Items, audit, outbox and the sink rows alike: the rerun writes nothing.
+    assert _snapshot(rig) == before
     assert _audit(rig, "current.item.create") == 2
     # D6: every call ran at the session role, before and after, and so does the
     # next session.
@@ -390,6 +391,10 @@ def test_a_real_refusal_after_an_update_rolls_the_whole_sync_back(rig: Rig) -> N
     names = [name for name, _, _ in rig.spy.calls]
     # The update ran, and was rolled back with the refused create.
     assert "current.item.update" in names and names[-1] == "current.item.create"
+    # The spy writes a call's after-role only when the real call returned, so the
+    # update really ran before the refusal rolled it back.
+    update = next(call for call in rig.spy.calls if call[0] == "current.item.update")
+    assert update[2] is not None
     assert _snapshot(rig) == before
     assert _items(rig)[0]["due_on"] == date(2063, 2, 15)
 
