@@ -16,7 +16,8 @@ history. The distribution is `rheo-finance`, the package `rheo_finance`, the mod
 
 Discovery is not loading: core loads only the ids in `modules.installed`, and the
 flagship's list does not name `finance`. Adding it there is the owner's later step.
-How the module runs on core is ADR-0024.
+How the module runs on core is ADR-0024; how its reminders reach Current there is
+ADR-0025.
 
 Not imported, because rheoStream owns those jobs: the standalone server runtime (the
 foreground scheduler, the LaunchAgent installer, `finance db up`, `db init`,
@@ -89,6 +90,15 @@ supersede its own duplicate. Changes reconcile by stored ref, including settleme
 and later returned payments. A complete desired-state read closes previously synced
 keys it omits; a failed read leaves existing items open. The Current sink stays off
 until the owner approves its declared policy and enables it.
+
+Under core, reminders go to Current in process (ADR-0025), and the
+`current_base_url`, `current_credential_file` and `current_token_var` keys are
+ignored. Current must be enabled in the workspace, with its `bills` area (Current's
+first migration seeds it). Approve the sink with `finance sink approve current` under
+core: an approval given over HTTPS does not carry over. A sync is one transaction: a
+refusal leaves Current and the sink's rows as they were, and the next tick tries
+again. One Current item deleted by hand, or a refusal that repeats (a retired `bills`
+area), stops every sync until it is handled.
 
 Current's preview lists exact pending changes, including priority becoming overdue
 at local midnight. Its confirmation code can change at that boundary; refresh the

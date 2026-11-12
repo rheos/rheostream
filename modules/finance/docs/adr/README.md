@@ -28,3 +28,10 @@ ADR-0024 records how the module runs on core: roles made by `env.py`, one role p
 operation on core's sessions, an advisory writer lock, the tick as a gated core job,
 the uploads layout, no core operations or tools, and model calls through the runtime.
 It supersedes nothing; ADR-0008's two connection names now map to the two roles.
+
+ADR-0025 records how reminders reach Current under core: Current's four item
+operations in process with a restricted service context, the gate asked before every
+call, an in-process spec that no HTTPS approval opens, one transaction per sync that
+commits only when synced, each call at the session role in a savepoint, and updates
+scoped to the key's own source pair. It extends ADR-0005 and ADR-0014 and supersedes
+nothing.

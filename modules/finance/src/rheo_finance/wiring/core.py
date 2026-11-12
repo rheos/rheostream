@@ -91,9 +91,17 @@ def build_context(
     role: Role, *, snapshot_provider: SnapshotProvider = txn_snapshot
 ) -> FinanceContext:
     """The CLI's context: the workspace's layout bound for the process, checked, and
-    core sessions. A CLI process registers no runtime adapters, so no model client."""
+    core sessions. A CLI process registers no runtime adapters, so no model client.
+
+    Current in process is bound for the process too, with no consumer registry, so
+    ``finance sink approve|preview|state`` and ``finance rebuild`` compute the spec
+    the tick does; no command syncs, and a reminder session opened here refuses."""
+    from rheo_finance.sinks import current
+    from rheo_finance.wiring.current import CoreCurrent
+
     core_ctx = operator_context()
     db.use_layout(db.check_layout(layout_for(core_ctx)))
+    current.use_in_process(CoreCurrent(core_ctx, consumers=None))
     return context_over_core(
         core_ctx, role, model_client=None, snapshot_provider=snapshot_provider
     )

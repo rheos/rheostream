@@ -1,15 +1,28 @@
-"""Current's gated operation client and durable desired-state reconciliation."""
+"""Current's gated operation client and durable desired-state reconciliation.
+
+Two transports reach Current's four item operations. With nothing bound, each is an
+HTTPS POST through ``http.Client``, and the sync commits a short owner transaction
+around each step. Under core, ``rheo_finance.wiring.current`` binds an in-process
+client (``use_in_process``): each operation runs through core's
+``call_in_transaction`` in one transaction that also holds this sink's rows, and the
+sync commits only when every key is synced (ADR-0025). The gate is asked before every
+call on either path, and an update or status change reaches only an item that carries
+this sink's own source pair.
+"""
 
 from __future__ import annotations
 
+import contextvars
 import datetime as dt
 import json
+import logging
 import re
 import shlex
 from collections.abc import Callable
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal, Protocol
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -19,7 +32,7 @@ from rheo_finance.clock import SystemClock
 from rheo_finance.context import FinanceContext, FinancePaths, UnitOfWork
 from rheo_finance.contracts import Role
 from rheo_finance.http import Client, RequestFailed
-from rheo_finance.operations import OperationError, owner_transaction
+from rheo_finance.operations import OperationError, RoleRefused, owner_transaction
 from rheo_finance.reminders.desired import DesiredTicket, desired_tickets
 from rheo_finance.reminders.policy import (
     PayloadPolicy,
@@ -39,12 +52,14 @@ from rheo_finance.sinks.gate import (
     AllowlistRefused,
     HostRefused,
     SinkDisabled,
+    enabled_digest,
     is_enabled,
 )
 from rheo_finance.sinks.preview import PREVIEW_BUILDERS, PreviewItem, SinkPreview
-from rheo_finance.sinks.spec import SINK_SPECS, RequestTemplate, SinkSpec
+from rheo_finance.sinks.spec import SINK_SPECS, RequestTemplate, SinkSpec, spec_digest
 
 SINK = "current"
+SOURCE_KIND: Final = "float.obligation"
 OPERATIONS = ("create", "get", "update", "set_status")
 REQUESTS = tuple(
     RequestTemplate(method="POST", path=f"/api/v1/operations/current.item.{op}")
@@ -52,14 +67,76 @@ REQUESTS = tuple(
 )
 ALLOWLIST = tuple((r.method, r.path) for r in REQUESTS)
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_LOG = logging.getLogger(__name__)
+
+# The spec an approval pins when the sink runs in process. The four request templates
+# are the operations the transport may call; no host and no key file. Every HTTPS spec
+# carries a ``token_var`` data input, so no HTTPS approval can open this one, nor the
+# reverse.
+IN_PROCESS_SPEC: Final = SinkSpec(
+    name=SINK,
+    hosts=(),
+    requests=REQUESTS,
+    key_file=None,
+    payload_policy_version=1,
+    data_inputs=(("transport", "in_process"),),
+)
 
 
 class CurrentError(Exception):
-    """Fixed local codes only; remote text and HTTP exception text never escape."""
+    """Fixed local codes only; remote text and HTTP exception text never escape.
 
-    def __init__(self, code: str) -> None:
+    ``current_unavailable`` (Current or its session cannot be reached in process) and
+    ``not_owned`` (an item that does not carry this sink's source pair) join the HTTPS
+    path's codes. ``logged`` marks a code whose log line is already written (the
+    in-process session logs each refused call), so the sync logs it only otherwise.
+    """
+
+    def __init__(self, code: str, *, logged: bool = False) -> None:
         self.code = code
+        self.logged = logged
         super().__init__(code)
+
+
+class CurrentTransport(Protocol):
+    """One of the four operations, by its short name; raises only ``CurrentError``."""
+
+    def call(self, operation: str, inputs: dict[str, object]) -> dict[str, object]: ...
+
+
+class ReminderSession(CurrentTransport, Protocol):
+    """One transaction for a whole sync. ``owner`` is a block as ``finance_owner`` on
+    it (not a transaction); leaving the session without ``commit`` rolls it all back."""
+
+    def owner(self) -> AbstractContextManager[UnitOfWork]: ...
+
+    def commit(self) -> None: ...
+
+
+class InProcessCurrent(Protocol):
+    """What the wiring binds under core: a factory of reminder sessions."""
+
+    def session(self) -> AbstractContextManager[ReminderSession]: ...
+
+
+_IN_PROCESS: contextvars.ContextVar[InProcessCurrent | None] = contextvars.ContextVar(
+    "finance_current_in_process", default=None
+)
+
+InProcessToken = contextvars.Token[InProcessCurrent | None]
+
+
+def use_in_process(binding: InProcessCurrent) -> InProcessToken:
+    """Bind ``binding`` for this context; ``release_in_process`` undoes it."""
+    return _IN_PROCESS.set(binding)
+
+
+def release_in_process(token: InProcessToken) -> None:
+    _IN_PROCESS.reset(token)
+
+
+def in_process() -> InProcessCurrent | None:
+    return _IN_PROCESS.get()
 
 
 @dataclass(frozen=True, repr=False)
@@ -125,6 +202,10 @@ def configuration(settings: Settings) -> Configuration | None:
 
 
 def spec(_uow: UnitOfWork) -> SinkSpec:
+    if in_process() is not None:
+        # Under core the HTTP keys are ignored: the tick, the CLI approval and derive
+        # all compute this one spec.
+        return IN_PROCESS_SPEC
     settings = load_settings()
     try:
         config = configuration(settings)
@@ -167,6 +248,18 @@ class RemoteItem(BaseModel):
     title: str
     due_on: dt.date | None
     priority: Literal["critical", "high", "normal", "low"]
+    # Required, so a reply without the pair is a protocol error: the scope check
+    # reads them.
+    source_kind: str | None
+    source_ref: str | None
+
+
+def _owned(item: RemoteItem, key: str) -> RemoteItem:
+    """``item`` when it carries this sink's source pair for ``key``, else
+    ``not_owned``: a service may edit any Current item, so the scope is ours."""
+    if item.source_kind != SOURCE_KIND or item.source_ref != key:
+        raise CurrentError("not_owned")
+    return item
 
 
 class RemoteError(BaseModel):
@@ -183,12 +276,28 @@ class Envelope(BaseModel):
 
 
 class CurrentSink:
-    def __init__(self, uow: UnitOfWork) -> None:
+    """The four operations over ``transport``, or over HTTPS when it is None."""
+
+    def __init__(
+        self, uow: UnitOfWork, transport: CurrentTransport | None = None
+    ) -> None:
         self.uow = uow
+        self.transport = transport
 
     def _call(self, operation: str, inputs: dict[str, object]) -> dict[str, object]:
         if operation not in OPERATIONS:
             raise CurrentError("protocol_error")
+        if self.transport is None:
+            return self._https_call(operation, inputs)
+        # The gate before every in-process call, as http.Client asks it before every
+        # socket: only an approval pinned to the in-process spec opens it.
+        if enabled_digest(self.uow, SINK) != spec_digest(IN_PROCESS_SPEC):
+            raise CurrentError("sink_off")
+        return self.transport.call(operation, inputs)
+
+    def _https_call(
+        self, operation: str, inputs: dict[str, object]
+    ) -> dict[str, object]:
         settings = load_settings()
         config = configuration(settings)
         if config is None:
@@ -274,7 +383,7 @@ class CurrentSink:
                 **row.create.model_dump(mode="json"),
                 "area": "bills",
                 "provenance": "agent",
-                "source_kind": "float.obligation",
+                "source_kind": SOURCE_KIND,
                 "source_ref": row.source_ref,
                 "fingerprint": row.source_ref,
             },
@@ -284,7 +393,7 @@ class CurrentSink:
             ref = result.get("ref")
             if not isinstance(ref, str) or not ref:
                 raise CurrentError("protocol_error")
-            return self.get(ref)
+            return _owned(self.get(ref), row.source_ref)
         failure = False
         try:
             item = RemoteItem.model_validate_json(json.dumps(raw))
@@ -292,7 +401,7 @@ class CurrentSink:
             failure = True
         if failure:
             raise CurrentError("protocol_error")
-        return item
+        return _owned(item, row.source_ref)
 
     def mutate(
         self,
@@ -300,9 +409,15 @@ class CurrentSink:
         ref: str,
         fields: dict[str, object],
         fresh: RemoteItem | None = None,
+        *,
+        source_ref: str,
     ) -> RemoteItem:
+        """``operation`` on ``ref`` at the revision just read, retried once after a
+        stale answer. Each item read is checked against ``source_ref`` first, and the
+        revision compare-and-set makes the checked item the one changed."""
         item = fresh if fresh is not None else self.get(ref)
         for attempt in range(2):
+            _owned(item, source_ref)
             try:
                 return self._item(
                     operation, {"ref": ref, "revision": item.revision, **fields}
@@ -393,11 +508,64 @@ class SyncResult:
     reason: str | None = None
 
 
+@dataclass(frozen=True)
+class _Steps:
+    """How each step of a sync opens its owner block, builds its sink and asks
+    whether the sink is ready: per-step committed transactions over HTTPS, role
+    blocks on one reminder session in process."""
+
+    begin: Callable[[], AbstractContextManager[UnitOfWork]]
+    sink: Callable[[UnitOfWork], CurrentSink]
+    unready: Callable[[UnitOfWork], SyncResult | None]
+
+
+def _https_unready(uow: UnitOfWork) -> SyncResult | None:
+    try:
+        settings = load_settings()
+        if configuration(settings) is None:
+            return SyncResult("pending", "not_configured")
+        credential = settings.get("finance.reminders.current_credential_file")
+        if not isinstance(credential, str):
+            return SyncResult("pending", "not_configured")
+        if not is_enabled(uow, SINK):
+            return SyncResult("pending", "sink_off")
+    except (CurrentError, SettingsError):
+        return SyncResult("pending", "configuration_error")
+    return None
+
+
+def _https_steps(ctx: FinanceContext) -> _Steps:
+    return _Steps(
+        begin=lambda: owner_transaction(ctx), sink=CurrentSink, unready=_https_unready
+    )
+
+
+def _in_process_unready(uow: UnitOfWork) -> SyncResult | None:
+    return None if is_enabled(uow, SINK) else SyncResult("pending", "sink_off")
+
+
+def _session_steps(session: ReminderSession) -> _Steps:
+    return _Steps(
+        begin=session.owner,
+        sink=lambda uow: CurrentSink(uow, transport=session),
+        unready=_in_process_unready,
+    )
+
+
 def sync_reminders(ctx: FinanceContext) -> SyncResult:
-    """Job root, outside dispatch; short transactions commit around each request."""
+    """Job root, outside dispatch.
+
+    Over HTTPS (nothing bound) short transactions commit around each request. In
+    process the whole sync is one reminder session, committed only when every key is
+    synced: a refusal, a pending result, a payload refusal or a storage error leaves
+    neither Current nor this sink's rows changed by it.
+    """
     failed = False
     try:
-        return _sync(ctx)
+        binding = in_process()
+        if binding is None:
+            return _sync(ctx, _https_steps(ctx))
+        return _sync_in_process(ctx, binding)
     except SQLAlchemyError:
         failed = True
     if failed:
@@ -405,8 +573,30 @@ def sync_reminders(ctx: FinanceContext) -> SyncResult:
     raise OperationError("current sync failed")
 
 
-def _sync(ctx: FinanceContext) -> SyncResult:
-    with owner_transaction(ctx) as uow:
+def _sync_in_process(ctx: FinanceContext, binding: InProcessCurrent) -> SyncResult:
+    if ctx.role not in {Role.OWNER, Role.SERVICE}:
+        raise RoleRefused("the reminder sync refuses this role")
+    with ExitStack() as stack:
+        session: ReminderSession | None = None
+        opened: str | None = None
+        try:
+            session = stack.enter_context(binding.session())
+        except CurrentError as exc:
+            opened = exc.code
+        if session is None:
+            # The session could not open: nothing was called.
+            code = opened or "current_unavailable"
+            return SyncResult("pending" if code == "not_configured" else "failed", code)
+        result = _sync(ctx, _session_steps(session))
+        if result.state == "synced":
+            session.commit()
+        # Anything else rolls back as the session closes.
+        return result
+    raise OperationError("current sync failed")
+
+
+def _sync(ctx: FinanceContext, steps: _Steps) -> SyncResult:
+    with steps.begin() as uow:
         facts = PostgresReminderRepository(uow)
         desired = desired_tickets(ctx, facts)
         registered = facts.registered_payees()
@@ -414,26 +604,22 @@ def _sync(ctx: FinanceContext) -> SyncResult:
         if len(wanted) != len(desired.tickets):
             raise PayloadRefused("duplicate reminder source keys")
         existing = {r.source_ref: r for r in PostgresCurrentTicketRepository(uow).all()}
-        try:
-            settings = load_settings()
-            if configuration(settings) is None:
-                return SyncResult("pending", "not_configured")
-            credential = settings.get("finance.reminders.current_credential_file")
-            if not isinstance(credential, str):
-                return SyncResult("pending", "not_configured")
-            if not is_enabled(uow, SINK):
-                return SyncResult("pending", "sink_off")
-        except (CurrentError, SettingsError):
-            return SyncResult("pending", "configuration_error")
+        unready = steps.unready(uow)
+        if unready is not None:
+            return unready
     for ref in sorted(wanted.keys() | existing.keys()):
         intent = wanted.get(ref) or _absent(existing[ref])
         failure: str | None = None
         try:
-            _reconcile(ctx, ref, intent)
+            _reconcile(ctx, ref, intent, steps)
         except CurrentError as exc:
             failure = exc.code
+            if not exc.logged:
+                # In process the row annotation below rolls back, so this line is the
+                # code's only record: the code alone, never the key, the item or text.
+                _LOG.info("finance_current_sync_stopped code=%s", failure)
         if failure is not None:
-            with owner_transaction(ctx) as uow:
+            with steps.begin() as uow:
                 store = PostgresCurrentTicketRepository(uow)
                 row = store.get(ref)
                 if row is not None:
@@ -468,11 +654,11 @@ def _acknowledged(row: SinkTicket, intent: Target, now: dt.datetime) -> SinkTick
     )
 
 
-def _reconcile(ctx: FinanceContext, ref: str, intent: Target) -> None:
+def _reconcile(ctx: FinanceContext, ref: str, intent: Target, steps: _Steps) -> None:
     now = ctx.clock.now_utc()
     # Claim transaction A always exits before any create. It is not a worker lock:
     # Current's source pair and fingerprint also fold overlapping create attempts.
-    with owner_transaction(ctx) as uow:
+    with steps.begin() as uow:
         store = PostgresCurrentTicketRepository(uow)
         row = store.get(ref)
         if row is None:
@@ -497,18 +683,18 @@ def _reconcile(ctx: FinanceContext, ref: str, intent: Target) -> None:
             return
     fresh: RemoteItem | None = None
     if row.state == "post_pending":
-        with owner_transaction(ctx) as uow:
-            fresh = CurrentSink(uow).create(row)
+        with steps.begin() as uow:
+            fresh = steps.sink(uow).create(row)
             row = row.model_copy(update={"external_id": fresh.ref, "state": "open"})
             PostgresCurrentTicketRepository(uow).save(row)
     ref_ = row.external_id
     if ref_ is None:
-        with owner_transaction(ctx) as uow:
+        with steps.begin() as uow:
             PostgresCurrentTicketRepository(uow).save(_acknowledged(row, intent, now))
         return
     # Each mutation gets a fresh read; only a just-returned create can supply it.
-    with owner_transaction(ctx) as uow:
-        sink = CurrentSink(uow)
+    with steps.begin() as uow:
+        sink = steps.sink(uow)
         remote = fresh if fresh is not None else sink.get(ref_)
         fields: dict[str, object] = {}
         if remote.title != intent.create.title:
@@ -518,14 +704,15 @@ def _reconcile(ctx: FinanceContext, ref: str, intent: Target) -> None:
         if remote.priority != intent.create.priority:
             fields["priority"] = intent.create.priority
         if fields:
-            remote = sink.mutate("update", ref_, fields, fresh=remote)
+            remote = sink.mutate("update", ref_, fields, fresh=remote, source_ref=ref)
     if remote.status != intent.status:
-        with owner_transaction(ctx) as uow:
-            remote = CurrentSink(uow).mutate(
+        with steps.begin() as uow:
+            remote = steps.sink(uow).mutate(
                 "set_status",
                 ref_,
                 {"status": intent.status},
                 fresh=fresh if not fields else None,
+                source_ref=ref,
             )
     if (remote.title, remote.due_on, remote.priority, remote.status) != (
         intent.create.title,
@@ -534,7 +721,7 @@ def _reconcile(ctx: FinanceContext, ref: str, intent: Target) -> None:
         intent.status,
     ):
         raise CurrentError("incomplete_convergence")
-    with owner_transaction(ctx) as uow:
+    with steps.begin() as uow:
         store = PostgresCurrentTicketRepository(uow)
         persisted = store.get(ref)
         assert persisted is not None

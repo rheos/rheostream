@@ -2,8 +2,10 @@
 
 The handler opens no transaction of its own on the job's unit of work, where core
 writes the job row after it returns: the tick commits in short sessions of its own
-(``jobs.tick`` dispatches each step on a fresh core session). It checks the
-cancellation token before each due job, before the prune and while a model call waits.
+(``jobs.tick`` dispatches each step on a fresh core session), and the reminder sync in
+one session of its own, bound here to Current in process with the worker's consumer
+registry (``wiring.current``). It checks the cancellation token before each due job,
+before the prune and while a model call waits.
 
 The worker stores ``str(exc)`` of whatever a handler raises, so every failure leaves
 here as ``FinanceJobFailed`` carrying a fixed code and nothing chained; cancellation,
@@ -21,6 +23,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 from rheo_core.boundary.context import Refusal
 from rheo_core.boundary.factories import context_for_scheduled_job
+from rheo_core.events import ConsumerRegistry
 from rheo_core.modules.readiness import ModuleNotReady
 from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.work.cancellation import CancellationToken, JobCancelled, JobLeaseLost
@@ -77,7 +80,11 @@ def failure_code(exc: BaseException) -> str:
     return GENERIC
 
 
-def _run(workspace_id: UUID, token: CancellationToken) -> None:
+def _run(
+    workspace_id: UUID,
+    token: CancellationToken,
+    consumers: ConsumerRegistry | None,
+) -> None:
     core_ctx = context_for_scheduled_job(workspace_id)
     if isinstance(core_ctx, Refusal):
         return
@@ -85,18 +92,23 @@ def _run(workspace_id: UUID, token: CancellationToken) -> None:
     from rheo_finance.contracts import Role
     from rheo_finance.jobs.tick import tick
     from rheo_finance.wiring.core import context_over_core, layout_for
+    from rheo_finance.wiring.current import bind_reminders
     from rheo_finance.wiring.model import runtime_model_client
 
     bound = db.use_layout(db.check_layout(layout_for(core_ctx)))
     try:
-        ctx = context_over_core(
-            core_ctx,
-            Role.SERVICE,
-            model_client=runtime_model_client(core_ctx, heartbeat=token.checkpoint),
-        )
-        # The tick's per-job handler records any other error and goes on; these stop
-        # the job, so no further job runs after a cancel or under another lease.
-        tick(ctx, checkpoint=token.checkpoint, pass_through=PASS_THROUGH)
+        # Reminders go to Current in process, through the worker's registry, which
+        # Current's writes publish through.
+        with bind_reminders(core_ctx, consumers):
+            ctx = context_over_core(
+                core_ctx,
+                Role.SERVICE,
+                model_client=runtime_model_client(core_ctx, heartbeat=token.checkpoint),
+            )
+            # The tick's per-job handler records any other error and goes on; these
+            # stop the job, so no further job runs after a cancel or under another
+            # lease.
+            tick(ctx, checkpoint=token.checkpoint, pass_through=PASS_THROUGH)
     finally:
         db.release_layout(bound)
 
@@ -110,7 +122,7 @@ def finance_tick_job(
     token.checkpoint()
     code: str | None = None
     try:
-        _run(payload.workspace_id, token)
+        _run(payload.workspace_id, token, uow.consumers)
     except PASS_THROUGH:
         raise
     except Exception as exc:

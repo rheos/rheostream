@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -66,10 +67,15 @@ class Token:
 
 
 def _raising(exc: BaseException) -> Any:
-    def run(_workspace_id: uuid.UUID, _token: object) -> None:
+    def run(_workspace_id: uuid.UUID, _token: object, _consumers: object) -> None:
         raise exc
 
     return run
+
+
+# The worker's view of the job's unit of work, as the handler reads it: its consumer
+# registry, handed on to ``_run``.
+VIEW = SimpleNamespace(consumers=None)
 
 
 def _payload() -> tick_job.TickPayload:
@@ -82,7 +88,7 @@ def test_a_failure_leaves_as_its_code_alone(
 ) -> None:
     monkeypatch.setattr(tick_job, "_run", _raising(exc))
     with pytest.raises(tick_job.FinanceJobFailed) as caught:
-        tick_job.finance_tick_job(object(), _payload(), Token())  # type: ignore[arg-type]
+        tick_job.finance_tick_job(VIEW, _payload(), Token())  # type: ignore[arg-type]
     failed = caught.value
     assert str(failed) == code
     assert SECRET not in repr(failed) and "synthetic" not in str(failed)
@@ -105,7 +111,7 @@ def test_cancellation_lease_and_readiness_pass_through(
 ) -> None:
     monkeypatch.setattr(tick_job, "_run", _raising(exc))
     with pytest.raises(type(exc)) as caught:
-        tick_job.finance_tick_job(object(), _payload(), Token())  # type: ignore[arg-type]
+        tick_job.finance_tick_job(VIEW, _payload(), Token())  # type: ignore[arg-type]
     assert caught.value is exc
     assert tick_job.PASS_THROUGH == (JobCancelled, JobLeaseLost, ModuleNotReady)
 
@@ -131,7 +137,7 @@ def test_the_tick_is_handed_the_pass_through_classes(
         tick_module, "tick", lambda _ctx, **kwargs: handed.append(kwargs)
     )
     token = Token()
-    tick_job.finance_tick_job(object(), _payload(), token)  # type: ignore[arg-type]
+    tick_job.finance_tick_job(VIEW, _payload(), token)  # type: ignore[arg-type]
     assert len(handed) == 1
     assert handed[0]["pass_through"] == tick_job.PASS_THROUGH
     assert handed[0]["checkpoint"] == token.checkpoint
@@ -142,9 +148,11 @@ def test_the_handler_refuses_another_payload_and_checks_the_token_first(
 ) -> None:
     token = Token()
     with pytest.raises(TypeError):
-        tick_job.finance_tick_job(object(), object(), token)  # type: ignore[arg-type]
+        tick_job.finance_tick_job(VIEW, object(), token)  # type: ignore[arg-type]
     assert token.checks == 0
     ran: list[uuid.UUID] = []
-    monkeypatch.setattr(tick_job, "_run", lambda workspace, _t: ran.append(workspace))
-    tick_job.finance_tick_job(object(), _payload(), token)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        tick_job, "_run", lambda workspace, _t, _c: ran.append(workspace)
+    )
+    tick_job.finance_tick_job(VIEW, _payload(), token)  # type: ignore[arg-type]
     assert token.checks == 1 and ran == [uuid.UUID(int=1)]
