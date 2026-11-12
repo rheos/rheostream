@@ -286,10 +286,18 @@ def push(
                 proc.stdin.close()
             except BrokenPipeError:
                 pass
-        reply = proc.stdout.read(REPLY_MAX_BYTES + 1)
+        # From here the stream may have ended whole and the receiver committed, so a
+        # local failure is an outcome-unknown code, never "Nothing was written."
+        try:
+            reply = proc.stdout.read(REPLY_MAX_BYTES + 1)
+        except OSError:
+            raise RemoteRefused("ssh_failed") from None
         if len(reply) > REPLY_MAX_BYTES:
             raise RemoteRefused("remote_reply_invalid")
-        returncode = proc.wait()
+        try:
+            returncode = proc.wait()
+        except OSError:
+            raise RemoteRefused("ssh_failed") from None
     finally:
         _stop(proc)
     if local is not None:
@@ -317,9 +325,9 @@ def pull(cfg: RemoteConfig, into: Path) -> receiver.Counts:
             if exc.code == "stream_truncated":
                 returncode = proc.wait()
                 if returncode == 255:
-                    raise RemoteRefused("ssh_failed") from None
+                    raise RemoteRefused("ssh_failed", files=exc.files) from None
                 if returncode != 0:
-                    raise RemoteRefused("remote_failed") from None
+                    raise RemoteRefused("remote_failed", files=exc.files) from None
             raise
     finally:
         _stop(proc)

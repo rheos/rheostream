@@ -49,9 +49,9 @@ walk reads, and a copy must never change the laptop's files.
   `target_not_regular`, and different bytes are `target_differs` with the count. A
   stream cut or refused up to here writes nothing. Only then are files hard-linked
   into place, each atomically, which never replaces a file that appeared meanwhile
-  (`target_appeared`). A refusal during that commit step (`target_appeared`,
-  `target_outside_layout`, `io_failed`) keeps the files already linked and names how
-  many. Identical files are skipped. A lock lets one run at a
+  (`target_appeared`). A refusal during that commit step, whatever its code, keeps
+  the files already linked and names how many: the receiver counts each file as it
+  lands and puts the count on the refusal. Identical files are skipped. A lock lets one run at a
   time and removes a killed run's leftovers. Files are 0600, made directories 0700;
   modification times are not carried.
 - **Refused by default, with one overwrite rule.** `--replace` may replace

@@ -48,10 +48,6 @@ STDIN_FD: Final = 0
 _OUTCOME_UNKNOWN: Final = frozenset(
     {"ssh_failed", "ssh_timeout", "remote_failed", "remote_reply_invalid"}
 )
-# These can stop a commit part way; their count is the files already written.
-_PART_WRITTEN: Final = frozenset(
-    {"target_appeared", "target_outside_layout", "io_failed"}
-)
 
 
 def _files(count: int) -> str:
@@ -59,10 +55,13 @@ def _files(count: int) -> str:
 
 
 def refusal_line(label: str, exc: RemoteRefused) -> str:
+    """The refusal message. ``target_differs`` counts the differing targets, refused
+    before anything landed; any other count is the files that landed before the
+    refusal (the receiver's, or a push reply's ``NO <code> <n>``), whatever the code."""
     code = exc.code
     if code == "target_differs":
         return f"{label}: refused. {code} ({_files(exc.files)}). Nothing was written."
-    if code in _PART_WRITTEN and exc.files:
+    if exc.files:
         return f"{label}: refused. {code} ({_files(exc.files)} written before it)."
     if code in _OUTCOME_UNKNOWN:
         return f"{label}: refused. {code}."

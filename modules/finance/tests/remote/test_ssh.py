@@ -7,12 +7,14 @@ No database, no network: the only ``ssh`` run is ``fake_ssh.py``.
 
 from __future__ import annotations
 
+import errno
 import os
 import shlex
 import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import IO
 
 import pytest
 
@@ -205,6 +207,61 @@ def test_an_ok_reply_with_a_failing_exit_is_refused(
     assert capsys.readouterr().err.strip() == (
         "finance remote push: refused. remote_reply_invalid."
     )
+
+
+def test_a_push_reply_count_is_the_files_written_whatever_the_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeRemote.install(tmp_path, monkeypatch)
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "a.pdf").write_bytes(b"synthetic")
+    push = ["remote", "push", "--config", str(fake.config), "--inbox", str(inbox)]
+    monkeypatch.setenv("FAKE_SSH_EXIT", "1")
+    for code in ("target_not_regular", "target_appeared", "io_failed"):
+        monkeypatch.setenv("FAKE_SSH_FAULT", f"reply:NO {code} 2")
+        assert main(push) == 1
+        assert capsys.readouterr().err == (
+            f"finance remote push: refused. {code} (2 files written before it).\n"
+        )
+    monkeypatch.setenv("FAKE_SSH_FAULT", "reply:NO target_not_regular 0")
+    assert main(push) == 1
+    assert capsys.readouterr().err == (
+        "finance remote push: refused. target_not_regular. Nothing was written.\n"
+    )
+
+
+def test_a_failed_reply_read_never_says_nothing_was_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeRemote.install(tmp_path, monkeypatch)
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "a.pdf").write_bytes(b"synthetic")
+    real_start = ssh._start
+
+    class _ReadFails:
+        """The receiver's reply arrives in full, then the local read fails."""
+
+        def __init__(self, real: IO[bytes]) -> None:
+            self._real = real
+
+        def read(self, _size: int, /) -> bytes:
+            self._real.read()
+            self._real.close()
+            raise OSError(errno.EIO, "synthetic")
+
+    def start(argv: list[str], *, stdin: int) -> subprocess.Popen[bytes]:
+        proc = real_start(argv, stdin=stdin)
+        assert proc.stdout is not None
+        monkeypatch.setattr(proc, "stdout", _ReadFails(proc.stdout))
+        return proc
+
+    monkeypatch.setattr(ssh, "_start", start)
+    push = ["remote", "push", "--config", str(fake.config), "--inbox", str(inbox)]
+    assert main(push) == 1
+    assert capsys.readouterr().err == "finance remote push: refused. ssh_failed.\n"
+    assert (fake.layout.inbox / "a.pdf").read_bytes() == b"synthetic"
 
 
 def _config_cases(tmp_path: Path) -> dict[str, Path]:

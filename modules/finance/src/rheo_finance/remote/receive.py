@@ -14,15 +14,19 @@
    (``target_differs``, with the count) unless ``replaceable`` allows that path. A
    refusal here leaves every area as it was; no directory has been made.
 4. Commit. New files are hard-linked into place, which never replaces a file that
-   appeared since step 3 (``target_appeared``, with the count already committed), and
-   the staged name is removed. A replaceable path is renamed over its target. Each
-   file lands atomically, never partly under its final name; a refusal in this step
-   (``target_appeared``, ``target_outside_layout``, ``io_failed``) keeps the files
-   already committed and carries their count.
+   appeared since step 3 (``target_appeared``), and the staged name is removed. A
+   replaceable path is renamed over its target. Each file lands atomically, never
+   partly under its final name.
 
 Finally the run directory is removed and the lock released. Files are 0600 and made
 directories 0700; modification times are not carried. Any other ``OSError`` is
 ``io_failed``.
+
+A refusal during the commit step, or after it, keeps the files already linked or
+renamed and says how many: ``receive`` counts each file as it lands and puts that
+count on whatever refusal ends the run, whatever its code. Before the commit step
+nothing has landed, and the count is the refusal's own (``target_differs``'s
+differing targets) or 0.
 """
 
 from __future__ import annotations
@@ -70,6 +74,23 @@ class Counts:
 
 
 @dataclass
+class _Tally:
+    """What the commit step has done so far, kept outside it so a refusal from any
+    later point still knows how many files landed."""
+
+    new: int = 0
+    identical: int = 0
+    replaced: int = 0
+
+    @property
+    def written(self) -> int:
+        return self.new + self.replaced
+
+    def counts(self) -> Counts:
+        return Counts(new=self.new, identical=self.identical, replaced=self.replaced)
+
+
+@dataclass
 class _Staged:
     name: str
     header: Header
@@ -102,12 +123,16 @@ def receive(
     before_commit: Callable[[], None] | None = None,
 ) -> Counts:
     """Receive one stream into ``areas`` (area name to directory); see the module."""
+    tally = _Tally()
     try:
-        return _receive(raw, areas, staging_root, direction, replaceable, before_commit)
-    except RemoteRefused:
+        _receive(raw, areas, staging_root, direction, replaceable, before_commit, tally)
+    except RemoteRefused as exc:
+        if tally.written:
+            raise RemoteRefused(exc.code, files=tally.written) from None
         raise
     except OSError:
-        raise RemoteRefused("io_failed") from None
+        raise RemoteRefused("io_failed", files=tally.written) from None
+    return tally.counts()
 
 
 def _receive(
@@ -117,7 +142,8 @@ def _receive(
     direction: Direction,
     replaceable: Replaceable,
     before_commit: Callable[[], None] | None,
-) -> Counts:
+    tally: _Tally,
+) -> None:
     with ExitStack() as stack:
         area_fds = {name: _open_area(path, stack) for name, path in areas.items()}
         stage_fd = _take_staging(staging_root, stack)
@@ -135,7 +161,7 @@ def _receive(
         if before_commit is not None:
             before_commit()
         run_path = staging_root / STAGING_NAME / run_name
-        return _commit_all(staged, areas, area_fds, run_fd, run_path)
+        _commit_all(staged, areas, area_fds, run_fd, run_path, tally)
 
 
 def _open_area(path: Path, stack: ExitStack) -> int:
@@ -349,20 +375,24 @@ def _commit_all(
     area_fds: Mapping[str, int],
     run_fd: int,
     run_path: Path,
-) -> Counts:
-    new = identical = replaced = 0
+    tally: _Tally,
+) -> None:
+    """Link or rename each file into place, counting each in ``tally`` the moment it
+    lands; ``receive`` puts that count on any refusal from here on."""
     key: tuple[str, tuple[str, ...]] | None = None
     parent_fd: int | None = None
     try:
         for item in staged:
             header = item.header
             if item.action == "identical":
-                identical += 1
+                tally.identical += 1
                 continue
             here = (header.area, header.rest.parent.parts)
             if here != key or parent_fd is None:
-                _sync_close(parent_fd)
-                parent_fd = None
+                # Forget the descriptor before closing it, so a failed close is
+                # never closed a second time below.
+                done, parent_fd = parent_fd, None
+                _sync_close(done)
                 parent_fd = _make_parents(area_fds[header.area], here[1])
                 key = here
             name = header.rest.name
@@ -371,7 +401,7 @@ def _commit_all(
                 _replace(
                     run_fd, item.name, parent_fd, name, (run_path / item.name, target)
                 )
-                replaced += 1
+                tally.replaced += 1
                 continue
             try:
                 os.link(
@@ -383,15 +413,11 @@ def _commit_all(
                 )
             except FileExistsError:
                 if _digest_of(parent_fd, name) == item.digest:
-                    identical += 1
+                    tally.identical += 1
                     continue
                 raise RemoteRefused("target_appeared") from None
+            # Linked: it counts now, even if removing the staged name fails.
+            tally.new += 1
             os.unlink(item.name, dir_fd=run_fd)
-            new += 1
-    except RemoteRefused as exc:
-        raise RemoteRefused(exc.code, files=new + replaced) from None
-    except OSError:
-        raise RemoteRefused("io_failed", files=new + replaced) from None
     finally:
         _sync_close(parent_fd)
-    return Counts(new=new, identical=identical, replaced=replaced)

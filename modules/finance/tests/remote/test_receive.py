@@ -18,7 +18,7 @@ import pytest
 
 from rheo_finance.cli import remote as remote_cli
 from rheo_finance.remote import send
-from rheo_finance.remote.frames import RemoteRefused
+from rheo_finance.remote.frames import Direction, RemoteRefused
 from rheo_finance.remote.receive import (
     LOCK_NAME,
     STAGING_NAME,
@@ -205,6 +205,54 @@ def test_a_case_only_name_clash_on_pull_keeps_the_first_file_and_counts_it(
     if not folds:
         assert (into / "pack.zip").read_bytes() == b"other bytes"
     assert staging_entries(into) == [LOCK_NAME]
+
+
+def _plant_directory(target: Path, _outside: Path) -> None:
+    target.mkdir()
+
+
+def _plant_link(target: Path, outside: Path) -> None:
+    target.symlink_to(outside)
+
+
+@pytest.mark.parametrize("direction", ["push", "pull"])
+@pytest.mark.parametrize(
+    "plant", [_plant_directory, _plant_link], ids=["directory", "link"]
+)
+def test_a_non_regular_entry_met_at_commit_keeps_the_first_file_and_counts_it(
+    tmp_path: Path, direction: Direction, plant: Callable[[Path, Path], None]
+) -> None:
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"outside bytes")
+    if direction == "pull":
+        area = tmp_path / "into"
+        area.mkdir()
+        areas, root, prefix = {"packs": area}, area, "packs"
+    else:
+        layout = make_layout(tmp_path / "uploads")
+        areas, root, prefix = push_areas(layout), layout.root, "archive"
+        area = layout.archive
+    files = [
+        (f"{prefix}/first.pdf", b"first synthetic file"),
+        (f"{prefix}/second.pdf", b"second synthetic file"),
+    ]
+    with pytest.raises(RemoteRefused) as caught:
+        receive(
+            io.BytesIO(frame(files)),
+            areas,
+            root,
+            direction=direction,
+            # After every target was checked: the second becomes a non-regular entry.
+            before_commit=lambda: plant(area / "second.pdf", outside),
+        )
+    assert (caught.value.code, caught.value.files) == ("target_not_regular", 1)
+    label = f"finance remote {direction}"
+    assert remote_cli.refusal_line(label, caught.value) == (
+        f"{label}: refused. target_not_regular (1 file written before it)."
+    )
+    assert (area / "first.pdf").read_bytes() == b"first synthetic file"
+    assert outside.read_bytes() == b"outside bytes"
+    assert staging_entries(root) == [LOCK_NAME]
 
 
 def test_without_replace_an_owner_input_is_refused(tmp_path: Path) -> None:

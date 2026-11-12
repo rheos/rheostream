@@ -12,12 +12,15 @@ import io
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from rheo_core.boundary.context import Refusal
 
 from rheo_finance import composition, db
+from rheo_finance.cli import remote as remote_cli
 from rheo_finance.cli.main import main
+from rheo_finance.remote import receive as receive_module
 from rheo_finance.remote import ssh
 from rheo_finance.remote.frames import MAGIC, FrameReader, RemoteRefused
 from rheo_finance.remote.receive import receive
@@ -52,6 +55,38 @@ def test_receive_lands_a_stream_in_the_bound_layout(
     assert main(["remote", "receive", "--replace"]) == 0
     assert capsys.readouterr().out == "OK 0 0 1\n"
     assert (layout.data / "settings.toml").read_bytes() == b"# owner\n"
+
+
+def test_a_commit_step_refusal_replies_with_the_files_already_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    layout = make_layout(tmp_path / "uploads")
+    _bind(monkeypatch, layout)
+    real_receive = receive_module.receive
+
+    def plant_at_commit(*args: Any, **kwargs: Any) -> receive_module.Counts:
+        # After every target was checked: the second becomes a directory.
+        def plant() -> None:
+            (layout.archive / "second.pdf").mkdir()
+
+        return real_receive(*args, **kwargs, before_commit=plant)
+
+    monkeypatch.setattr(receive_module, "receive", plant_at_commit)
+    files = [
+        ("archive/first.pdf", b"first synthetic file"),
+        ("archive/second.pdf", b"second synthetic file"),
+    ]
+    _stdin(monkeypatch, frame(files))
+    assert main(["remote", "receive"]) == 1
+    captured = capsys.readouterr()
+    assert (captured.out, captured.err) == ("NO target_not_regular 1\n", "")
+    with pytest.raises(RemoteRefused) as caught:
+        ssh.parse_reply(captured.out.encode(), 1)
+    assert (caught.value.code, caught.value.files) == ("target_not_regular", 1)
+    assert remote_cli.refusal_line("finance remote push", caught.value) == (
+        "finance remote push: refused. target_not_regular (1 file written before it)."
+    )
+    assert (layout.archive / "first.pdf").read_bytes() == b"first synthetic file"
 
 
 def test_send_packs_streams_the_bound_layouts_packs(

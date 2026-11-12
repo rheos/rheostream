@@ -110,9 +110,10 @@ in it. The remote account's login shell must be sh-compatible.
 Nothing on the laptop is changed by a push, and nothing in the container by a pull.
 Each file lands atomically: it is staged under a temporary name, then linked into
 place, so no final name ever holds part of a file. A transfer cut, killed or refused
-before the commit step writes nothing. A refusal during the commit step
-(`target_appeared`, `target_outside_layout` or `io_failed`) keeps the files already
-linked and says how many: `refused. target_appeared (3 files written before it).`
+before the commit step writes nothing. A refusal during the commit step, whatever its
+code, keeps the files already linked and says how many: `refused. target_appeared (3
+files written before it).` When ssh or the reply fails after the stream was sent, the
+outcome is not known and the message does not say "Nothing was written."
 An existing file with the same bytes is skipped; one with different bytes refuses
 the whole push before anything is written (`target_differs`). `--replace` replaces
 only `data/settings.toml`, `data/identities.toml` and `data/manual/**`; statements,
