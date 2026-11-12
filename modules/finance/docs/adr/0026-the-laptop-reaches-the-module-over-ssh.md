@@ -42,13 +42,16 @@ walk reads, and a copy must never change the laptop's files.
   `archive/**`, `inbox/**`, `data/settings.toml`, `data/identities.toml`,
   `data/manual/**`, `data/transfer/**` and `keys/<name>`; a pull only `packs/**`.
   `db.env`, `dumps/` and `logs/` cannot be named, so they never cross.
-- **All or nothing.** The receiver stages each file under a numbered name in a hidden
-  directory beside the areas, checks its hash, then checks every target before any is
-  written: a parent reached through a link or outside its area is
-  `target_outside_layout`, an existing target that is not a regular file is
-  `target_not_regular`, and different bytes are `target_differs` with the count. Only
-  then are files hard-linked into place, which never replaces a file that appeared
-  meanwhile (`target_appeared`). Identical files are skipped. A lock lets one run at a
+- **Nothing before the commit, each file whole.** The receiver stages each file under
+  a numbered name in a hidden directory beside the areas, checks its hash, then checks
+  every target before any is written: a parent reached through a link or outside its
+  area is `target_outside_layout`, an existing target that is not a regular file is
+  `target_not_regular`, and different bytes are `target_differs` with the count. A
+  stream cut or refused up to here writes nothing. Only then are files hard-linked
+  into place, each atomically, which never replaces a file that appeared meanwhile
+  (`target_appeared`). A refusal during that commit step (`target_appeared`,
+  `target_outside_layout`, `io_failed`) keeps the files already linked and names how
+  many. Identical files are skipped. A lock lets one run at a
   time and removes a killed run's leftovers. Files are 0600, made directories 0700;
   modification times are not carried.
 - **Refused by default, with one overwrite rule.** `--replace` may replace

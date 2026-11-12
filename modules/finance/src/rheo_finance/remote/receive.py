@@ -1,4 +1,4 @@
-"""The receiver: a stream lands whole or not at all.
+"""The receiver: each file lands whole, and nothing lands before the commit step.
 
 ``receive`` runs in four steps, under one lock:
 
@@ -15,7 +15,10 @@
    refusal here leaves every area as it was; no directory has been made.
 4. Commit. New files are hard-linked into place, which never replaces a file that
    appeared since step 3 (``target_appeared``, with the count already committed), and
-   the staged name is removed. A replaceable path is renamed over its target.
+   the staged name is removed. A replaceable path is renamed over its target. Each
+   file lands atomically, never partly under its final name; a refusal in this step
+   (``target_appeared``, ``target_outside_layout``, ``io_failed``) keeps the files
+   already committed and carries their count.
 
 Finally the run directory is removed and the lock released. Files are 0600 and made
 directories 0700; modification times are not carried. Any other ``OSError`` is
@@ -327,10 +330,14 @@ def _sync_close(fd: int | None) -> None:
 def _replace(
     run_fd: int, staged: str, parent_fd: int, name: str, paths: tuple[Path, Path]
 ) -> None:
-    """Rename the staged file over its target. Where ``rename`` takes no directory
-    descriptors (macOS), the paths whose parent was just opened without following a
-    link are used instead."""
-    if os.replace in os.supports_dir_fd:
+    """Rename the staged file over its target, in the parent ``_make_parents`` opened
+    without following a link, so a component swapped for a link since is not used.
+
+    CPython lists ``renameat`` under ``os.rename`` alone in ``os.supports_dir_fd``
+    (never under ``os.replace``), and ``os.replace`` takes the same two descriptors
+    wherever it is there (Linux and macOS both). Only a platform without ``renameat``
+    falls back to the two paths."""
+    if os.rename in os.supports_dir_fd:
         os.replace(staged, name, src_dir_fd=run_fd, dst_dir_fd=parent_fd)
     else:
         os.replace(*paths)

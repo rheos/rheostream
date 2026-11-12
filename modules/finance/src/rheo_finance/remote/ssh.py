@@ -242,7 +242,9 @@ class _FdReader:
 
 def parse_reply(raw: bytes, returncode: int) -> receiver.Counts:
     """A push reply: ``OK <new> <identical> <replaced>`` or ``NO <code> <n>``, one line;
-    anything else is ``remote_reply_invalid`` and is never shown."""
+    anything else is ``remote_reply_invalid`` and is never shown. An ``OK`` with a
+    non-zero exit is ``remote_reply_invalid`` too: the receiver exits 0 after ``OK``,
+    so the outcome is not known."""
     if returncode == 255:
         raise RemoteRefused("ssh_failed")
     if not raw and returncode != 0:
@@ -252,6 +254,8 @@ def parse_reply(raw: bytes, returncode: int) -> receiver.Counts:
     except UnicodeDecodeError:
         raise RemoteRefused("remote_reply_invalid") from None
     if found := _OK.fullmatch(text):
+        if returncode != 0:
+            raise RemoteRefused("remote_reply_invalid")
         return receiver.Counts(
             new=int(found[1]), identical=int(found[2]), replaced=int(found[3])
         )

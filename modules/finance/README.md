@@ -108,12 +108,16 @@ in it. The remote account's login shell must be sh-compatible.
   terminal, and returns its status.
 
 Nothing on the laptop is changed by a push, and nothing in the container by a pull.
-A push or pull lands whole or not at all: a refused, cut or killed transfer leaves no
-file under its final name. An existing file with the same bytes is skipped; one with
-different bytes refuses the whole push (`target_differs`). `--replace` replaces only
-`data/settings.toml`, `data/identities.toml` and `data/manual/**`; statements, inbox
-files, keys and transfer files are never replaced (give a new key a new name), and a
-pull never replaces a file.
+Each file lands atomically: it is staged under a temporary name, then linked into
+place, so no final name ever holds part of a file. A transfer cut, killed or refused
+before the commit step writes nothing. A refusal during the commit step
+(`target_appeared`, `target_outside_layout` or `io_failed`) keeps the files already
+linked and says how many: `refused. target_appeared (3 files written before it).`
+An existing file with the same bytes is skipped; one with different bytes refuses
+the whole push before anything is written (`target_differs`). `--replace` replaces
+only `data/settings.toml`, `data/identities.toml` and `data/manual/**`; statements,
+inbox files, keys and transfer files are never replaced (give a new key a new name),
+and a pull never replaces a file.
 
 Messages are a code and counts, never a host, path or file name: for example
 `finance remote push: 12 new, 3 identical, 1 replaced, 2 skipped.` or `finance remote

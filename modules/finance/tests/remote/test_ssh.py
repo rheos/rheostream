@@ -19,6 +19,7 @@ import pytest
 from rheo_finance.cli import remote as remote_cli
 from rheo_finance.cli.main import main
 from rheo_finance.remote import ssh
+from rheo_finance.remote.frames import RemoteRefused
 
 from .support import (
     CONTAINER,
@@ -148,6 +149,64 @@ def test_hostile_exec_words_reach_finance_as_words(
     assert fake.calls() == []
 
 
+@pytest.mark.parametrize(
+    "words",
+    [["--", "ledger", "status", "--json"], ["ledger", "status", "--json"]],
+)
+def test_exec_through_the_parser_hands_the_words_to_finance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    words: list[str],
+) -> None:
+    fake = FakeRemote.install(tmp_path, monkeypatch)
+    assert main(["remote", "exec", "--config", str(fake.config), *words]) == 0
+    assert capfd.readouterr().out == "fake-finance\n"
+    argv = fake.calls()[1]
+    assert argv[0] in ("-T", "-t") and argv[1:3] == ["--", DESTINATION]
+    remote = shlex.split(argv[3])
+    expected = words[1:] if words[:1] == ["--"] else words
+    assert remote[remote.index("finance") + 1 :] == expected
+
+
+@pytest.mark.parametrize("words", [[], ["--"]])
+def test_exec_through_the_parser_refuses_no_words(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    words: list[str],
+) -> None:
+    fake = FakeRemote.install(tmp_path, monkeypatch)
+    assert main(["remote", "exec", "--config", str(fake.config), *words]) == 1
+    assert "finance remote exec: refused. argument_refused." in capfd.readouterr().err
+    assert fake.calls() == []
+
+
+def test_an_ok_reply_with_a_failing_exit_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    counts = ssh.parse_reply(b"OK 1 2 3\n", 0)
+    assert (counts.new, counts.identical, counts.replaced) == (1, 2, 3)
+    for status in (1, 2, 130):
+        with pytest.raises(RemoteRefused) as caught:
+            ssh.parse_reply(b"OK 1 2 3\n", status)
+        assert caught.value.code == "remote_reply_invalid"
+    with pytest.raises(RemoteRefused, match="ssh_failed"):
+        ssh.parse_reply(b"OK 1 2 3\n", 255)
+
+    fake = FakeRemote.install(tmp_path, monkeypatch)
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "a.pdf").write_bytes(b"synthetic")
+    monkeypatch.setenv("FAKE_SSH_FAULT", "reply:OK 1 0 0")
+    monkeypatch.setenv("FAKE_SSH_EXIT", "1")
+    push = ["remote", "push", "--config", str(fake.config), "--inbox", str(inbox)]
+    assert main(push) == 1
+    assert capsys.readouterr().err.strip() == (
+        "finance remote push: refused. remote_reply_invalid."
+    )
+
+
 def _config_cases(tmp_path: Path) -> dict[str, Path]:
     good = write_config(tmp_path / "good.toml", config_values())
     link = tmp_path / "link.toml"
@@ -264,8 +323,8 @@ def _scenarios(
             monkeypatch.setenv(*setting)
         return main(["remote", "push", *flags])
 
-    def pull() -> int:
-        monkeypatch.setenv("FAKE_SSH_FAULT", "")
+    def pull(fault: str = "") -> int:
+        monkeypatch.setenv("FAKE_SSH_FAULT", fault)
         return main(["remote", "pull", *config, "--into", str(into)])
 
     archive = [*config, "--archive", str(laptop)]
@@ -277,6 +336,8 @@ def _scenarios(
             "--config", str(loose), "--archive", str(laptop)
         ),
         "ssh_failed": lambda: push(*archive, fault="ssh255"),
+        "push stream ssh_failed": lambda: push(*archive, fault="ssh255:stream"),
+        "pull stream ssh_failed": lambda: pull("ssh255:stream"),
         "remote_reply_invalid": lambda: push(
             *archive, fault="reply:NO target_differs 1 /x/secret"
         ),
@@ -292,8 +353,10 @@ def _scenarios(
 
 
 def test_every_refusal_is_a_fixed_code(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
 ) -> None:
+    # capfd, not capsys: the ssh child writes to file descriptor 2 itself, and its
+    # diagnostics (the fake names the destination there) must not reach either stream.
     fake = FakeRemote.install(
         tmp_path, monkeypatch, destination="ops@finance.example.test"
     )
@@ -313,7 +376,7 @@ def test_every_refusal_is_a_fixed_code(
     try:
         for name, run in _scenarios(fake, tmp_path, monkeypatch).items():
             assert run() == 1, name
-            captured = capsys.readouterr()
+            captured = capfd.readouterr()
             text = captured.out + captured.err
             assert f"refused. {name.split()[-1]}" in text, name
             for word in forbidden:

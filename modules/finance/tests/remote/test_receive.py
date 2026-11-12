@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from rheo_finance.cli import remote as remote_cli
 from rheo_finance.remote import send
 from rheo_finance.remote.frames import RemoteRefused
 from rheo_finance.remote.receive import (
@@ -128,6 +129,82 @@ def test_replace_takes_the_owner_inputs_and_nothing_else(tmp_path: Path) -> None
                 replaceable=owner_inputs,
             )
         assert target.read_bytes() == b"kept"
+
+
+def test_replace_renames_in_the_opened_parent_not_through_a_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = make_layout(tmp_path / "uploads")
+    manual = layout.data / "manual"
+    manual.mkdir()
+    (manual / "m.csv").write_bytes(b"header\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    moved = layout.data / "manual-moved"
+    real_replace = os.replace
+    keywords: list[list[str]] = []
+
+    def swap_then_replace(
+        src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: int
+    ) -> None:
+        # After the parents were walked: data/manual becomes a link out of the area.
+        keywords.append(sorted(kwargs))
+        manual.rename(moved)
+        manual.symlink_to(outside)
+        real_replace(src, dst, **kwargs)
+
+    monkeypatch.setattr(os, "replace", swap_then_replace)
+    files = [("data/manual/m.csv", b"header\nrow\n")]
+    assert _push(layout.root, push_areas(layout), files, replaceable=owner_inputs) == (
+        0,
+        0,
+        1,
+    )
+    assert keywords == [["dst_dir_fd", "src_dir_fd"]]
+    assert list(outside.iterdir()) == []
+    assert (moved / "m.csv").read_bytes() == b"header\nrow\n"
+
+
+def _folds_case(directory: Path) -> bool:
+    probe = directory / "case-probe"
+    probe.write_bytes(b"")
+    try:
+        return (directory / "CASE-PROBE").exists()
+    finally:
+        probe.unlink()
+
+
+def test_a_case_only_name_clash_on_pull_keeps_the_first_file_and_counts_it(
+    tmp_path: Path,
+) -> None:
+    into = tmp_path / "into"
+    into.mkdir()
+    files = [
+        ("packs/Pack.zip", b"first synthetic pack"),
+        ("packs/pack.zip", b"second synthetic pack"),
+    ]
+    folds = _folds_case(into)
+
+    def clash() -> None:
+        # A case-sensitive file system: plant what a folding one meets at commit.
+        (into / "pack.zip").write_bytes(b"other bytes")
+
+    with pytest.raises(RemoteRefused) as caught:
+        receive(
+            io.BytesIO(frame(files)),
+            {"packs": into},
+            into,
+            direction="pull",
+            before_commit=None if folds else clash,
+        )
+    assert (caught.value.code, caught.value.files) == ("target_appeared", 1)
+    assert remote_cli.refusal_line("finance remote pull", caught.value) == (
+        "finance remote pull: refused. target_appeared (1 file written before it)."
+    )
+    assert (into / "Pack.zip").read_bytes() == b"first synthetic pack"
+    if not folds:
+        assert (into / "pack.zip").read_bytes() == b"other bytes"
+    assert staging_entries(into) == [LOCK_NAME]
 
 
 def test_without_replace_an_owner_input_is_refused(tmp_path: Path) -> None:

@@ -10,8 +10,10 @@ under ``tmp_path``; any other ``exec`` prints ``fake-finance``.
 
 Faults (``FAKE_SSH_FAULT``): ``cut:N`` ends the stream after N bytes (reading) or exits
 255 after N bytes (writing); ``kill:N`` kills this process after N bytes;
-``stall:N`` writes N bytes, then sleeps; ``reply:TEXT`` answers a push with TEXT;
-``ssh255`` fails as ssh does, naming the destination on stderr.
+``stall:N`` writes N bytes, then sleeps; ``reply:TEXT`` answers a push with TEXT and
+exits ``FAKE_SSH_EXIT``;
+``ssh255`` fails as ssh does, naming the destination on stderr; ``ssh255:stream`` does
+so only on a push or pull stream call, after the container was found.
 
 A script, not a test module: imports only the standard library and ``rheo_finance``.
 """
@@ -135,7 +137,7 @@ def _exec(words: list[str], containers: list[str]) -> int:
     if args[:2] == ["remote", "receive"]:
         if kind == "reply":
             sys.stdout.write(text + "\n")
-            return 0
+            return int(os.environ.get("FAKE_SSH_EXIT", "0"))
         replace = "--replace" in args[2:]
         emit(remote_cli.serve_receive(_Reader(), layout, replace=replace))
         return 0
@@ -154,7 +156,8 @@ def main() -> int:
     if rest is None or len(rest) != 2 or rest[0] != os.environ["FAKE_SSH_DEST"]:
         return 255
     destination, remote = rest
-    if _fault()[0] == "ssh255":
+    kind, _, scope = _fault()
+    if kind == "ssh255" and (scope != "stream" or "-e" in argv):
         sys.stderr.write(f"ssh: connect to host {destination}: refused\n")
         return 255
     words = shlex.split(remote)
