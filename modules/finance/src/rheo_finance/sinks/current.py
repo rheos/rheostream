@@ -19,7 +19,7 @@ import logging
 import re
 import shlex
 from collections.abc import Callable
-from contextlib import AbstractContextManager, ExitStack
+from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, Protocol
@@ -98,6 +98,43 @@ class CurrentError(Exception):
         super().__init__(code)
 
 
+# Every code a ``CurrentError`` carries.
+CURRENT_CODES: Final = frozenset(
+    {
+        "configuration_error",
+        "not_configured",
+        "unauthorized",
+        "refused",
+        "record_stale",
+        "protocol_error",
+        "sink_off",
+        "request_refused",
+        "network_error",
+        "incomplete_convergence",
+        "current_unavailable",
+        "not_owned",
+        "not_found",
+    }
+)
+# A refusal that belongs to one reminder key: in process that key is set aside and the
+# sync goes on with the others (ADR-0027).
+KEY_LOCAL: Final = frozenset(
+    {
+        "refused",
+        "record_stale",
+        "not_owned",
+        "not_found",
+        "incomplete_convergence",
+        "protocol_error",
+    }
+)
+# A condition of the whole sync (a closed gate, Current unconfigured or unavailable,
+# the HTTPS transport's own failures): it stops the sync and rolls it all back.
+GLOBAL: Final = CURRENT_CODES - KEY_LOCAL
+LINE_STOP: Final = "finance_current_sync_stopped code=%s"
+LINE_SET_ASIDE: Final = "finance_current_key_set_aside code=%s"
+
+
 class CurrentTransport(Protocol):
     """One of the four operations, by its short name; raises only ``CurrentError``."""
 
@@ -106,9 +143,13 @@ class CurrentTransport(Protocol):
 
 class ReminderSession(CurrentTransport, Protocol):
     """One transaction for a whole sync. ``owner`` is a block as ``finance_owner`` on
-    it (not a transaction); leaving the session without ``commit`` rolls it all back."""
+    it (not a transaction); ``key`` is one reminder key's savepoint, taken outside any
+    owner block, which rolls back alone when the key is refused; leaving the session
+    without ``commit`` rolls it all back."""
 
     def owner(self) -> AbstractContextManager[UnitOfWork]: ...
+
+    def key(self) -> AbstractContextManager[None]: ...
 
     def commit(self) -> None: ...
 
@@ -504,7 +545,10 @@ def _same(row: SinkTicket, wanted: Target) -> bool:
 
 @dataclass(frozen=True)
 class SyncResult:
-    state: Literal["synced", "pending", "failed"]
+    """``partial``: the key loop finished with one or more keys set aside, the first
+    one's code as ``reason``; the other keys synced."""
+
+    state: Literal["synced", "partial", "pending", "failed"]
     reason: str | None = None
 
 
@@ -512,11 +556,13 @@ class SyncResult:
 class _Steps:
     """How each step of a sync opens its owner block, builds its sink and asks
     whether the sink is ready: per-step committed transactions over HTTPS, role
-    blocks on one reminder session in process."""
+    blocks on one reminder session in process. ``key`` is the session's per-key
+    savepoint in process; over HTTPS there is none, and a refusal stops the sync."""
 
     begin: Callable[[], AbstractContextManager[UnitOfWork]]
     sink: Callable[[UnitOfWork], CurrentSink]
     unready: Callable[[UnitOfWork], SyncResult | None]
+    key: Callable[[], AbstractContextManager[None]] | None = None
 
 
 def _https_unready(uow: UnitOfWork) -> SyncResult | None:
@@ -549,16 +595,19 @@ def _session_steps(session: ReminderSession) -> _Steps:
         begin=session.owner,
         sink=lambda uow: CurrentSink(uow, transport=session),
         unready=_in_process_unready,
+        key=session.key,
     )
 
 
 def sync_reminders(ctx: FinanceContext) -> SyncResult:
     """Job root, outside dispatch.
 
-    Over HTTPS (nothing bound) short transactions commit around each request. In
-    process the whole sync is one reminder session, committed only when every key is
-    synced: a refusal, a pending result, a payload refusal or a storage error leaves
-    neither Current nor this sink's rows changed by it.
+    Over HTTPS (nothing bound) short transactions commit around each request, and a
+    refusal stops the keys after it. In process the whole sync is one reminder
+    session with a savepoint per key, committed when the key loop finishes: a key
+    refused for itself (``KEY_LOCAL``) is rolled back alone, its code kept on its row,
+    and the others sync (``partial``); a global code, a payload refusal or a storage
+    error leaves neither Current nor this sink's rows changed by the sync.
     """
     failed = False
     try:
@@ -588,7 +637,9 @@ def _sync_in_process(ctx: FinanceContext, binding: InProcessCurrent) -> SyncResu
             code = opened or "current_unavailable"
             return SyncResult("pending" if code == "not_configured" else "failed", code)
         result = _sync(ctx, _session_steps(session))
-        if result.state == "synced":
+        if result.state in {"synced", "partial"}:
+            # The key loop finished: the synced keys and the set-aside keys'
+            # annotations commit together.
             session.commit()
         # Anything else rolls back as the session closes.
         return result
@@ -607,38 +658,85 @@ def _sync(ctx: FinanceContext, steps: _Steps) -> SyncResult:
         unready = steps.unready(uow)
         if unready is not None:
             return unready
+    set_aside: list[str] = []
     for ref in sorted(wanted.keys() | existing.keys()):
         # Renews a tick's lease before each key; outside the except below, so a lost
         # lease or a cancel leaves the sync and its session rolls back.
         ctx.progress()
         intent = wanted.get(ref) or _absent(existing[ref])
         failure: str | None = None
+        local = False
         try:
-            _reconcile(ctx, ref, intent, steps)
+            # In process the key's Current writes and its rows share one savepoint,
+            # rolled back alone when the key is refused.
+            with steps.key() if steps.key is not None else nullcontext():
+                _reconcile(ctx, ref, intent, steps)
         except CurrentError as exc:
             failure = exc.code
+            local = steps.key is not None and failure in KEY_LOCAL
             if not exc.logged:
-                # In process the row annotation below rolls back, so this line is the
-                # code's only record: the code alone, never the key, the item or text.
-                _LOG.info("finance_current_sync_stopped code=%s", failure)
-        if failure is not None:
-            with steps.begin() as uow:
-                store = PostgresCurrentTicketRepository(uow)
-                row = store.get(ref)
-                if row is not None:
-                    store.save(
-                        row.model_copy(
-                            update={
-                                "last_error_code": failure,
-                                "last_attempt_at": ctx.clock.now_utc(),
-                            }
-                        )
-                    )
-            return SyncResult(
-                "pending" if failure in {"sink_off", "not_configured"} else "failed",
-                failure,
-            )
+                # The code alone, never the key, the item or text.
+                _LOG.info(LINE_SET_ASIDE if local else LINE_STOP, failure)
+        if failure is None:
+            continue
+        _annotate(ctx, steps, ref, intent, failure)
+        if local:
+            set_aside.append(failure)
+            continue
+        # A global condition (or any refusal over HTTPS) stops the sync; in process
+        # the session rolls back, annotation and earlier keys alike.
+        return SyncResult(
+            "pending" if failure in {"sink_off", "not_configured"} else "failed",
+            failure,
+        )
+    if set_aside:
+        return SyncResult("partial", set_aside[0])
     return SyncResult("synced")
+
+
+def _annotate(
+    ctx: FinanceContext, steps: _Steps, ref: str, intent: Target, failure: str
+) -> None:
+    """Record ``failure`` on the key's row. A new open key whose claim rolled back
+    with its key savepoint gets the claim, so the next sync completes it and health
+    and status see it."""
+    now = ctx.clock.now_utc()
+    with steps.begin() as uow:
+        store = PostgresCurrentTicketRepository(uow)
+        row = store.get(ref)
+        if row is not None:
+            store.save(
+                row.model_copy(
+                    update={"last_error_code": failure, "last_attempt_at": now}
+                )
+            )
+        elif intent.status == "open":
+            _claim(store, ref, intent, now, error=failure)
+
+
+def _claim(
+    store: PostgresCurrentTicketRepository,
+    ref: str,
+    intent: Target,
+    now: dt.datetime,
+    *,
+    error: str | None = None,
+) -> SinkTicket:
+    """The row of a key seen for the first time: ``post_pending`` for an open
+    period, acknowledged for a settled one, which is never created."""
+    candidate = SinkTicket(
+        source_ref=ref,
+        state="post_pending" if intent.status == "open" else "done",
+        create=intent.create,
+        last_attempt_at=now,
+        last_error_code=error,
+    )
+    if intent.status == "done":
+        candidate = _acknowledged(candidate, intent, now)
+    store.insert_if_absent(candidate)
+    row = store.get(ref)
+    assert row is not None
+    return row
 
 
 def _acknowledged(row: SinkTicket, intent: Target, now: dt.datetime) -> SinkTicket:
@@ -665,17 +763,7 @@ def _reconcile(ctx: FinanceContext, ref: str, intent: Target, steps: _Steps) -> 
         store = PostgresCurrentTicketRepository(uow)
         row = store.get(ref)
         if row is None:
-            candidate = SinkTicket(
-                source_ref=ref,
-                state="post_pending" if intent.status == "open" else "done",
-                create=intent.create,
-                last_attempt_at=now,
-            )
-            if intent.status == "done":
-                candidate = _acknowledged(candidate, intent, now)
-            store.insert_if_absent(candidate)
-            row = store.get(ref)
-            assert row is not None
+            row = _claim(store, ref, intent, now)
         if row.external_id is None and row.state == "done" and intent.status == "open":
             # This period was first seen settled and has never had a remote create.
             row = row.model_copy(

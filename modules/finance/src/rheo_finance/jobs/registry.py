@@ -78,7 +78,8 @@ def _reminders(ctx: FinanceContext) -> JobResult:
     out = current.sync_reminders(ctx)
     if out.state == "synced":
         return JobResult(ok=True)
-    if out.state == "failed":
+    if out.state in {"failed", "partial"}:
+        # ``partial``: keys were set aside and the rest committed; health names them.
         return JobResult(ok=False, detail_code="failed")
     if out.reason == "sink_off":
         return JobResult(ok=None, detail_code="skipped: sink off")

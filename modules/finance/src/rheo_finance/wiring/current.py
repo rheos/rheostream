@@ -94,6 +94,18 @@ class _Session:
         finally:
             self._in_block = False
 
+    @contextmanager
+    def key(self) -> Iterator[None]:
+        """One reminder key's savepoint. Taken at the session role, outside any owner
+        block, so rolling back to it also undoes any role set after it. Finance's
+        writer lock was taken before it and stays held; Current's lifecycle lock,
+        if a rolled-back key released it, is taken again by the next key's first
+        write, so the order stays writer lock, then lifecycle lock."""
+        if self._in_block:
+            raise RuntimeError("a reminder key savepoint is taken outside owner blocks")
+        with self._connection.begin_nested():
+            yield
+
     def call(self, operation: str, inputs: dict[str, object]) -> dict[str, object]:
         if operation not in current.OPERATIONS:
             raise current.CurrentError("protocol_error")

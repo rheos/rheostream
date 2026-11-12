@@ -8,12 +8,21 @@
   status change sent; an owned item is updated at its revision.
 - L5: over a transport the gate is asked before every call: closed, or approved at
   an HTTPS digest, gives ``sink_off`` and no call.
-- L6: the commit rule. The session commits only when the sync is ``synced``; a
-  session that cannot open gives ``pending`` for ``not_configured`` and ``failed``
-  otherwise; a role other than owner or service is refused before the session opens.
+- L6: the commit rule. The session commits only when the key loop finished
+  (``synced`` or ``partial``, ADR-0027); a session that cannot open gives ``pending``
+  for ``not_configured`` and ``failed`` otherwise; a role other than owner or service
+  is refused before the session opens.
 - L7: a code the sink raises itself (``not_owned`` after a call returns) is logged
   once by the sync, code alone, with no key or item ref in the line; a code the
   session already logged is not logged again.
+
+#546 and #548 (ADR-0027):
+
+- the sync beats once per key, before the key's savepoint and its first block;
+- a key refused for itself is set aside: its savepoint rolls back, its row keeps
+  the code, the other keys sync and the session commits once (``partial``);
+- a global code stops the sync with nothing committed and the later keys unattempted;
+- ``KEY_LOCAL`` and ``GLOBAL`` split ``CURRENT_CODES``.
 
 Values are synthetic.
 """
@@ -291,12 +300,25 @@ def test_an_operation_outside_the_four_is_refused_before_the_gate(
 
 
 class FakeSession:
-    def __init__(self) -> None:
+    """Records each key savepoint as ``key``, then ``released`` or ``rolled back``."""
+
+    def __init__(self, events: list[str] | None = None) -> None:
         self.commits = 0
+        self.events = events if events is not None else []
 
     @contextmanager
     def owner(self) -> Iterator[UnitOfWork]:
         yield NO_UOW
+
+    @contextmanager
+    def key(self) -> Iterator[None]:
+        self.events.append("key")
+        try:
+            yield
+        except BaseException:
+            self.events.append("rolled back")
+            raise
+        self.events.append("released")
 
     def commit(self) -> None:
         self.commits += 1
@@ -361,12 +383,13 @@ def _patch_sync(
     ("outcome", "commits"),
     [
         (current.SyncResult("synced"), 1),
+        (current.SyncResult("partial", "refused"), 1),
         (current.SyncResult("pending", "sink_off"), 0),
-        (current.SyncResult("failed", "refused"), 0),
+        (current.SyncResult("failed", "current_unavailable"), 0),
     ],
-    ids=["synced", "pending", "failed"],
+    ids=["synced", "partial", "pending", "failed"],
 )
-def test_the_session_commits_only_a_synced_result(
+def test_the_session_commits_only_when_the_key_loop_finished(
     monkeypatch: pytest.MonkeyPatch, outcome: current.SyncResult, commits: int
 ) -> None:
     seen = _patch_sync(monkeypatch, outcome)
@@ -379,6 +402,7 @@ def test_the_session_commits_only_a_synced_result(
     sink = seen[0].sink(NO_UOW)
     assert sink.transport is binding.session_
     assert seen[0].begin == binding.session_.owner
+    assert seen[0].key == binding.session_.key
 
 
 def test_a_payload_refusal_leaves_the_session_uncommitted(
@@ -435,6 +459,8 @@ def test_nothing_bound_keeps_the_https_steps(monkeypatch: pytest.MonkeyPatch) ->
     assert current.in_process() is None
     assert current.sync_reminders(_context()) == current.SyncResult("synced")
     assert seen[0].sink(NO_UOW).transport is None
+    # No key savepoint over HTTPS: a refusal there stops the sync.
+    assert seen[0].key is None
 
 
 # --- L7: the sync logs a code nobody logged, once -----------------------------------
@@ -576,16 +602,169 @@ def test_the_sync_beats_before_each_key(
         events.append("begin")
         yield NO_UOW
 
-    session = FakeSession()
+    session = FakeSession(events)
     steps = current._Steps(
         begin=begin,
         sink=lambda uow: current.CurrentSink(
             uow, transport=session if in_process else None
         ),
         unready=lambda _uow: None,
+        key=session.key if in_process else None,
     )
     ctx = dataclasses.replace(_context(), progress=lambda: events.append("beat"))
 
     assert current._sync(ctx, steps) == current.SyncResult("synced")
-    # The preamble's block, then a beat before each key's first block.
-    assert events == ["begin"] + ["beat", "begin"] * 3
+    # The preamble's block, then a beat before each key's savepoint (in process)
+    # and its first block.
+    per_key = ["beat", "key", "begin", "released"] if in_process else ["beat", "begin"]
+    assert events == ["begin"] + per_key * 3
+
+
+# --- #548 L7, L8, L11: a refused key is set aside -----------------------------------
+
+
+class _Session(FakeSession):
+    """A reminder session whose calls go to a fake transport."""
+
+    def __init__(self, transport: FakeTransport) -> None:
+        super().__init__()
+        self.transport = transport
+
+    def call(self, operation: str, inputs: dict[str, object]) -> dict[str, object]:
+        return self.transport.call(operation, inputs)
+
+
+class _Binding:
+    def __init__(self, session: _Session) -> None:
+        self.session_ = session
+
+    @contextmanager
+    def session(self) -> Iterator[current.ReminderSession]:
+        yield self.session_
+
+
+def _open_rows(monkeypatch: pytest.MonkeyPatch) -> dict[str, SinkTicket]:
+    """Alpha, beta and gamma synced open; nothing desired now, so each is closed."""
+    rows = {
+        key: _row(key).model_copy(
+            update={
+                "external_id": f"ref-{key.split(':')[1]}",
+                "state": "open",
+                "last_title": "Sample Utility due",
+                "last_due_on": dt.date(2063, 1, 15),
+                "last_priority": "normal",
+                "last_status": "open",
+            }
+        )
+        for key in THREE_KEYS
+    }
+    monkeypatch.setattr(_MemoryStore, "rows", rows)
+    monkeypatch.setattr(current, "PostgresCurrentTicketRepository", _MemoryStore)
+    monkeypatch.setattr(current, "PostgresReminderRepository", _NoFacts)
+    monkeypatch.setattr(
+        current, "desired_tickets", lambda _ctx, _facts: DesiredOut(tickets=[])
+    )
+    monkeypatch.setattr(current, "is_enabled", lambda _uow, _sink: True)
+    _open_gate(monkeypatch, IN_PROCESS_DIGEST)
+    return rows
+
+
+def _closing(key: str) -> list[dict[str, object]]:
+    """The answers that close ``key``'s item: the read, the status change's own
+    fresh read, then the status change."""
+    ref = f"ref-{key.split(':')[1]}"
+    return [
+        {"item": _item(key=key) | {"ref": ref}},
+        {"item": _item(key=key) | {"ref": ref}},
+        {"item": _item(revision=2, key=key) | {"ref": ref, "status": "done"}},
+    ]
+
+
+CLOSE = ["get", "get", "set_status"]
+
+
+ACKNOWLEDGING = (
+    "state",
+    "external_id",
+    "last_title",
+    "last_due_on",
+    "last_priority",
+    "last_status",
+    "last_success_at",
+    "settled_at",
+    "create",
+)
+
+
+def test_a_key_refused_for_itself_is_set_aside_and_the_others_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _open_rows(monkeypatch)
+    alpha, beta, gamma = THREE_KEYS
+    before = rows[beta]
+    transport = FakeTransport(
+        *_closing(alpha),
+        current.CurrentError("refused", logged=True),
+        *_closing(gamma),
+    )
+    session = _Session(transport)
+    with _bound(cast(FakeBinding, _Binding(session))):
+        result = current.sync_reminders(_context())
+
+    assert result == current.SyncResult("partial", "refused")
+    assert session.commits == 1
+    assert session.events == [
+        "key",
+        "released",
+        "key",
+        "rolled back",
+        "key",
+        "released",
+    ]
+    for key in (alpha, gamma):
+        assert rows[key].last_status == "done" and rows[key].state == "done"
+        assert rows[key].last_error_code is None
+    after = rows[beta]
+    assert after.last_error_code == "refused"
+    assert after.last_attempt_at is not None and before.last_attempt_at is None
+    assert {name: getattr(after, name) for name in ACKNOWLEDGING} == {
+        name: getattr(before, name) for name in ACKNOWLEDGING
+    }
+    assert transport.operations() == [*CLOSE, "get", *CLOSE]
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("sink_off", current.SyncResult("pending", "sink_off")),
+        ("not_configured", current.SyncResult("pending", "not_configured")),
+        ("current_unavailable", current.SyncResult("failed", "current_unavailable")),
+    ],
+)
+def test_a_global_code_stops_the_sync_and_commits_nothing(
+    monkeypatch: pytest.MonkeyPatch, code: str, expected: current.SyncResult
+) -> None:
+    _open_rows(monkeypatch)
+    alpha, _beta, _gamma = THREE_KEYS
+    transport = FakeTransport(*_closing(alpha), current.CurrentError(code))
+    session = _Session(transport)
+    with _bound(cast(FakeBinding, _Binding(session))):
+        assert current.sync_reminders(_context()) == expected
+    assert session.commits == 0
+    # Gamma is never attempted.
+    assert transport.operations() == [*CLOSE, "get"]
+    assert session.events == ["key", "released", "key", "rolled back"]
+
+
+def test_the_key_local_and_global_codes_split_every_code() -> None:
+    assert current.KEY_LOCAL | current.GLOBAL == current.CURRENT_CODES
+    assert current.KEY_LOCAL & current.GLOBAL == set()
+    assert current.KEY_LOCAL == {
+        "refused",
+        "record_stale",
+        "not_owned",
+        "not_found",
+        "incomplete_convergence",
+        "protocol_error",
+    }
+    assert len(current.CURRENT_CODES) == 13
