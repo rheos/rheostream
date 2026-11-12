@@ -7,6 +7,7 @@ process against a layout under ``tmp_path``.
 
 from __future__ import annotations
 
+import errno
 import io
 import os
 import signal
@@ -214,6 +215,73 @@ def test_a_cut_push_writes_nothing(
     assert "refused. stream_truncated. Nothing was written." in capsys.readouterr().err
     assert _final_names(fake.layout.archive) == []
     assert staging_entries(fake.layout.root) == [LOCK_NAME]
+
+
+class _SourceFails:
+    """``os`` as ``rheo_finance.remote.send`` sees it, with an ``EIO`` on one source
+    once the send has opened it (collect's probe opens it first and is left alone):
+    its ``fstat``, or its second ``read`` after one chunk went into the stream."""
+
+    def __init__(self, target: Path, fail: str) -> None:
+        self._target = target
+        self._fail = fail
+        self._opens = 0
+        self._reads = 0
+        self._fd: int | None = None
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(os, name)
+
+    def open(self, path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+        fd = os.open(path, flags, mode)
+        if Path(path) == self._target:
+            self._opens += 1
+            if self._opens == 2:
+                self._fd = fd
+        return fd
+
+    def fstat(self, fd: int) -> os.stat_result:
+        if fd == self._fd and self._fail == "fstat":
+            raise OSError(errno.EIO, "synthetic input/output error")
+        return os.fstat(fd)
+
+    def read(self, fd: int, size: int) -> bytes:
+        if fd == self._fd and self._fail == "read":
+            self._reads += 1
+            if self._reads == 2:
+                raise OSError(errno.EIO, "synthetic input/output error")
+        return os.read(fd, size)
+
+
+@pytest.mark.parametrize("fail", ["read", "fstat"])
+def test_an_unreadable_source_mid_push_writes_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fail: str,
+) -> None:
+    fake = FakeRemote.install(tmp_path, monkeypatch)
+    sources = _laptop(tmp_path / "laptop")
+    # Larger than one chunk and sent after every archive and data file, so whole
+    # files are already in the stream when it fails.
+    target = sources["inbox"] / "new-four.pdf"
+    target.write_bytes(b"synthetic four" * 9000)
+    before = {name: tree_state(path) for name, path in sources.items()}
+    server_before = _final_names(fake.layout.root)
+    calls = len(fake.calls())
+    monkeypatch.setattr(send, "os", _SourceFails(target, fail))
+
+    assert main(["remote", "push", "--config", str(fake.config), *_flags(sources)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "finance remote push: refused. source_unreadable. Nothing was written.\n"
+    )
+    assert len(fake.calls()) == calls + 2  # the stream was opened and then cut
+    assert _final_names(fake.layout.root) == server_before
+    assert staging_entries(fake.layout.root) == [LOCK_NAME]
+    assert staged_leftovers(fake.layout.root) == []
+    assert {name: tree_state(path) for name, path in sources.items()} == before
 
 
 def test_a_cut_pull_writes_nothing(

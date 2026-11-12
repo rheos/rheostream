@@ -14,8 +14,9 @@
 Hidden entries and links are skipped and counted, as the archive walk skips them.
 Sources are only ever read: never opened for writing, renamed, removed or chmodded.
 ``send`` streams exactly the size each file had when opened; a file that grew or
-shrank stops the stream with no end record (``source_changed``), so the receiver
-keeps nothing. ``send_packs`` is the server half of a pull: ``data/packs/**``.
+shrank stops the stream with no end record (``source_changed``), and so does a source
+whose ``fstat`` or ``read`` fails (``source_unreadable``), so the receiver keeps
+nothing. ``send_packs`` is the server half of a pull: ``data/packs/**``.
 """
 
 from __future__ import annotations
@@ -180,26 +181,44 @@ def collect(sources: Sources) -> Collected:
     return Collected(items=tuple(items), skipped=walker.skipped)
 
 
+def _source_stat(fd: int) -> os.stat_result:
+    """``fstat`` of an open local source; a failure (a failing disk, a stale network
+    mount) is ``source_unreadable``, a local refusal that cuts the stream."""
+    try:
+        return os.fstat(fd)
+    except OSError:
+        raise RemoteRefused("source_unreadable") from None
+
+
+def _source_read(fd: int, size: int) -> bytes:
+    """One ``read`` of an open local source, mapped as ``_source_stat``. Only the
+    source's own reads: a write to the stream is the caller's to handle."""
+    try:
+        return os.read(fd, size)
+    except OSError:
+        raise RemoteRefused("source_unreadable") from None
+
+
 def _send_one(out: Writable, item: Outgoing) -> None:
     try:
         fd = os.open(item.local, _SOURCE_FLAGS)
     except OSError:
         raise RemoteRefused("source_changed") from None
     try:
-        info = os.fstat(fd)
+        info = _source_stat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise RemoteRefused("source_changed")
         write_header(out, info.st_size, item.path)
         digest = hashlib.sha256()
         left = info.st_size
         while left:
-            piece = os.read(fd, min(CHUNK, left))
+            piece = _source_read(fd, min(CHUNK, left))
             if not piece:
                 raise RemoteRefused("source_changed")
             digest.update(piece)
             out.write(piece)
             left -= len(piece)
-        if os.read(fd, 1):
+        if _source_read(fd, 1):
             raise RemoteRefused("source_changed")
         write_hash(out, digest.hexdigest())
     finally:
@@ -207,8 +226,8 @@ def _send_one(out: Writable, item: Outgoing) -> None:
 
 
 def send(out: Writable, items: tuple[Outgoing, ...]) -> None:
-    """The whole stream for ``items``; on ``source_changed`` it stops with no end
-    record, and the caller closes it."""
+    """The whole stream for ``items``; on ``source_changed`` or ``source_unreadable``
+    it stops with no end record, and the caller closes it."""
     write_magic(out)
     for item in items:
         _send_one(out, item)

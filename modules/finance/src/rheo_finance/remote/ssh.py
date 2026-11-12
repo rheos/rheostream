@@ -284,7 +284,8 @@ def push(
         # and the receiver committed: closing stdin delivers the end record, with any
         # bytes a failed flush kept. So any OSError but a broken pipe, from the send or
         # the close, is the outcome-unknown ssh_failed, never "Nothing was written". A
-        # local refusal (source_changed) cut the stream before its end and wins.
+        # local refusal (source_changed, source_unreadable) cut the stream before its
+        # end and wins.
         try:
             try:
                 sender.send(proc.stdin, items)
