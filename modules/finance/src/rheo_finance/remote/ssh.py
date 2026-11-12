@@ -287,12 +287,17 @@ def push(
         except RemoteRefused as exc:
             local = exc  # source_changed: the receiver sees no end and keeps nothing
         finally:
+            # Closing stdin is the end of stream that lets the receiver commit. From
+            # here the stream may have ended whole and the receiver committed, so a
+            # local failure is an outcome-unknown code, never "Nothing was written",
+            # unless a local refusal already cut the stream.
             try:
                 proc.stdin.close()
             except BrokenPipeError:
                 pass
-        # From here the stream may have ended whole and the receiver committed, so a
-        # local failure is an outcome-unknown code, never "Nothing was written."
+            except OSError:
+                if local is None:
+                    raise RemoteRefused("ssh_failed") from None
         try:
             reply = proc.stdout.read(REPLY_MAX_BYTES + 1)
         except OSError:

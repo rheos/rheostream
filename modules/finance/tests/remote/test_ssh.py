@@ -264,17 +264,66 @@ def test_a_failed_reply_read_never_says_nothing_was_written(
     assert (fake.layout.inbox / "a.pdf").read_bytes() == b"synthetic"
 
 
-def _cleanup_wait_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The stream process looks alive to ``_stop``, and every wait reaps it, then
-    fails with ECHILD."""
+def test_a_failed_stdin_close_after_a_full_send_never_says_nothing_was_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeRemote.install(tmp_path, monkeypatch)
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "a.pdf").write_bytes(b"synthetic")
+    real_start = ssh._start
+
+    class _CloseFails:
+        """Writes go through; close delivers the end of stream, lets the receiver
+        finish, then reports a failure that is not a broken pipe."""
+
+        def __init__(self, proc: subprocess.Popen[bytes], real: IO[bytes]) -> None:
+            self._proc = proc
+            self._real = real
+
+        def write(self, data: bytes, /) -> int:
+            return self._real.write(data)
+
+        def flush(self) -> None:
+            self._real.flush()
+
+        def close(self) -> None:
+            self._real.close()
+            self._proc.wait(timeout=10)
+            raise OSError(errno.EIO, "synthetic")
+
+    def start(argv: list[str], *, stdin: int) -> subprocess.Popen[bytes]:
+        proc = real_start(argv, stdin=stdin)
+        assert proc.stdin is not None
+        monkeypatch.setattr(proc, "stdin", _CloseFails(proc, proc.stdin))
+        return proc
+
+    monkeypatch.setattr(ssh, "_start", start)
+    push = ["remote", "push", "--config", str(fake.config), "--inbox", str(inbox)]
+    assert main(push) == 1
+    captured = capsys.readouterr()
+    assert captured.err == "finance remote push: refused. ssh_failed.\n"
+    assert "Nothing was written" not in captured.out + captured.err
+    assert (fake.layout.inbox / "a.pdf").read_bytes() == b"synthetic"
+
+
+def _cleanup_wait_fails(
+    monkeypatch: pytest.MonkeyPatch, *, first_wait_ok: bool = False
+) -> None:
+    """The stream process looks alive to ``_stop``, and each wait (from the second,
+    with ``first_wait_ok``) reaps it, then fails with ECHILD."""
     real_start = ssh._start
 
     def start(argv: list[str], *, stdin: int) -> subprocess.Popen[bytes]:
         proc = real_start(argv, stdin=stdin)
         real_wait = proc.wait
+        calls: list[int] = []
 
         def wait(timeout: float | None = None) -> int:
-            real_wait(timeout)
+            code = real_wait(timeout)
+            calls.append(code)
+            if first_wait_ok and len(calls) == 1:
+                return code
             raise OSError(errno.ECHILD, "synthetic")
 
         monkeypatch.setattr(proc, "poll", lambda: None)
@@ -295,6 +344,25 @@ def test_a_failed_cleanup_after_a_push_never_says_nothing_was_written(
     push = ["remote", "push", "--config", str(fake.config), "--inbox", str(inbox)]
     assert main(push) == 1
     assert capsys.readouterr().err == "finance remote push: refused. ssh_failed.\n"
+    assert (fake.layout.inbox / "a.pdf").read_bytes() == b"synthetic"
+
+
+def test_a_failed_cleanup_after_a_completed_push_keeps_its_known_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeRemote.install(tmp_path, monkeypatch)
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "a.pdf").write_bytes(b"synthetic")
+    # push's own wait succeeds; only the one in _stop fails.
+    _cleanup_wait_fails(monkeypatch, first_wait_ok=True)
+    push = ["remote", "push", "--config", str(fake.config), "--inbox", str(inbox)]
+    assert main(push) == 0
+    captured = capsys.readouterr()
+    assert (captured.out, captured.err) == (
+        "finance remote push: 1 new, 0 identical, 0 replaced, 0 skipped.\n",
+        "",
+    )
     assert (fake.layout.inbox / "a.pdf").read_bytes() == b"synthetic"
 
 
