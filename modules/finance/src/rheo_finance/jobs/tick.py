@@ -1,0 +1,233 @@
+"""One catch-up run per due job; derive additionally checks current inputs.
+
+No transaction surrounds callbacks. Each dispatched operation commits before the
+next callback. The reminder sync commits per step over HTTPS, and under core in one
+transaction of its own with a savepoint per key, committed when its key loop finishes
+(ADR-0027): a key refused for itself is set aside, a global condition rolls back the
+sync alone, and the steps before it stay committed. Inside each long step the context's
+``progress`` beat renews the job's lease. Skips/pending have
+no success anchor, but suppress duplicate work for the same scheduled moment;
+failures remain eligible for retry. No attempt is claimed before callback work.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
+
+from psycopg import errors as pg_errors
+from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
+
+from rheo_finance import catalogue
+from rheo_finance.clock import as_utc, local_to_utc
+from rheo_finance.context import FinanceContext
+from rheo_finance.contracts import Role
+from rheo_finance.db import (
+    UPGRADE_REMEDY,
+    VERSION_TABLE,
+    code_revisions,
+    head_revision,
+)
+from rheo_finance.derive.fingerprint import fingerprint
+from rheo_finance.jobs.ops import RecordIn
+from rheo_finance.jobs.registry import JOBS, TICK_JOB, JobResult
+from rheo_finance.jobs.store import PostgresJobRepository, Run
+from rheo_finance.operations import (
+    OperationError,
+    RoleRefused,
+    dispatch,
+    owner_transaction,
+)
+from rheo_finance.sinks.gate import SinkDisabled
+
+
+class SchemaBehind(OperationError):
+    """The database is at an older revision of the chain than the code."""
+
+
+class SchemaUnknown(OperationError):
+    """The database records a revision the code does not know."""
+
+
+def _nothing() -> None:
+    pass
+
+
+@dataclass(frozen=True)
+class JobRun:
+    job: str
+    result: JobResult
+
+
+@dataclass(frozen=True)
+class TickResult:
+    as_of: dt.datetime
+    runs: tuple[JobRun, ...]
+
+
+def latest_scheduled(ctx: FinanceContext, now: dt.datetime) -> dt.datetime:
+    """Latest local interval boundary, compared/stored as a UTC instant."""
+    minutes = ctx.settings.get_int("finance.jobs.tick_minutes")
+    if not 1 <= minutes <= 1440:
+        raise OperationError("job interval must be between 1 and 1440 minutes")
+    local = now.astimezone(ctx.settings.timezone)
+    day = local.date()
+    while True:
+        # Resolve the whole local day: during a repeated hour a later wall time's
+        # fold=0 boundary can already be past even when wall-flooring misses it.
+        candidates = (
+            local_to_utc(day, dt.time(slot // 60, slot % 60), ctx.settings.timezone)
+            for slot in range(0, 1440, minutes)
+        )
+        eligible = [candidate for candidate in candidates if candidate <= now]
+        if eligible:
+            return max(eligible)
+        day -= dt.timedelta(days=1)
+
+
+def _due(rows: tuple[Run, ...], job: str, scheduled: dt.datetime) -> bool:
+    successful = [row for row in rows if row.job == job and row.ok is True]
+    if successful and successful[-1].finished_at >= scheduled:
+        return False
+    previous = [row for row in rows if row.job == job]
+    return not (
+        previous and previous[-1].ok is None and previous[-1].finished_at >= scheduled
+    )
+
+
+def _prune(ctx: FinanceContext, now: dt.datetime) -> None:
+    with owner_transaction(ctx) as uow:
+        repo = PostgresJobRepository(uow)
+        rows = repo.all()
+        first: dict[str, uuid.UUID] = {}
+        for row in rows:
+            if row.ok is True:
+                first.setdefault(row.job, row.id)
+        cutoff = now - dt.timedelta(days=90)
+        repo.remove(
+            [
+                row.id
+                for row in rows
+                if row.finished_at < cutoff and first.get(row.job) != row.id
+            ]
+        )
+
+
+def _record_tick(ctx: FinanceContext, started: dt.datetime, result: JobResult) -> None:
+    dispatch(
+        "finance.job.record",
+        RecordIn(
+            job=TICK_JOB,
+            started_at=started,
+            finished_at=as_utc(ctx.clock.now_utc()),
+            ok=result.ok,
+            detail_code=result.detail_code,
+        ),
+        Role.SERVICE,
+        ctx=ctx,
+    )
+
+
+def tick(
+    ctx: FinanceContext,
+    *,
+    checkpoint: Callable[[], None] = _nothing,
+    pass_through: tuple[type[BaseException], ...] = (),
+) -> TickResult:
+    """Run due jobs serially as SERVICE. No job may borrow owner authorization.
+
+    ``checkpoint`` runs before each due job and before the prune: core's job passes
+    its cancellation token's, which raises on a cancel or a lost lease and keeps the
+    lease otherwise.
+
+    A job that fails is recorded ``failed`` and the tick goes on, except for an error
+    of a ``pass_through`` class: that one stops the tick unrecorded and leaves as it
+    is. Core's job passes its cancellation and lease-loss errors, which a model call's
+    heartbeat raises inside a job; this package does not import core, so the caller
+    names them.
+    """
+    if ctx.role is not Role.SERVICE:
+        raise RoleRefused("jobs tick requires service role")
+    catalogue.load_all()
+    now = as_utc(ctx.clock.now_utc())
+    scheduled = latest_scheduled(ctx, now)
+    try:
+        with owner_transaction(ctx) as uow:
+            version = uow.scalar(
+                text(f"SELECT version_num FROM finance.{VERSION_TABLE}")
+            )
+    except ProgrammingError as exc:
+        if not isinstance(exc.orig, pg_errors.UndefinedTable):
+            raise
+        version = None
+    if version != head_revision():
+        known = code_revisions()
+        if version is not None and version not in known:
+            raise SchemaUnknown("schema_unknown: update the code")
+        if version in known and isinstance(version, str):
+            if version == "0040_job_run":
+                with owner_transaction(ctx) as uow:
+                    PostgresJobRepository(uow).add_legacy_tick_refusal(
+                        now, as_utc(ctx.clock.now_utc())
+                    )
+            elif version == "0041_job_identity":
+                # Frozen legacy history cannot represent the new failure detail.
+                _record_tick(ctx, now, JobResult(ok=False, detail_code="failed"))
+            elif version >= "0042_tick_health":
+                _record_tick(ctx, now, JobResult(ok=False, detail_code="schema_behind"))
+        raise SchemaBehind(f"schema_behind: {UPGRADE_REMEDY}")
+    with owner_transaction(ctx) as uow:
+        rows = PostgresJobRepository(uow).all()
+    completed: list[JobRun] = []
+    ledger_ready = True
+    for name, spec in JOBS.items():
+        if name == "finance.reminders_sync" and not ledger_ready:
+            continue
+        if name == "finance.derive":
+            if not ledger_ready:
+                continue
+            # Filing has committed before this fingerprint is sampled.
+            with owner_transaction(ctx) as uow:
+                taken = fingerprint(uow, ctx).digest
+            successes = [r for r in rows if r.job == name and r.ok is True]
+            if successes and successes[-1].input_digest == taken:
+                continue
+        elif not _due(rows, name, scheduled):
+            continue
+        checkpoint()
+        started = as_utc(ctx.clock.now_utc())
+        try:
+            result = spec.callback(ctx)
+        except SinkDisabled:
+            result = JobResult(ok=None, detail_code="skipped: sink off")
+        except pass_through:
+            raise
+        except Exception:
+            # Never persist exception text: it may contain paths, SQL or payloads.
+            result = JobResult(ok=False, detail_code="failed")
+        dispatch(
+            "finance.job.record",
+            RecordIn(
+                job=name,
+                started_at=started,
+                finished_at=as_utc(ctx.clock.now_utc()),
+                ok=result.ok,
+                detail_code=result.detail_code,
+                input_digest=result.input_digest,
+            ),
+            Role.SERVICE,
+            ctx=ctx,
+        )
+        completed.append(JobRun(job=name, result=result))
+        if (
+            name in {"finance.file_downloads", "finance.derive"}
+            and result.ok is not True
+        ):
+            ledger_ready = False
+    _record_tick(ctx, now, JobResult(ok=True))
+    checkpoint()
+    _prune(ctx, now)
+    return TickResult(as_of=now, runs=tuple(completed))

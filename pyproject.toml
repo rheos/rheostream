@@ -39,6 +39,10 @@ dev = [
 
 [tool.ruff]
 target-version = "py312"
+# Byte-for-byte copies of another project's files, pinned by sha256
+# (modules/finance/tests/guards/test_vendored_bytes.py): neither lint nor format may
+# touch them. The adapter beside them is checked as usual.
+extend-exclude = ["modules/finance/src/rheo_finance/parsers/vendored"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -85,11 +89,30 @@ mypy_path = [
     "modules/relationships/src",
     "modules/leads/src",
     "modules/current/src",
+    "modules/finance/src",
+    # The finance suite is the package `tests` under `modules/finance` (it has an
+    # `__init__.py`, so its conftest never takes the bare `conftest` name the root
+    # suite imports from); mypy resolves `tests.derive.support` from this base.
+    "modules/finance",
     "connectors/src",
     "runtimes/src",
     "channels/src",
 ]
 explicit_package_bases = true
+
+# The vendored parser files keep upstream's bytes and style (see `[tool.ruff]` above);
+# `rheo_finance.parsers.docextract_adapter` types everything that leaves them.
+[[tool.mypy.overrides]]
+module = "rheo_finance.parsers.vendored.*"
+ignore_errors = true
+
+# The finance suite's modules (package `tests` under `modules/finance`). mypy 2.3.1 asks for an annotation on a set, dict or loop variable built from a
+# SQLAlchemy result whose element type it reveals as `Any`; the suite was written
+# against a mypy that infers it. Only that one code is relaxed, only for the tests;
+# `rheo_finance` itself stays fully strict.
+[[tool.mypy.overrides]]
+module = ["tests", "tests.*"]
+disable_error_code = ["var-annotated"]
 
 [tool.pytest.ini_options]
 # `modules` beside `tests` so each module distribution's own `contract_tests` suite

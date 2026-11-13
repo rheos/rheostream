@@ -1,0 +1,263 @@
+"""Revisions are frozen, views live in frozen SQL in them, and the code still compiles
+to that SQL.
+
+Every revision file is pinned by the sha256 of its bytes in ``PINNED``. Editing a
+revision a database may already have run fails here. A deliberate edit before the
+revision is applied anywhere (a review fix on an unmerged phase branch, say) re-pins
+its hash in the same change; a new revision adds its pin.
+
+A revision that creates or recreates a view holds its body in a module-level ``VIEWS``
+dict. For every view a code module compiles (``sinks.views.VIEW_SELECTS`` and
+``reports.views.VIEW_SELECTS``), the newest
+revision's body must equal what the code compiles to now, whitespace aside. So a rule
+changed in code, ``reversed_clause`` included, fails here until a new revision
+recreates the view with the new body.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+from pathlib import Path
+from types import ModuleType
+
+from sqlalchemy import Connection, text
+
+from rheo_finance import migrations
+from rheo_finance.reports.views import VIEW_SELECTS as REPORT_VIEW_SELECTS
+from rheo_finance.sinks.views import VIEW_SELECTS as SINK_VIEW_SELECTS
+from rheo_finance.sinks.views import view_sql
+
+VIEW_SELECTS = {**SINK_VIEW_SELECTS, **REPORT_VIEW_SELECTS}
+
+VERSIONS = Path(migrations.__file__).resolve().parent / "versions"
+
+# 0010_txn, 0016_rates and 0021_obligation were re-pinned once, when the module moved
+# into rheoStream: their earlier names became the module's codenames (two CHECK
+# value lists and two docstrings; no structure changed). No rheoStream database had
+# run them, and the standalone ledger moves by export and import with its stored
+# values mapped to the codenames, so nothing applied them under the old text here.
+# 0021_obligation was re-pinned again, still before any push, when the utility's
+# codename changed (one docstring word); 0010_txn and 0016_rates the same way when ten
+# more codenames changed (CHECK value lists and docstrings; no structure changed).
+# 0021_obligation once more, still before any push, for one reworded docstring
+# sentence about a bill's period (prose only).
+PINNED = {
+    "0042_tick_health.py": (
+        "28d92ec5a882394b1ffa203f767e638f298ce793a8d2e68c85697a77206f9929"
+    ),
+    "0041_job_identity.py": (
+        "c3386f821386953cafafcc294c0b21c8248bfadd2b4d8fa474b17961c3c2419d"
+    ),
+    "0040_job_run.py": (
+        "1873f641521cefc411de739f95e5c64f2da437207deb684be713437eb345b478"
+    ),
+    "0039_reader_boundaries.py": (
+        "4e418d04c9f550f6d7809aaac11d6b2c13d2b32310425eaf0687a756169c53b9"
+    ),
+    "0038_queue_snapshot.py": (
+        "33daf1b12f4a344bc68d369ce7a7f75ce2d7b8c47d2261533d2e3b8d8f4f3bab"
+    ),
+    "0037_reader_views.py": (
+        "3cd92fee5ad51e08d3f60ecd3282b64158fa8c6be44987066af2d5d7a3d616a8"
+    ),
+    "0036_current_sink.py": (
+        "099693c60f50c4a588a3e2c9c8dfac48c86e1f6beb16b1f675f4a44bd494e212"
+    ),
+    "0035_owed.py": (
+        "0bf5e7b32484f533a2f62237d0ad8d373dcf686c880999a1c5a26df7a9a81ce7"
+    ),
+    "0001_finance_schema.py": (
+        "0f3e7fdad37e31b8efbfade234d6c3d2bf44d9db10fae40d43b56e2a33e88f4d"
+    ),
+    "0002_decisions.py": (
+        "d98e325011730c9aac5f5ca10c4f140bff8c552a020d17e7ee26840a8d99973f"
+    ),
+    "0003_sink_spec.py": (
+        "edf559eb46725a3d1f0e388582537b2382211affff6baeab42757fa9a239e385"
+    ),
+    "0004_sink_views.py": (
+        "570690ba75b1777b1c91cb4d4c5144de9206cbcaafc1dfca8405c3ee816bed76"
+    ),
+    "0005_accounts.py": (
+        "60f7a37270474d8c54ed2247313391276ae4f69db3ee5bd3962f7da643e06cda"
+    ),
+    "0006_filed_years.py": (
+        "a699171f54b3ba2c7bda6432ec20f0a4e9cec35daa5b8c3a8ee535fb2026720d"
+    ),
+    "0007_documents.py": (
+        "52457353a3934c1487ba58e7f28b9a1062a7bfabc5398b44ce60ada249e3f17d"
+    ),
+    "0008_archive_skip_unreadable.py": (
+        "6efcdf6ff35187de0e550654fc1f492dfbb68f24617800b90b11e3dc7de9ec37"
+    ),
+    "0009_parse_cache.py": (
+        "241b99575f19c5892cabd1b0610dec391ab7de086ba1bef2bb89c026b9ff4dd0"
+    ),
+    "0010_txn.py": ("0d22ed248703512becf89b7ece3c9930244a13e03e068e598f5e2ef6f69225d9"),
+    "0011_overlap.py": (
+        "faec3bb1a0c7accaaead38d9ad2a103427e65a3899cf618c365f90aa484e90ad"
+    ),
+    "0012_coverage.py": (
+        "9bdcd00b29f92b4e26afb32566d4bab0d0c81ede652b627ed74cdaeb43b0f05f"
+    ),
+    "0013_parse_inputs.py": (
+        "a7813de94129e4ced2c9b1b50bc6ffb048cf0b904f563a44b398f946a60cbb90"
+    ),
+    "0014_report_views.py": (
+        "edc083c85e2fd329baa3b7daa2ec45495052bd0fa2330e86129baa2656992995"
+    ),
+    "0015_receipt_ref_digest.py": (
+        "45a2d6547d37f13f7e71ad5d8e7b4ffafa53b927c41beb80f5a4fa60441a07ee"
+    ),
+    "0016_rates.py": (
+        "4f9b509cfb575883f86a942898c1676004a4220c4be0c8d52e281f20b77da1d9"
+    ),
+    "0017_pair_edge.py": (
+        "0f57a45971ef9f67345c71332a271cd2fa66a2e83a00399a21f77d1fd311e1c4"
+    ),
+    "0018_crypto_core.py": (
+        "01cb3523437ceebff6bdabf9ad272e45bfe2517d2d82b173abb2ecdcb780fb48"
+    ),
+    "0019_crypto_label.py": (
+        "952db656af5c1befbe106ad720d52f560d25c176a4855bbc67488dbac4cdfe5c"
+    ),
+    "0020_payee.py": (
+        "aa3612c5a2660e033a7535f90f3e43b53f85de3e4c33322c283e152a2be10be4"
+    ),
+    "0021_obligation.py": (
+        "743d1b4363962b397279e3798b46211267d5e6314e628ff128bf6ebf6e9654aa"
+    ),
+    "0022_bill_figures.py": (
+        "10a9a46bcc724e22f1dfcf408b6563987c6b977b06c95db0578371267da046d1"
+    ),
+    "0023_typed_bill_unjoined.py": (
+        "947b3204f4eacecb655056b49f8813f011e3343b798b1094467f8c93a5af5731"
+    ),
+    "0024_invoice_decisions.py": (
+        "e113205e1160995bd06877132faea3fd042e7ef4b92497f603af8bf178065a8b"
+    ),
+    "0025_invoice_amount_due.py": (
+        "fc3d9f29792605e6252503d8ce1b0df6b29b00fbc76003c5b1512c1bed2814ad"
+    ),
+    "0026_stage15.py": (
+        "a4a56bfd754dc3a19d24b5871f91d9c470a420a2595447ffe2853ebe29f05a8b"
+    ),
+    "0027_arrangement_unsettled.py": (
+        "834a7b77578bb6e12c17590848776727911d59d44bc6ac09024deb93fbebdbc9"
+    ),
+    "0028_unsettled_decision.py": (
+        "b4ccba5141a76a76248282134aa01437cb834d7b1e05a249e158925273d17592"
+    ),
+    "0029_presumed_paid.py": (
+        "a28c59b223e354d16beb0a5f664adc69aeb09f780eaa8365334e3521cad8916c"
+    ),
+    "0030_notices.py": (
+        "ed5edb752f928a945874a30b9773d0caa7dc5c043e638ddc865cb4033c6b2913"
+    ),
+    "0031_overdrawn_identity.py": (
+        "5a0713c42749fa2b87b2d4ae0b3862daaa745411a35a328fd575a60703cdcdc3"
+    ),
+    "0032_decision_orphan.py": (
+        "cfba0d4f6e3c6321e6da5ebbbd2b4a6104a8c08719c1c28c2b7a58f2d055fdb7"
+    ),
+    "0033_open_item.py": (
+        "91e7ec909566d2e2c5b235e79e888df66d7623baeb2e5254cfa45e2dcfa5fb34"
+    ),
+    "0034_open_item_candidates.py": (
+        "d824cf4593179894bd4766d221302cb72475a0cf273e43f38bb2660e7746596d"
+    ),
+}
+
+
+def _load(path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(f"_revision_{path.stem}", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _chain() -> list[ModuleType]:
+    """Every revision, oldest first, by following ``down_revision``."""
+    modules = [_load(path) for path in sorted(VERSIONS.glob("[0-9]*.py"))]
+    by_parent = {module.down_revision: module for module in modules}
+    assert len(by_parent) == len(modules), "the chain branches"
+    chain: list[ModuleType] = []
+    parent = None
+    while parent in by_parent:
+        chain.append(by_parent[parent])
+        parent = chain[-1].revision
+    assert len(chain) == len(modules), "a revision is off the chain"
+    return chain
+
+
+def newest_frozen_views() -> dict[str, str]:
+    frozen: dict[str, str] = {}
+    for module in _chain():
+        frozen.update(getattr(module, "VIEWS", {}))
+    return frozen
+
+
+def normalized(sql: str) -> str:
+    return " ".join(sql.split())
+
+
+def test_every_code_view_has_a_frozen_body_in_a_revision() -> None:
+    assert set(VIEW_SELECTS) <= set(newest_frozen_views())
+
+
+def test_the_code_compiles_to_the_newest_frozen_body() -> None:
+    frozen = newest_frozen_views()
+    for name, build in VIEW_SELECTS.items():
+        assert normalized(view_sql(build())) == normalized(frozen[name]), (
+            f"{name}: the code no longer compiles to the newest revision's SQL;"
+            " add a revision that recreates the view"
+        )
+
+
+def test_no_revision_imports_application_code() -> None:
+    # A revision that compiled its SQL from live code would change under a database
+    # that already ran it.
+    for path in VERSIONS.glob("[0-9]*.py"):
+        source = path.read_text(encoding="utf-8")
+        assert "from rheo_finance" not in source, path.name
+        assert "import rheo_finance" not in source, path.name
+
+
+def test_every_revision_file_is_pinned_and_unchanged() -> None:
+    found = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(VERSIONS.glob("[0-9]*.py"))
+    }
+    assert set(found) == set(PINNED), "pin every revision file, and only those"
+    changed = sorted(name for name, digest in found.items() if PINNED[name] != digest)
+    assert changed == [], (
+        "a revision file changed; a database that ran it will not see the edit."
+        " Add a new revision instead, or re-pin only if it was never applied."
+    )
+
+
+# ``alembic_version_finance.version_num`` is varchar(32), and ``report_status`` selects
+# it, so widening the column would mean dropping and recreating that view first.
+VERSION_NUM_LENGTH = 32
+
+
+def test_every_revision_id_fits_the_version_column() -> None:
+    chain = _chain()
+    assert chain, "the control: the chain has revisions"
+    too_long = [
+        module.revision for module in chain if len(module.revision) > VERSION_NUM_LENGTH
+    ]
+    assert too_long == [], "shorten the revision id to 32 characters or fewer"
+
+
+def test_the_version_column_is_32_characters(owner_conn: Connection) -> None:
+    length = owner_conn.scalar(
+        text(
+            "SELECT character_maximum_length FROM information_schema.columns"
+            " WHERE table_schema = 'finance' AND table_name = 'alembic_version_finance'"
+            " AND column_name = 'version_num'"
+        )
+    )
+    assert length == VERSION_NUM_LENGTH

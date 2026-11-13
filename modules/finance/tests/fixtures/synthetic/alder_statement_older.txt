@@ -1,0 +1,124 @@
+                                                                           JANUARY 11, 2037
+
+
+
+
+
+           SAMPLE, ALEX
+           PO BOX 1                                                        SUMD RSITAM
+           ANYTOWN ZZ Z0Z 0Z0                                              100 MAIN ST.
+                                                                           ANYTOWN ZZ Z0Z 0Z0
+                                                                           T 999 SUM RSIT TCON-TETU 9 999 IPISCIN
+                                                                           alder.example
+
+
+
+
+ALDER HOLDERS: SAMPLE, ALEX
+ALDER CYCLE 15 DEC 2036 UNTIL 12 JAN 2037
+
+
+
+
+SUMDO RSITAME                                            START                                           END
+                                                     FIGURE AT              SUM          SUM       FIGURE AT
+ALDER OVERVIEW
+                                                       15 DEC 2036      OUT       IN       12 JAN 2037
+
+ALDER BONUS POT No 999000000011                                  0.00             0.00             0.00           0.00
+
+ALDER SAVINGS No 999000000033                                    0.00           157.28           157.28           0.00
+
+PLAIN CHEQUING No 999000000022                             325.70           230.89           801.87         896.68
+
+ALDER BASIC CHEQUING No 999000000055 (SPARE JAR)               9.46             9.46             0.00           0.00
+
+SUMDO RSITAM OF TCONSEC 9
+
+
+
+
+ALDER BONUS POT No 999000000011
+
+ON   DETAIL   OUT   IN   RUNNING
+
+         ALDER START FIGURE                                                                                       0.00
+
+
+
+
+PLAIN CHEQUING No 999000000022
+
+ON   DETAIL   OUT   IN   RUNNING
+
+         ALDER START FIGURE                                                                                     325.70
+
+20 DEC   AUTOPULL OUT (STREAMING CO)                                 44.49                          281.21
+
+23 DEC   CASH MACHINE IN (1 MAIN ST ANYTOWN ZZZZ)                                                 635.13         916.34
+
+31 DEC   ALDER UNNAMED CHARGE                                           29.12                          887.22
+
+
+
+
+                                                                                                           PAGE 1 / 2
+                                 SUMDO 9 RSI       000001
+PLAIN CHEQUING No 999000000022
+
+
+ON   DETAIL   OUT   IN   RUNNING
+
+
+02 JAN    FUNDS SHIFT-NET TO No 999000000033 ($157.28)                                     157.28                              729.94
+
+06 JAN    FUNDS SHIFT-NET FROM No 999000000033 ($157.28)                                                       157.28              887.22
+
+09 JAN    FUNDS MOVE FROM No 999000000055 ($9.46)                                                                 9.46              896.68
+
+
+
+
+ALDER BASIC CHEQUING No 999000000055 (SPARE JAR)
+
+ON   DETAIL   OUT   IN   RUNNING
+
+          ALDER START FIGURE                                                                                                            9.46
+
+02 JAN    RATE NOTE (NOW 0)                                                                           9.46
+
+09 JAN    POT CLOSED OUT                                                                 9.46
+
+
+
+
+ALDER SAVINGS No 999000000033
+
+ON   DETAIL   OUT   IN   RUNNING
+
+          ALDER START FIGURE                                                                                                            0.00
+
+02 JAN    FUNDS SHIFT-NET FROM No 999000000022 ($157.28)                                                       157.28              157.28
+
+06 JAN    FUNDS SHIFT-NET TO No 999000000022 ($157.28)                                     157.28
+
+08 JAN    RATE NOTE (NOW 9.99%)
+
+
+
+
+ALDER NESTS
+ON   DETAIL   OUT   IN   RUNNING
+
+         ALDER NEST POT No 999000000044
+         ALDER START FIGURE                                                                                                           20.18
+
+         Sumd: Rsitam tco tet ipiscin by gel ddoeiu modtemp orincid.
+
+Sumdol rsitam tcon teturadip ipi gelits ddo modtem or orincidid to us iduntl 30 remi of mdo itametcon onse. If we tur't isci lits oei dtempo
+30 sumd, rsit tconsecte tetu be ipiscingel gelitse.
+
+
+
+
+                                                                                                                                PAGE 2 / 2

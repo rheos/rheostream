@@ -21,6 +21,7 @@ members = [
     "rheo-contracts",
     "rheo-core",
     "rheo-current",
+    "rheo-finance",
     "rheo-leads",
     "rheo-recallatron",
     "rheo-relationships",
@@ -1232,6 +1233,29 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "rheo-contracts", editable = "packages/contracts" },
     { name = "rheo-core", editable = "packages/core" },
+]
+
+[[package]]
+name = "rheo-finance"
+version = "0.1.0"
+source = { editable = "modules/finance" }
+dependencies = [
+    { name = "alembic" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "pydantic" },
+    { name = "rheo-contracts" },
+    { name = "rheo-core" },
+    { name = "sqlalchemy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "alembic", specifier = ">=1.20.0,<2" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6,<4" },
+    { name = "pydantic", specifier = ">=2,<3" },
+    { name = "rheo-contracts", editable = "packages/contracts" },
+    { name = "rheo-core", editable = "packages/core" },
+    { name = "sqlalchemy", specifier = ">=2.1,<2.2" },
 ]
 
 [[package]]
