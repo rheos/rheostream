@@ -74,7 +74,8 @@ SPECS = (
         "current_list",
         "List work items, highest priority then most recently updated first. status "
         "active (the default) means open items and snoozed items whose snooze has "
-        "passed, flagged woke; waiting items are watched and stay out of it. Filter by area, project_ref, priority, due_before "
+        "passed, flagged woke; waiting items are watched and stay out of it. "
+        "Filter by area, project_ref, priority, due_before "
         "(inclusive date), overdue, woke, blocked, or query (full-text over title, "
         "body and comments). Page with offset and next_offset.",
     ),

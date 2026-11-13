@@ -215,15 +215,21 @@ export function DeskRow({
           {row.until ? <span className={styles.deskFlag}>{row.until}</span> : null}
           {row.status === "done" ? <span className={styles.deskFlag}>Done</span> : null}
           {row.blocked ? <span className={styles.deskFlag}>Blocked</span> : null}
+          {row.signals > 1 ? (
+            <span className={styles.deskSignals} title={`${row.signals} signals`}>
+              <Icon name="signals" />
+              {row.signals}
+              <span className={styles.visuallyHidden}> signals</span>
+            </span>
+          ) : null}
+          {/* A due date says more than an age, so it takes the age's place. */}
           {row.due ? (
             <span className={row.overdue ? styles.deskLate : styles.deskFixed}>
               {row.due}
             </span>
-          ) : null}
-          {row.signals > 1 ? (
-            <span className={styles.deskFixed}>{row.signals} signals</span>
-          ) : null}
-          <span className={styles.deskFixed}>{row.age}</span>
+          ) : (
+            <span className={styles.deskFixed}>{row.age}</span>
+          )}
         </p>
       </div>
     </div>
@@ -380,7 +386,7 @@ export function SnoozeDialog({
   useEffect(() => {
     const box = dialog.current;
     if (box && !box.open) box.showModal();
-    box?.querySelector<HTMLElement>(`.${styles.sheetPick}`)?.focus();
+    box?.querySelector<HTMLElement>("[data-pick]")?.focus();
   }, []);
   function pick(choice: SnoozePick) {
     const until = snoozeAt(choice, new Date(), zone);
@@ -402,7 +408,7 @@ export function SnoozeDialog({
         if (e.target === e.currentTarget) dialog.current?.close();
       }}
     >
-      <div className={styles.sheetInner}>
+      <div>
         <div className={styles.modalHead}>
           <h2 id={`${id}-title`} className={styles.modalTitle}>
             <Icon name="alarm" className={styles.sheetIcon} /> Snooze until
@@ -425,7 +431,8 @@ export function SnoozeDialog({
               <li key={p.id}>
                 <button
                   type="button"
-                  className={`${styles.choice} ${styles.sheetPick}`}
+                  className={styles.choice}
+                  data-pick={p.id}
                   onClick={() => pick(p.id)}
                 >
                   <span>{p.label}</span>

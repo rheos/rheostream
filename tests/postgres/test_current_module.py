@@ -298,9 +298,7 @@ def test_a_watched_item_stays_out_of_the_active_queue(current: Current) -> None:
     open_ref = current.item("Open").ref
     assert current.status(watched, "waiting").ok
     assert [i.ref for i in current.ok("item.list").items] == [open_ref]
-    assert [i.ref for i in current.ok("item.list", status="waiting").items] == [
-        watched
-    ]
+    assert [i.ref for i in current.ok("item.list", status="waiting").items] == [watched]
     summary = current.ok("summary.get")
     assert summary.active == 1 and summary.by_status["waiting"] == 1
     # A repeat signal groups into a watched item and leaves it watched.

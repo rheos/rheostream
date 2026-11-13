@@ -41,8 +41,7 @@
   margin-bottom: var(--rs-space-6);
 }
 .nav a,
-.secondary,
-.quietLink {
+.secondary {
   display: inline-flex;
   align-items: center;
   min-height: var(--rs-size-control);
@@ -144,67 +143,14 @@
   color: var(--rs-color-on-accent);
 }
 
-/* --- queue summary and filters ---------------------------------------------- */
-.summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--rs-space-2) var(--rs-space-3);
-  list-style: none;
-  margin: 0 0 var(--rs-space-5);
-  padding: 0;
-}
-.summary a {
-  display: grid;
-  gap: var(--rs-space-1);
-  min-width: calc(var(--rs-space-6) * 3);
-  padding: var(--rs-space-2) var(--rs-space-3);
-  border-radius: var(--rs-radius-sm);
-  color: var(--rs-color-ink);
-  text-decoration: none;
-}
-.summary a:hover {
-  background: var(--rs-color-surface-1);
-  text-decoration: none;
-}
-.summaryLabel {
-  color: var(--rs-color-ink-dim);
-  font-size: var(--rs-font-size-sm);
-}
-.summaryCount {
-  font-size: var(--rs-font-size-lg);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.summaryLate .summaryCount {
-  color: var(--rs-color-danger);
-}
+/* --- toolbars ---------------------------------------------------------------- */
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
   gap: var(--rs-space-3);
   margin-bottom: var(--rs-space-6);
-}
-.grow {
-  flex: 1 1 calc(var(--rs-space-6) * 10);
-}
-.checks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--rs-space-4);
-  align-items: center;
-  min-height: var(--rs-size-control);
-}
-.checks label {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--rs-space-2);
-  cursor: pointer;
-}
-.checks input {
-  accent-color: var(--rs-color-accent);
-  width: var(--rs-space-4);
-  height: var(--rs-space-4);
 }
 .toolbarActions {
   display: flex;
@@ -292,23 +238,7 @@
 }
 
 /* --- item rows ------------------------------------------------------------------- */
-.listHeading,
-.wokeSection h2 {
-  font-size: var(--rs-font-size-md);
-  margin: 0 0 var(--rs-space-2);
-}
-.wokeSection {
-  background: var(--rs-color-surface-1);
-  border-radius: var(--rs-radius-md);
-  padding: var(--rs-space-4) var(--rs-space-5) var(--rs-space-2);
-  margin-bottom: var(--rs-space-6);
-}
-.wokeSection h2 {
-  color: var(--rs-color-info);
-}
-.wokeSection > .meta {
-  margin: 0 0 var(--rs-space-2);
-}
+
 .rows {
   list-style: none;
   margin: 0;
@@ -321,9 +251,6 @@
   align-items: start;
   padding-block: var(--rs-space-4);
   border-bottom: var(--rs-size-hairline) solid var(--rs-color-hairline);
-}
-.wokeSection .row:last-child {
-  border-bottom: 0;
 }
 .rowMain {
   min-width: 0;
@@ -798,8 +725,7 @@ a.rowTitle:hover {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .toolbar > .grow,
-  .toolbar > .checks,
+  
   .toolbar > .toolbarActions {
     grid-column: 1 / -1;
   }
@@ -819,9 +745,6 @@ a.rowTitle:hover {
   .areaControls .inlineForm {
     min-width: 0;
     width: 100%;
-  }
-  .wokeSection {
-    padding-inline: var(--rs-space-4);
   }
 }
 @media (pointer: coarse) {
@@ -853,18 +776,18 @@ a.rowTitle:hover {
   --desk-unit: calc(var(--rs-size-control) * 1.75);
   --desk-tile: calc(var(--rs-size-control) + var(--rs-space-1));
 }
-.tone_slate { --desk-tone: var(--rs-color-ink-dim); }
-.tone_gold { --desk-tone: var(--rs-color-warning); }
-.tone_green { --desk-tone: var(--rs-color-success); }
-.tone_sky { --desk-tone: var(--rs-color-info); }
-.tone_indigo { --desk-tone: color-mix(in oklch, var(--rs-color-info) 72%, var(--rs-color-danger)); }
-.tone_violet { --desk-tone: color-mix(in oklch, var(--rs-color-info) 42%, var(--rs-color-danger)); }
-.tone_rose { --desk-tone: color-mix(in oklch, var(--rs-color-danger) 70%, var(--rs-color-ink)); }
-.tone_teal { --desk-tone: var(--rs-color-accent); }
-[data-priority="critical"] { --desk-priority: var(--rs-color-danger); }
-[data-priority="high"] { --desk-priority: color-mix(in oklch, var(--rs-color-warning) 65%, var(--rs-color-danger)); }
-[data-priority="normal"] { --desk-priority: var(--rs-color-info); }
-[data-priority="low"] { --desk-priority: var(--rs-color-ink-faint); }
+.tone_slate{ --desk-tone: var(--rs-color-ink-dim); }
+.tone_gold{ --desk-tone: var(--rs-color-warning); }
+.tone_green{ --desk-tone: var(--rs-color-success); }
+.tone_sky{ --desk-tone: var(--rs-color-info); }
+.tone_indigo{ --desk-tone: color-mix(in oklch, var(--rs-color-info) 72%, var(--rs-color-danger)); }
+.tone_violet{ --desk-tone: color-mix(in oklch, var(--rs-color-info) 42%, var(--rs-color-danger)); }
+.tone_rose{ --desk-tone: color-mix(in oklch, var(--rs-color-danger) 70%, var(--rs-color-ink)); }
+.tone_teal{ --desk-tone: var(--rs-color-accent); }
+[data-priority="critical"]{ --desk-priority: var(--rs-color-danger); }
+[data-priority="high"]{ --desk-priority: color-mix(in oklch, var(--rs-color-warning) 65%, var(--rs-color-danger)); }
+[data-priority="normal"]{ --desk-priority: var(--rs-color-info); }
+[data-priority="low"]{ --desk-priority: var(--rs-color-ink-faint); }
 
 .deskBar {
   display: flex;
@@ -1195,14 +1118,24 @@ a.rowTitle:hover {
 }
 .deskTag {
   flex: 0 1 auto;
-  min-width: 0;
+  min-width: min(8ch, 100%);
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .deskFlag,
 .deskFixed,
-.deskLate {
+.deskLate,
+.deskSignals {
   flex: none;
+}
+.deskSignals {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rs-space-1);
+}
+.deskSignals svg {
+  inline-size: var(--rs-space-3);
+  block-size: var(--rs-space-3);
 }
 .deskLate {
   color: var(--rs-color-danger);
@@ -1416,6 +1349,20 @@ a.rowTitle:hover {
   padding: 0 var(--rs-space-4) var(--rs-space-2);
 }
 
+/* On a phone the chips drop their leading icons so all of them fit one row. */
+@media (max-width: 40rem) {
+  .chips {
+    gap: var(--rs-space-1);
+  }
+  .chip {
+    gap: var(--rs-space-1);
+    padding-inline: var(--rs-space-3) var(--rs-space-2);
+  }
+  .chip > svg:first-child {
+    display: none;
+  }
+}
+
 /* the snooze sheet: along the bottom of a phone */
 .sheetIcon {
   inline-size: var(--rs-space-4);
@@ -1429,4 +1376,7 @@ a.rowTitle:hover {
     max-inline-size: calc(100vw - var(--rs-space-5));
     inline-size: 100%;
   }
+}
+.deskMeta > .deskSignals::before {
+  margin-inline-end: calc(var(--rs-space-2) - var(--rs-space-1));
 }
