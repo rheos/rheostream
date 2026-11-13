@@ -73,6 +73,7 @@ from rheo_core.storage.control_plane import (
     insert_access_token_operations,
     list_access_token_operations,
 )
+from rheo_core.storage.repositories import insert_module_state
 from rheo_core.tokens.format import mint
 from rheo_core.tokens.issue import connector_operations, issue_connector_token
 from rheo_core.tokens.sets import (
@@ -496,9 +497,30 @@ def _scope(value: str, surface: str) -> frozenset[str]:
     return operation_set
 
 
-def _vault_enabled(ctx: WorkspaceContext) -> WorkspaceContext:
-    """``ctx`` with the vault enabled, so module enablement is not what decides."""
-    return ctx.model_copy(update={"enabled_modules": ctx.enabled_modules | {VAULT}})
+@pytest.fixture
+def vault_enabled(cluster: ClusterSession, workspace: UUID) -> None:
+    """The vault enabled in the test workspace, so module enablement is not what
+    decides: a ``core.module_state`` row written through its one writer, the way
+    ``tests/harness/registry.py``'s ``enable_harness_module`` enables ``harness``.
+
+    The boundary factory reads that row and builds every context with the vault in
+    ``enabled_modules``; no context is widened by hand. The vault is loaded too (the
+    publishing fixture plus ``_issue``), as in a deployment that installed and enabled
+    it. A plain insert: the workspace is fresh for each test.
+    """
+    row = cluster.registry_row(workspace)
+    engine = cluster.backend.pools.engine_for(row.database_name)
+    now = datetime.now(UTC)
+    with UnitOfWork(engine, row.database_name) as uow:
+        insert_module_state(
+            uow.connection,
+            module_id=VAULT,
+            package_version="0",
+            state="enabled",
+            installed_at=now,
+            enabled_at=now,
+        )
+        uow.commit()
 
 
 def _issued(
@@ -564,7 +586,9 @@ def _error_text(outcome: OperationOutcome) -> str | None:
     return None if outcome.error is None else outcome.error.error_text
 
 
-@pytest.mark.usefixtures("isolated_process_tables", "vault_default_beside_current")
+@pytest.mark.usefixtures(
+    "isolated_process_tables", "vault_default_beside_current", "vault_enabled"
+)
 def test_routine_sets_lose_a_module_switched_to_explicit_only_at_presentation(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -591,10 +615,9 @@ def test_routine_sets_lose_a_module_switched_to_explicit_only_at_presentation(
         assert VAULT_GET in stored[token_id]
         assert "current.item.get" in stored[token_id]
         before = _present(value, surface)
+        assert VAULT in before.enabled_modules
         assert before.operation_set == stored[token_id]
-        assert isinstance(
-            REGISTRY.authorize(_vault_enabled(before), VAULT_GET), Authorized
-        )
+        assert isinstance(REGISTRY.authorize(before, VAULT_GET), Authorized)
 
     _switch_vault_to_explicit_only(monkeypatch)
 
@@ -603,13 +626,15 @@ def test_routine_sets_lose_a_module_switched_to_explicit_only_at_presentation(
         assert after == stored[token_id] - VAULT_OPERATIONS
         assert "current.item.get" in after
         assert _stored(cluster, token_id) == stored[token_id]  # no row rewrite
-        refused = REGISTRY.authorize(
-            _vault_enabled(_present(value, surface)), VAULT_GET
-        )
+        presented = _present(value, surface)
+        assert VAULT in presented.enabled_modules
+        refused = REGISTRY.authorize(presented, VAULT_GET)
         assert isinstance(refused, Refusal) and refused.state == OPERATION_NOT_PERMITTED
 
 
-@pytest.mark.usefixtures("isolated_process_tables", "vault_default_beside_current")
+@pytest.mark.usefixtures(
+    "isolated_process_tables", "vault_default_beside_current", "vault_enabled"
+)
 def test_the_facade_stops_listing_and_calling_a_switched_modules_tools(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -635,15 +660,17 @@ def test_the_facade_stops_listing_and_calling_a_switched_modules_tools(
         assert outcome.ok, outcome
         return [entry.name for entry in outcome.result.tools]  # type: ignore[union-attr]
 
-    direct = _vault_enabled(_present(direct_value, "mcp"))
-    discovering = _vault_enabled(_present(discover_value, "mcp"))
+    direct = _present(direct_value, "mcp")
+    discovering = _present(discover_value, "mcp")
+    assert VAULT in direct.enabled_modules and VAULT in discovering.enabled_modules
     assert VAULT_GET_TOOL in {tool.name for tool in list_tools(direct)}
     assert VAULT_GET_TOOL in catalogue(discovering)
 
     _switch_vault_to_explicit_only(monkeypatch)
 
-    direct = _vault_enabled(_present(direct_value, "mcp"))
-    discovering = _vault_enabled(_present(discover_value, "mcp"))
+    direct = _present(direct_value, "mcp")
+    discovering = _present(discover_value, "mcp")
+    assert VAULT in direct.enabled_modules and VAULT in discovering.enabled_modules
     assert VAULT_GET_TOOL not in {tool.name for tool in list_tools(direct)}
     assert VAULT_GET_TOOL not in catalogue(discovering)
     by_name = call_tool(direct, VAULT_GET_TOOL, {}, consumers=None)
