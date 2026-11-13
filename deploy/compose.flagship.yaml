@@ -63,7 +63,7 @@ x-rheo-settings: &rheo-settings
   RHEO__identity__providers__github__client_id: ${RHEO_GITHUB_CLIENT_ID:?}
   RHEO__identity__providers__github__client_secret_ref: secret://env/RHEO_GITHUB_CLIENT_SECRET
   RHEO__internal__secret_ref: secret://env/RHEO_INTERNAL_SECRET
-  RHEO__modules__installed: recallatron,relationships,leads,current
+  RHEO__modules__installed: recallatron,relationships,leads,current,finance
   RHEO__recallatron__embedding__provider: local
 
 services:

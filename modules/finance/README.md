@@ -9,13 +9,17 @@ so; what the ledger does not compute is listed in the design's open questions.
 
 ## Status
 
-Wired, not loaded on the flagship. This directory holds the code, tests and decision
-records of the standalone project it started as (Float), copied in without its Git
-history. The distribution is `rheo-finance`, the package `rheo_finance`, the module id
-`finance`, with a `rheo.modules` entry point and a `finance` console script.
+Loaded on the flagship, not installed in any workspace. This directory holds the code,
+tests and decision records of the standalone project it started as (Float), copied in
+without its Git history. The distribution is `rheo-finance`, the package
+`rheo_finance`, the module id `finance`, with a `rheo.modules` entry point and a
+`finance` console script.
 
-Discovery is not loading: core loads only the ids in `modules.installed`, and the
-flagship's list does not name `finance`. Adding it there is the owner's later step.
+Discovery is not loading: core loads only the ids in `modules.installed`. The
+flagship's list names `finance`, which registers its manifest in core, the worker and
+the CLI and does nothing more: no workspace has the module until an owner installs and
+enables it there, and its tick stays off until that workspace sets
+`finance.jobs.enabled` to true.
 How the module runs on core is ADR-0024; how its reminders reach Current there is
 ADR-0025.
 
