@@ -173,9 +173,9 @@ def output_view(model: type[BaseModel]) -> type[BaseModel]:
                 continue
             # The field's own marks were lifted into ``metadata``; the field's tier
             # replaces them, and marks inside the spelling are rebuilt as core's.
-            annotation = Annotated[
-                (_rebuilt(info.annotation, where), CoreTiered(CORE_TIERS[tier]))
-            ]
+            annotation = _full_annotation(
+                _rebuilt(info.annotation, where), [CoreTiered(CORE_TIERS[tier])]
+            )
             if info.default is not PydanticUndefined:
                 fields[name] = (annotation, info.default)
             elif info.default_factory is not None:
@@ -195,9 +195,15 @@ def output_view(model: type[BaseModel]) -> type[BaseModel]:
     return view
 
 
+def as_view(model: type[BaseModel], out: BaseModel) -> BaseModel:
+    """``out``, an instance of finance ``model``, as its view: only the view's fields
+    are read off it, so nothing restricted is copied."""
+    return output_view(model).model_validate(out)
+
+
 def read_handler(spec: OperationSpec) -> Handler:
     """Core's handler for ``spec``, a READ spec on the reader connection."""
-    view = output_view(spec.output_model)
+    output_view(spec.output_model)  # built now: an unviewable output refuses at import
 
     def handle(
         ctx: WorkspaceContext, uow: CoreUnitOfWork, data: BaseModel
@@ -224,7 +230,7 @@ def read_handler(spec: OperationSpec) -> Handler:
             raise OperationRefused(code, code)
         if not isinstance(out, spec.output_model):
             raise OperationRefused(OUTPUT_INVALID, OUTPUT_INVALID)
-        return view.model_validate(out)
+        return as_view(spec.output_model, out)
 
     return handle
 

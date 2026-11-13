@@ -508,13 +508,17 @@ def vault_enabled(cluster: ClusterSession, workspace: UUID) -> None:
     publishing fixture plus ``_issue``), as in a deployment that installed and enabled
     it. A plain insert: the workspace is fresh for each test.
     """
+    _enable_module(cluster, workspace, VAULT)
+
+
+def _enable_module(cluster: ClusterSession, workspace: UUID, module_id: str) -> None:
     row = cluster.registry_row(workspace)
     engine = cluster.backend.pools.engine_for(row.database_name)
     now = datetime.now(UTC)
     with UnitOfWork(engine, row.database_name) as uow:
         insert_module_state(
             uow.connection,
-            module_id=VAULT,
+            module_id=module_id,
             package_version="0",
             state="enabled",
             installed_at=now,
@@ -837,3 +841,157 @@ def test_a_stored_caller_and_the_approval_guard_follow_the_narrowing(
     assert "current.item.get" in narrowed
     text = detail()
     assert text is not None and f"no longer permits {VAULT_ADD}" in text
+
+
+# --- finance: the real opt-in module (RS-6d, ADR-0028) ------------------------------
+
+FINANCE: Final = "finance"
+FINANCE_READS: Final = frozenset(
+    {
+        "finance.coverage.get",
+        "finance.document.list",
+        "finance.openitem.list",
+        "finance.owed.list",
+        "finance.owed.trace",
+        "finance.sink.state",
+        "finance.status.get",
+        "finance.txn.list",
+    }
+)
+FINANCE_TOOLS: Final = frozenset(
+    {
+        "finance_coverage",
+        "finance_documents",
+        "finance_open_items",
+        "finance_owed",
+        "finance_trace",
+        "finance_sinks",
+        "finance_status",
+        "finance_lines",
+    }
+)
+
+
+@pytest.fixture
+def finance_beside_current(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Discovery sees the real Current and the real finance, each from its own entry
+    point, and the deployment allows both, so the command loads both."""
+    real = [entry for entry in discovered() if entry.name in {CURRENT, FINANCE}]
+    assert {entry.name for entry in real} == {CURRENT, FINANCE}
+    publish(monkeypatch, *real)
+    install(monkeypatch, CURRENT, FINANCE)
+
+
+@pytest.fixture
+def finance_enabled(cluster: ClusterSession, workspace: UUID) -> None:
+    """Finance enabled in the test workspace through its ``core.module_state`` row, as
+    :func:`vault_enabled` enables the vault."""
+    _enable_module(cluster, workspace, FINANCE)
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "finance_beside_current")
+def test_module_read_finance_issues_exactly_the_eight_reads(
+    capsys: pytest.CaptureFixture[str],
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """D1: the one way in is ``module_read:finance``, and it holds the eight reads."""
+    code, out, err = _issue(
+        capsys,
+        workspace,
+        owner_account_id,
+        set_name=f"module_read:{FINANCE}",
+        kind="mcp",
+    )
+
+    assert code == 0, err
+    assert out.startswith("rheo_mcp_")
+    assert _stored_operations(cluster, err) == FINANCE_READS
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "finance_beside_current")
+@pytest.mark.parametrize(
+    ("set_name", "kind"),
+    [("read_only", "cli"), ("cli_full", "cli"), ("agent_default", "mcp")],
+)
+def test_no_routine_set_stores_a_finance_operation(
+    capsys: pytest.CaptureFixture[str],
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+    set_name: str,
+    kind: str,
+) -> None:
+    """D1: no routine token holds a finance read; Current beside it still counts."""
+    code, _, err = _issue(
+        capsys, workspace, owner_account_id, set_name=set_name, kind=kind
+    )
+
+    assert code == 0, err
+    stored = _stored_operations(cluster, err)
+    assert "current.item.get" in stored
+    assert not {name for name in stored if name.startswith(f"{FINANCE}.")}
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "finance_beside_current")
+def test_every_set_evaluator_and_the_connector_grant_skip_finance(
+    capsys: pytest.CaptureFixture[str],
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """D1: every named set and the snapshot a connector grant takes hold no finance
+    operation, with all eight registered in this process."""
+    code, _, err = _issue(
+        capsys, workspace, owner_account_id, set_name="read_only", kind="cli"
+    )
+    assert code == 0, err
+    assert FINANCE_READS <= REGISTRY.names()
+
+    for name, evaluator in PACKAGE_SETS.items():
+        assert not {op for op in evaluator() if op.startswith(f"{FINANCE}.")}, name
+    granted = connector_operations(Role.OWNER)
+    assert "current.item.get" in granted
+    assert not {op for op in granted if op.startswith(f"{FINANCE}.")}
+    assert FINANCE_READS <= explicit_only_operations()
+
+
+@pytest.mark.usefixtures(
+    "isolated_process_tables", "finance_beside_current", "finance_enabled"
+)
+def test_only_a_module_read_token_lists_the_finance_tools(
+    capsys: pytest.CaptureFixture[str],
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """D2: with finance enabled, a presented ``module_read:finance`` token lists the
+    eight finance tools; ``cli_full`` and ``agent_default`` tokens list none, and a
+    call to ``finance_status`` on either answers ``not_found``."""
+    opt_in, _ = _issued(
+        capsys,
+        workspace,
+        owner_account_id,
+        set_name=f"module_read:{FINANCE}",
+        kind="mcp",
+    )
+    presented = _present(opt_in, "mcp")
+    assert FINANCE in presented.enabled_modules
+    listed = {tool.name for tool in list_tools(presented)}
+    assert {name for name in listed if name.startswith(f"{FINANCE}_")} == (
+        FINANCE_TOOLS
+    )
+
+    for set_name, kind, surface in (
+        ("cli_full", "cli", "api"),
+        ("agent_default", "mcp", "mcp"),
+    ):
+        value, _ = _issued(
+            capsys, workspace, owner_account_id, set_name=set_name, kind=kind
+        )
+        routine = _present(value, surface)
+        assert FINANCE in routine.enabled_modules
+        names = {tool.name for tool in list_tools(routine)}
+        assert names  # the control: the routine token lists other tools
+        assert not {name for name in names if name.startswith(f"{FINANCE}_")}
+        refused = call_tool(routine, "finance_status", {}, consumers=None)
+        assert refused.state == "not_found", refused

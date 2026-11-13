@@ -21,7 +21,15 @@ under the session's temporary data root.
   is recorded, and the next workspace session is the session user.
 - D7: a database at a known revision other than the code's head fails the job with
   the fixed ``schema_behind`` code alone.
-- D8: no ``finance.*`` name reaches core's operation or tool registries.
+- D8 (RS-6d D3): exactly the eight opt-in reads and their tools reach core's
+  registries, each registration ``explicit_only`` and owner-only, each output with
+  nothing restricted or unrenderable under core's own walks.
+- RS-6d D4: an owner's session calls ``finance_status`` and ``finance_owed`` through
+  the MCP facade over the loaded registries; the owed ``model_view`` has none of its
+  restricted totals, and no audit row is written.
+- RS-6d D5: in one open core unit of work the adapter runs a synthetic reader spec as
+  ``finance_reader`` and leaves the transaction as the session user.
+- RS-6d D6: the operator context is refused ``role_not_permitted``.
 
 The long steps renew the lease (#546, ADR-0027), over a filing step that hashes four
 archive files while the worker's clock moves 25 s per file (100 s in all, longer than
@@ -39,7 +47,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Final
+from typing import Annotated, Any, Final
 from uuid import UUID
 
 import pytest
@@ -52,11 +60,17 @@ from harness.modules import (
     install_and_enable_module,
     loaded_probe_modules,
 )
-from rheo_contracts import WorkspaceContext
+from pydantic import BaseModel, ConfigDict
+from rheo_app_mcp.tools import call_tool
+from rheo_contracts import Role, WorkspaceContext
 from rheo_core.boundary import context_for_operator
+from rheo_core.boundary.factories import context_from_session
 from rheo_core.events import ConsumerRegistry
 from rheo_core.migrations.module_chain import run_module_chain
-from rheo_core.operations import register_core_operations
+from rheo_core.operations import dispatch, register_core_operations
+from rheo_core.operations.refusals import ROLE_NOT_PERMITTED
+from rheo_core.redaction.tiers import restricted_fields, unrenderable_paths
+from rheo_core.sessions import create_session, mint_host_secret, switch_workspace
 from rheo_core.settings import resolver as resolver_module
 from rheo_core.settings.schema import REGISTRY, SettingsRegistry, ValueType, encode_text
 from rheo_core.storage import core_tables, work_tables
@@ -69,12 +83,18 @@ from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import HEARTBEAT_SECONDS, LEASE_SECONDS, visit_workspace
 from rheo_core.work.schedules import run_due_schedules
 from rheo_finance import db
+from rheo_finance.contracts import Role as FinanceRole
+from rheo_finance.contracts import SafetyClass as FinanceSafetyClass
+from rheo_finance.contracts import Tiered
 from rheo_finance.documents import registry as documents_registry
 from rheo_finance.jobs import registry as job_registry
 from rheo_finance.jobs import tick as tick_module
+from rheo_finance.operations import OperationSpec
+from rheo_finance.tier import Tier
+from rheo_finance.wiring import reads
 from rheo_finance.wiring.manifest import JOBS_ENABLED_KEY, MANIFEST, install_check
 from rheo_finance.wiring.tick_job import TICK_JOB_KIND, TickPayload, finance_tick_job
-from sqlalchemy import Connection, Engine, Row, select, text
+from sqlalchemy import Connection, Engine, Row, func, select, text
 
 pytestmark = pytest.mark.postgres
 
@@ -606,8 +626,152 @@ def test_a_lease_lost_mid_step_commits_nothing_and_leaves_the_thief_its_job(
 # --- package sets ---------------------------------------------------------------
 
 
-def test_no_finance_name_reaches_core_registries(finance: Finance) -> None:
-    named = finance.surfaces.operations.names() | finance.surfaces.tools.names()
-    assert not {name for name in named if name.startswith("finance")}
-    # The control: core's own operations are registered, so the registry is not empty.
-    assert any(name.startswith("core.") for name in finance.surfaces.operations.names())
+FINANCE_READS: Final = frozenset(
+    {
+        "finance.coverage.get",
+        "finance.document.list",
+        "finance.openitem.list",
+        "finance.owed.list",
+        "finance.owed.trace",
+        "finance.sink.state",
+        "finance.status.get",
+        "finance.txn.list",
+    }
+)
+FINANCE_TOOLS: Final = frozenset(
+    {
+        "finance_coverage",
+        "finance_documents",
+        "finance_open_items",
+        "finance_owed",
+        "finance_trace",
+        "finance_sinks",
+        "finance_status",
+        "finance_lines",
+    }
+)
+SESSION_HOST: Final = "example.test"
+
+
+def test_only_the_eight_opt_in_reads_reach_core_registries(finance: Finance) -> None:
+    """D8 (RS-6d D3): exactly the eight reads and their tools, each registration
+    ``explicit_only``, each output with nothing restricted or unrenderable."""
+    operations = finance.surfaces.operations
+    names = {name for name in operations.names() if name.startswith("finance")}
+    tools = {
+        name for name in finance.surfaces.tools.names() if name.startswith("finance")
+    }
+    assert names == FINANCE_READS
+    assert tools == FINANCE_TOOLS
+    for name in names:
+        registered = operations.lookup(name)
+        assert registered is not None and registered.explicit_only, name
+        assert registered.declaration.roles == frozenset({Role.OWNER}), name
+        output = registered.declaration.output
+        assert restricted_fields(output) == (), name
+        assert unrenderable_paths(output) == (), name
+    # The control: core's own operations are registered, and are not opt-in.
+    core_status = operations.lookup("core.workspace.status")
+    assert core_status is not None and not core_status.explicit_only
+
+
+# --- the reads through core (RS-6d) ---------------------------------------------
+
+
+def _owner_session(workspace: UUID, account: UUID) -> WorkspaceContext:
+    session_row = create_session(account)
+    secret = mint_host_secret(session_row.id, SESSION_HOST)
+    assert switch_workspace(session_row.id, workspace) is None
+    ctx = context_from_session(secret, SESSION_HOST)
+    assert isinstance(ctx, WorkspaceContext), ctx
+    return ctx
+
+
+def _audit_rows(finance: Finance) -> int:
+    with finance.engine().connect() as connection:
+        return int(
+            connection.execute(
+                select(func.count()).select_from(work_tables.audit_record)
+            ).scalar_one()
+        )
+
+
+def test_an_owner_reads_through_the_tools_and_no_figure_reaches_the_model(
+    finance: Finance, owner_account_id: UUID
+) -> None:
+    """D4: ``finance_status`` and ``finance_owed`` succeed for the owner's session over
+    the loaded registries; the owed view has none of its restricted totals, and READ
+    writes no audit row."""
+    _layout(finance.workspace)
+    ctx = _owner_session(finance.workspace, owner_account_id)
+    assert "finance" in ctx.enabled_modules
+    before = _audit_rows(finance)
+    views: dict[str, object] = {}
+    for tool in ("finance_status", "finance_owed"):
+        outcome = call_tool(
+            ctx,
+            tool,
+            {},
+            consumers=None,
+            tools=finance.surfaces.tools,
+            registry=finance.surfaces.operations,
+        )
+        assert outcome.ok, outcome
+        assert outcome.model_view is not None and not outcome.model_view.withheld
+        views[tool] = outcome.model_view.value
+    owed = views["finance_owed"]
+    assert isinstance(owed, dict)
+    assert {"as_of", "rows", "credits", "gaps"} <= set(owed)  # the control
+    assert not {"due_in_window", "overdue", "carried", "headline"} & set(owed)
+    assert "line" not in owed["credits"]
+    assert _audit_rows(finance) == before
+
+
+class _WhoIn(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class _WhoOut(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    user: Annotated[str, Tiered(Tier.PUBLIC)]
+
+
+def _whoami(_ctx: object, uow: Any, _data: _WhoIn) -> _WhoOut:
+    return _WhoOut(user=str(uow.scalar(text("SELECT current_user"))))
+
+
+def test_the_adapter_reads_as_finance_reader_and_hands_back_the_session_user(
+    finance: Finance,
+) -> None:
+    """D5: in one open core unit of work, a synthetic reader spec's handler runs as
+    ``finance_reader``, and the same transaction is the session user after it."""
+    _layout(finance.workspace)
+    spec = OperationSpec(
+        name="finance.probe.whoami",
+        input_model=_WhoIn,
+        output_model=_WhoOut,
+        handler=_whoami,
+        safety_class=FinanceSafetyClass.READ,
+        roles=frozenset({FinanceRole.OWNER}),
+        connection="reader",
+        description="A synthetic probe of the role a read runs as.",
+    )
+    handle = reads.read_handler(spec)
+    with open_unit_of_work(finance.operator) as uow:
+        assert _session_user_again(uow.connection)  # the control
+        out = handle(finance.operator, uow, _WhoIn())
+        assert out.model_dump() == {"user": db.READER_ROLE}
+        assert _session_user_again(uow.connection)
+
+
+def test_the_operator_cannot_dispatch_a_finance_read(finance: Finance) -> None:
+    """D6: the reads are the owner's alone; the operator context (role ``operator``)
+    is refused before any handler runs."""
+    _layout(finance.workspace)
+    outcome = dispatch(
+        finance.operator,
+        "finance.status.get",
+        {},
+        registry=finance.surfaces.operations,
+    )
+    assert outcome.state == ROLE_NOT_PERMITTED, outcome
