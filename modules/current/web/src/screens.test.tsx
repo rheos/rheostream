@@ -94,7 +94,7 @@ function standard(list: (input: Record<string, unknown>) => OperationOutcome) {
 }
 
 describe("queue", () => {
-  it("separates woke items, marks overdue and blocked, and only reads", async () => {
+  it("lays the queue out like the desk: woke section, rich rows, chips, and only reads", async () => {
     const api = shell(
       standard((input) =>
         input.woke === true
@@ -108,33 +108,48 @@ describe("queue", () => {
                   woke: true,
                   overdue: false,
                   blocked: false,
+                  area: "interior",
+                  due_on: null,
+                  tag: null,
                 }),
               ],
               next_offset: null,
             })
-          : ok({ items: [item()], next_offset: 25 }),
+          : ok({ items: [item({ tag: "renewal-notice", event_count: 4 })], next_offset: 50 }),
       ),
     );
     const html = renderToStaticMarkup(await screens.queue({ shell: api, query: {} }));
-    expect(html).toMatch(/<h2 id="woke">Woke up<\/h2>[\s\S]*Call the landlord back[\s\S]*In motion[\s\S]*Renew the example.com domain/);
-    // Each row carries the project control.
-    expect(html).toContain('aria-label="Change project: Renew the example.com domain"');
-    expect(html).toContain('aria-label="Change project: Call the landlord back"');
-    expect(html).toContain("Overdue");
-    expect(html).toContain("Blocked");
-    expect(html).toContain("Studio move");
-    expect(html).toContain("Bills");
-    expect(html).toContain("High");
-    // The summary counts head the queue.
-    expect(html).toMatch(/<span[^>]*>Active<\/span> <span[^>]*>6<\/span>/);
-    // Paging follows next_offset.
-    expect(html).toContain("offset=25");
-    // Quick actions per row: Done, Snooze, Wait for an open item.
+    // No intro text or visible duplicate heading: the h1 is for assistive technology.
+    expect(html).not.toContain("What is in motion");
+    expect(html).toMatch(/<h1 class="[^"]*visuallyHidden[^"]*">Queue<\/h1>/);
+    // The woke section comes first, with Wake all, then the queue.
+    expect(html).toMatch(/Woke up \(1\)[\s\S]*Wake all[\s\S]*Call the landlord back[\s\S]*Renew the example.com domain/);
+    // A row: area name and its look, tag, signals, priority, due date in place of age.
+    expect(html).toContain('data-priority="high"');
+    expect(html).toContain(">Bills</span>");
+    expect(html).toContain("renewal-notice");
+    expect(html).toContain(">4<span");
+    expect(html).toContain("Due Jan 5");
+    expect(html).toContain(">High</span>");
+    // Swipe trays are real buttons with named actions, plus the project control.
     expect(html).toContain('aria-label="Done: Renew the example.com domain"');
-    expect(html).toContain('aria-label="Wait: Renew the example.com domain"');
+    expect(html).toContain('aria-label="Watch: Renew the example.com domain"');
     expect(html).toContain('aria-label="Snooze: Renew the example.com domain"');
-    // A woke item can be snoozed again rather than snoozed from scratch.
+    expect(html).toContain('aria-label="Change project: Renew the example.com domain"');
     expect(html).toContain('aria-label="Snooze again: Call the landlord back"');
+    // Chips, and the overdue and blocked counters as filters; no always-open form.
+    expect(html).toMatch(/<summary[^>]*aria-label="Status"/);
+    expect(html).toMatch(/<summary[^>]*aria-label="Area"/);
+    expect(html).toMatch(/<summary[^>]*aria-label="Priority"/);
+    expect(html).toContain("overdue=1");
+    expect(html).toContain("blocked=1");
+    expect(html).not.toContain("<select");
+    expect(html).not.toContain(">Active<");
+    // Find and +.
+    expect(html).toContain('name="q"');
+    expect(html).toContain('aria-label="New item"');
+    // Paging follows next_offset.
+    expect(html).toContain("offset=50");
     expect(api.submit).not.toHaveBeenCalled();
     expect(new Set(api.call.mock.calls.map(([name]) => name))).toEqual(
       new Set([
@@ -144,6 +159,33 @@ describe("queue", () => {
         "current.item.list",
       ]),
     );
+  });
+  it("hides counters that are zero and carries filters through a search", async () => {
+    const api = shell((name, input) =>
+      name === "current.summary.get"
+        ? ok({ by_status: {}, active: 1, woke: 0, overdue: 0, blocked: 0, by_area: [] })
+        : standard(() => ok({ items: [item({ overdue: false })], next_offset: null }))(name, input),
+    );
+    const html = renderToStaticMarkup(
+      await screens.queue({ shell: api, query: { area: "bills", priority: "high" } }),
+    );
+    expect(html).not.toContain("overdue=1");
+    expect(html).not.toContain("blocked=1");
+    expect(html).toContain('type="hidden" name="area" value="bills"');
+    expect(html).toContain('type="hidden" name="priority" value="high"');
+    // The chips show the chosen values, and Clear resets them.
+    expect(html).toMatch(/aria-label="Area: Bills"/);
+    expect(html).toMatch(/aria-label="Priority: High"/);
+    expect(html).toContain(">Clear</a>");
+  });
+  it("offers Watching as a status filter", async () => {
+    const api = shell(standard(() => ok({ items: [item({ status: "waiting" })], next_offset: null })));
+    const html = renderToStaticMarkup(
+      await screens.queue({ shell: api, query: { status: "waiting" } }),
+    );
+    expect(html).toMatch(/aria-label="Status: Watching"/);
+    expect(html).toContain('aria-label="Unwatch: Renew the example.com domain"');
+    expect(html).toContain(">Watching</span>");
   });
   it("passes filters through and skips the woke split outside the active list", async () => {
     const api = shell(standard(() => ok({ items: [], next_offset: null })));
@@ -173,7 +215,7 @@ describe("queue", () => {
         query: {},
       }),
     );
-    expect(html).toContain("Nothing in motion");
+    expect(html).toContain("Nothing in the queue");
     expect(html).toContain("/current/new");
   });
   it("shows a failure rather than an empty queue when the list cannot load", async () => {
@@ -184,14 +226,17 @@ describe("queue", () => {
       }),
     );
     expect(html).toContain("Could not load this view");
-    expect(html).not.toContain("Nothing in motion");
+    expect(html).not.toContain("Nothing in the queue");
   });
   it("offers no actions where the host gives no submit", async () => {
     const api = shell(standard(() => ok({ items: [item()], next_offset: null })));
     const readOnly: ShellApi = { role: api.role, call: api.call, href: api.href };
     const html = renderToStaticMarkup(await screens.queue({ shell: readOnly, query: {} }));
     expect(html).toContain("Renew the example.com domain");
-    expect(html).not.toContain("<button type=\"button\"");
+    // Only the woke section's fold toggle is a button; no row action, no Wake all.
+    expect(html.match(/<button /g)).toHaveLength(1);
+    expect(html).not.toContain("Wake all");
+    expect(html).not.toContain("Done:");
     expect(html).not.toContain("New item");
   });
 });

@@ -293,6 +293,44 @@ def test_expired_snooze_wakes_into_the_active_list(current: Current) -> None:
     assert summary.by_status == {"open": 1, "waiting": 0, "snoozed": 2, "done": 1}
 
 
+def test_a_watched_item_stays_out_of_the_active_queue(current: Current) -> None:
+    watched = current.item("Watched", source_kind="email", source_ref="thread-1").ref
+    open_ref = current.item("Open").ref
+    assert current.status(watched, "waiting").ok
+    assert [i.ref for i in current.ok("item.list").items] == [open_ref]
+    assert [i.ref for i in current.ok("item.list", status="waiting").items] == [watched]
+    summary = current.ok("summary.get")
+    assert summary.active == 1 and summary.by_status["waiting"] == 1
+    # A repeat signal groups into a watched item and leaves it watched.
+    again = current.ok(
+        "item.create", title="Watched", source_kind="email", source_ref="thread-1"
+    )
+    assert again.action == "grouped" and current.get(watched).status == "waiting"
+    assert current.ok("summary.get").active == 1
+
+
+def test_a_row_tag_comes_from_the_type_line_then_the_source_kind(
+    current: Current,
+) -> None:
+    typed = current.item(
+        "Typed",
+        body="Type: bill-due\nAmount: $12",
+        source_kind="email",
+        source_ref="thread-2",
+    ).ref
+    sourced = current.item("Sourced", source_kind="alert", source_ref="disk").ref
+    plain = current.item("Plain", body="No type line here.").ref
+    lower = current.item("Lower", body="type: renewal-notice").ref
+    tags = {i.ref: i.tag for i in current.ok("item.list").items}
+    assert tags == {
+        typed: "bill-due",
+        sourced: "alert",
+        plain: None,
+        lower: "renewal-notice",
+    }
+    assert current.get(typed).tag == "bill-due"
+
+
 def test_dependencies_refuse_cycles_and_flag_blocked_items(current: Current) -> None:
     a, b, c = (current.item(name).ref for name in ("A", "B", "C"))
     assert current.call("dependency.add", item_ref=a, blocker_ref=a).state == (

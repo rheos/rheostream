@@ -192,6 +192,7 @@ class ItemSummary(Strict):
     woke: bool
     overdue: bool
     blocked: bool
+    tag: str | None
     event_count: int
     revision: int
     updated_at: AwareDatetime

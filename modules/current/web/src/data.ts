@@ -24,6 +24,8 @@ export interface ItemSummary {
   woke: boolean;
   overdue: boolean;
   blocked: boolean;
+  /** A short label for the row: the item's `Type:` line, else its source kind. */
+  tag: string | null;
   eventCount: number;
   revision: number;
   updatedAt: string;
@@ -137,6 +139,7 @@ export function itemSummary(value: unknown): ItemSummary {
     woke: r.woke === true,
     overdue: r.overdue === true,
     blocked: r.blocked === true,
+    tag: optional(r.tag),
     eventCount: int(r.event_count),
     revision: int(r.revision),
     updatedAt: str(r.updated_at),
@@ -254,9 +257,11 @@ export function read(
 
 // --- labels and dates ---------------------------------------------------------------
 
+/** `waiting` is shown as Watching: a watched item stays out of the queue until
+ * someone moves it (#563). */
 export const STATUS_LABEL: Record<Status, string> = {
   open: "Open",
-  waiting: "Waiting",
+  waiting: "Watching",
   snoozed: "Snoozed",
   done: "Done",
 };
@@ -301,6 +306,65 @@ export function day(value: string | null): string {
 export function pageOffset(value: string | undefined): number {
   const n = Number(value ?? 0);
   return Number.isInteger(n) && n >= 0 && n <= 100000 ? n : 0;
+}
+
+/** Compact age: "just now", "5m ago", "3h ago", "26d ago", "4mo ago", "2y ago". */
+export function age(iso: string, now: Date): string {
+  const then = new Date(iso).valueOf();
+  if (!iso || Number.isNaN(then)) return "";
+  const minutes = Math.floor((now.valueOf() - then) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
+}
+
+/** The icon and colour each default area wears; any other area gets the plain
+ * tag icon and a palette colour picked from its key, so it stays the same. */
+export const AREA_ICONS = [
+  "hammer",
+  "coins",
+  "piggy",
+  "shield",
+  "cap",
+  "waves",
+  "house",
+  "globe",
+  "tag",
+] as const;
+export type AreaIcon = (typeof AREA_ICONS)[number];
+export const AREA_TONES = [
+  "slate",
+  "gold",
+  "green",
+  "sky",
+  "indigo",
+  "violet",
+  "rose",
+  "teal",
+] as const;
+export type AreaTone = (typeof AREA_TONES)[number];
+const DEFAULT_AREA_LOOK: Record<string, { icon: AreaIcon; tone: AreaTone }> = {
+  work: { icon: "hammer", tone: "slate" },
+  commerce: { icon: "coins", tone: "gold" },
+  bills: { icon: "piggy", tone: "green" },
+  peace: { icon: "shield", tone: "sky" },
+  education: { icon: "cap", tone: "indigo" },
+  dev: { icon: "waves", tone: "violet" },
+  interior: { icon: "house", tone: "rose" },
+  foreign: { icon: "globe", tone: "teal" },
+};
+export function areaLook(key: string | null): { icon: AreaIcon; tone: AreaTone } {
+  if (!key) return { icon: "tag", tone: "slate" };
+  const known = DEFAULT_AREA_LOOK[key];
+  if (known) return known;
+  let hash = 0;
+  for (const ch of key) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return { icon: "tag", tone: AREA_TONES[hash % AREA_TONES.length] ?? "slate" };
 }
 
 /** Labels by area key, retired areas included, so a retired area stays readable. */

@@ -22,11 +22,21 @@ It holds five kinds of record:
 - Capture work from anywhere: the queue screen, an agent through the `current_*` tools,
   an alert or an email source, or a handoff from Leads.
 - Move items between `open`, `waiting` and `snoozed`, mark them `done`, and reopen them.
+  The screens call `waiting` Watching: a watched item leaves the queue and stays under
+  the Watching filter until someone moves it. A repeat signal groups into it without
+  bringing it back.
 - Snooze an item until a time; when the time passes it shows up again, flagged as woke.
 - Group items into projects and see each project's items by status.
 - Mark what blocks what, and see both directions on an item.
-- Work the queue: counts at the top, woke items first, then active items by priority and
-  last update, with filters for status, area, project, priority, overdue and blocked.
+- Work the queue on a phone the way the earlier ticket desk worked: a find box and a
+  `+` for a new item, filter chips for status, area and priority, counters for overdue
+  and blocked items only when there are some, a folding Woke up section with Wake all,
+  then one row per item, most urgent first. A row shows the area's icon and colour, the
+  title, the priority, the item's type label (the first `Type:` line of its notes, else
+  its source kind), its signal count, and its due date or age. Swipe a row left for
+  Project and Done, right for Watch and Snooze; a long swipe runs Done or Watch. The same
+  actions are buttons in the row for a keyboard or screen reader, and show on hover with
+  a mouse.
 - Ask for a summary of the workspace's work in one call.
 
 ## How it works
@@ -44,7 +54,8 @@ anything else is grouped. A repeat never changes the title, body, area or projec
 
 Only a snoozed item holds a snooze time, it must be in the future when set, and database
 checks hold the same rule. When the time passes, nothing has to run: the default active
-list simply includes the item and flags it as woke.
+list simply includes the item and flags it as woke. The active list is open items plus
+woke ones; watched (`waiting`) items stay out of it.
 
 ### Every edit names the revision it read
 

@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  age,
   allowedTargets,
+  areaLook,
   areaKey,
   customSnooze,
   day,
   itemDetail,
+  itemSummary,
   refusalText,
   snoozeAt,
   TRANSITIONS,
@@ -228,5 +231,31 @@ describe("snooze picks in the shell's zone (#465)", () => {
     expect(customSnooze("2026-11-01T01:30", early, LA)?.toISOString()).toBe(
       "2026-11-01T08:30:00.000Z",
     );
+  });
+});
+
+describe("desk helpers", () => {
+  it("writes ages the compact way", () => {
+    const now = new Date("2026-11-12T12:00:00Z");
+    const ago = (ms: number) => age(new Date(now.valueOf() - ms).toISOString(), now);
+    expect(ago(20_000)).toBe("just now");
+    expect(ago(5 * 60_000)).toBe("5m ago");
+    expect(ago(3 * 3600_000)).toBe("3h ago");
+    expect(ago(26 * 86400_000)).toBe("26d ago");
+    expect(ago(95 * 86400_000)).toBe("3mo ago");
+    expect(ago(800 * 86400_000)).toBe("2y ago");
+    expect(age("", now)).toBe("");
+  });
+  it("gives default areas their own look and others a stable one", () => {
+    expect(areaLook("bills")).toEqual({ icon: "piggy", tone: "green" });
+    expect(areaLook("dev")).toEqual({ icon: "waves", tone: "violet" });
+    expect(areaLook(null)).toEqual({ icon: "tag", tone: "slate" });
+    const garden = areaLook("garden");
+    expect(garden.icon).toBe("tag");
+    expect(areaLook("garden")).toEqual(garden);
+  });
+  it("reads the row tag from a summary", () => {
+    expect(itemSummary({ tag: "bill-due" }).tag).toBe("bill-due");
+    expect(itemSummary({}).tag).toBeNull();
   });
 });
