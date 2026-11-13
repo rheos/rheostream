@@ -41,7 +41,7 @@ import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Annotated, Final, Protocol, Self, TypeVar
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, Self, TypeVar
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from pydantic import (
@@ -1115,6 +1115,30 @@ def check_schedules(
 _OWNER_ONLY: Final = frozenset({Role.OWNER})
 
 
+def check_explicit_only_tools(
+    package_sets: str,
+    *,
+    tools: Sequence[ToolDeclaration],
+    declarations: Mapping[str, OperationDeclaration],
+) -> None:
+    """An ``explicit_only`` module's tools name only its own operations. Raises
+    ``ValueError`` with fixed text.
+
+    A module tool may name a core operation (the deletion tools do). The facade
+    offers a tool to any token whose snapshot holds the tool's operation, so an
+    opt-in module's tool naming a core operation would reach every token another
+    module's tool already grants that operation to, past the opt-in.
+    """
+    if package_sets != "explicit_only":
+        return
+    for tool in tools:
+        if tool.operation not in declarations:
+            raise ValueError(
+                f"tools: {tool.name!r} names {tool.operation!r}; an explicit_only "
+                "module's tools must name its own operations"
+            )
+
+
 def check_authorization_completion(
     name: str | None, *, declarations: Mapping[str, OperationDeclaration]
 ) -> None:
@@ -1205,6 +1229,19 @@ class ModuleManifest(BaseModel):
     has one: one of this module's own operations, declared for the owner alone (see
     :func:`check_authorization_completion`). ``None`` for every module without a
     connector authorization flow."""
+    package_sets: Literal["default", "explicit_only"] = "default"
+    """Whether the named package sets reach this module's operations.
+
+    ``default``: ``read_only``, ``agent_default`` and ``cli_full`` take them by their
+    rules. ``explicit_only``: no named package set ever does, so no rule-set
+    issuance or connector grant reaches the module's own operations; core
+    operations on its records keep their own sets. A token issued from a named set
+    before the switch loses the module's operations at presentation; a
+    ``module_read`` token or an explicit list keeps what it was issued. A token
+    reaches its operations only by naming them: ``module_read:<module_id>`` (its
+    ``READ`` operations, the one set the operator
+    command can issue for it) or an explicit operation list a session issuer's own
+    role permits (``rheo_core.tokens.sets``)."""
 
     @model_validator(mode="after")
     def _check_invariants(self) -> Self:
@@ -1417,5 +1454,8 @@ class ModuleManifest(BaseModel):
         )
         check_authorization_completion(
             self.authorization_completion, declarations=declarations
+        )
+        check_explicit_only_tools(
+            self.package_sets, tools=self.tools, declarations=declarations
         )
         return self

@@ -133,8 +133,8 @@ rechecked from `control.membership` at every presentation):
 | Issuing authority | Its permitted set | What `core.token.issue` does |
 | --- | --- | --- |
 | A web session | Every operation whose declared roles include the account's role in the target workspace. | Expands the named package set against the registry, intersects with that set, strips the non-token-issuable set, refuses `set_empty` if nothing remains, and snapshots the rest. A member's `cli_full` is therefore the member's full set, not the owner's. |
-| The operator command | The package sets, for the target account. | May name only a package set (never an explicit list); expands it, intersects with the operations the target account's role permits, strips the non-token-issuable set, and snapshots. `--discover` adds `core.tool.call` to the expansion ([discover-then-call](runtime-and-mcp.md#discover-then-call)). |
-| The core's `runtime` package, for a run | The permitted set of the actor that started the run: that actor's own token snapshot when it is a token, or the role-permitted set when it is an account. | Takes the explicit list of operations the run's permitted tools name, intersects with that set, strips the non-token-issuable set, and snapshots; a run can therefore never reach past the person or token that started it, however the operation's tool needs are declared. |
+| The operator command | The package sets, plus the `read` operations of every `explicit_only` module (so `module_read:<module_id>` can be issued), for the target account. | May name only a package set (never an explicit list); expands it, intersects with the operations the target account's role permits, strips the non-token-issuable set, and snapshots. `--discover` adds `core.tool.call` to the expansion ([discover-then-call](runtime-and-mcp.md#discover-then-call)). |
+| The core's `runtime` package, for a run | The permitted set of the actor that started the run: that actor's own token's effective scope when it is a token, or the role-permitted set when it is an account. | Takes the explicit list of operations the run's permitted tools name, intersects with that set, strips the non-token-issuable set, and snapshots; a run can therefore never reach past the person or token that started it, however the operation's tool needs are declared. |
 | A connector grant (`connector`) | The `agent_default` set, for the approving account's role in the workspace chosen on the consent page. | Not `core.token.issue`: `issue_connector_token` computes `(agent_default & role-permitted) - non-token-issuable - {core.tool.call}`, the bound an operator issuance of `agent_default` gets minus the discover grant, refuses `set_empty` if nothing remains, and snapshots it once with `set_name = agent_default`. A refresh never re-snapshots, so a later role change narrows it only through the role recheck at presentation. |
 
 ### The named package operation sets
@@ -150,6 +150,26 @@ registry at issuance the same way:
 | `agent_default` | Every operation named by a registered MCP tool ([tool set](runtime-and-mcp.md#the-mcp-facade)). | The reads, drafts, and mutates a tool exposes, plus the request right for the three deletion tools' `core.record.delete`; by construction no configuration, token, grant, or approval operation, because none has a tool. |
 | `cli_full` | Every registered operation except the non-token-issuable set. | Everything the account's role permits, including configuration operations for an owner, minus the six operations no token may carry. |
 | `alert_writer` | Exactly `current.item.create` and `current.item.close_by_source`, enumerated on purpose so the set never grows when an operation is added. | The two Current writes an external alert writer needs (a probe, a guardrail, a form): open an item and close it by its source pair. Issued per writer as a `cli` token by the operator command. Empty when Current is not installed, so issuance refuses `set_empty`. |
+
+A module can opt out of all four. A manifest that declares `package_sets = "explicit_only"` has
+every one of its own operations subtracted from each set, so no rule-set issuance and no connector
+grant (which is `agent_default`) reaches those operations, whatever the module adds later. The
+opt-out covers the module's own operations only: core operations that act on any module's records,
+such as `core.record.delete`, `core.audit.list`, `core.workspace.export`, `core.operation.get` and
+`core.operation.list`, keep their own sets and roles, so a module that must stay out of them keeps
+its records out of their reach. The flag travels with each registered operation, so the sets never
+depend on the loader's manifest table.
+A stored snapshot is never rewritten, but a token issued from a named set (a connector grant
+included) is narrowed each time it is presented, losing every operation of whatever module is
+`explicit_only` at that moment, so switching a loaded `default` module over takes it out of those
+tokens at once; a `module_read:<module_id>` token and an explicit operation list keep exactly what
+they were issued. The one named set that reaches it is
+`module_read:<module_id>`: that module's `read` operations and nothing else, resolved only for a
+registered `explicit_only` module and refused `set_not_issuable` for any other.
+It is how the operator command, which takes only a set name, issues the opt-in
+(`rheo token issue --set module_read:<module_id> --kind mcp`); the operator's permitted set holds
+those reads for that reason, never the module's writes. A session issuer can still name the
+module's operations in an explicit list its role permits.
 
 None of the four contains `core.tool.call`, the discover-then-call grant: each rule subtracts it
 and `alert_writer` does not name it, so it reaches a snapshot only when an issuance asks for it
