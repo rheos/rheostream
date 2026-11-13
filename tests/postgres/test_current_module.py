@@ -320,8 +320,14 @@ def test_a_row_tag_comes_from_the_type_line_then_the_source_kind(
     ).ref
     sourced = current.item("Sourced", source_kind="alert", source_ref="disk").ref
     plain = current.item("Plain", body="No type line here.").ref
+    lower = current.item("Lower", body="type: renewal-notice").ref
     tags = {i.ref: i.tag for i in current.ok("item.list").items}
-    assert tags == {typed: "bill-due", sourced: "alert", plain: None}
+    assert tags == {
+        typed: "bill-due",
+        sourced: "alert",
+        plain: None,
+        lower: "renewal-notice",
+    }
     assert current.get(typed).tag == "bill-due"
 
 

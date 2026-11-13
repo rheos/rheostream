@@ -122,14 +122,28 @@ export function DeskRow({
   const scroller = useRef<HTMLDivElement | null>(null);
   const leftTray = useRef<HTMLDivElement | null>(null);
   const touching = useRef(false);
+  /** Where the scroller sat when a finger went down; null when no swipe is
+   * armed. Only a touch that moves the row toward an end may run its action,
+   * so focus, a tap, a re-layout or a programmatic scroll never does. */
+  const swipeFrom = useRef<number | null>(null);
   const settle = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [result, setResult] = useState<OperationOutcome | null>(null);
-  const [leaving, setLeaving] = useState(false);
+  // The row version an action left from. The row reads as leaving only while
+  // it is still that version, so one that stays in view after a success (the
+  // All filter, snooze again) comes back live with its new revision.
+  const version = `${row.revision}:${row.status}`;
+  const [leftFrom, setLeftFrom] = useState<string | null>(null);
+  const leaving = leftFrom === version;
   const [snoozing, setSnoozing] = useState(false);
   const [pending, startTransition] = useTransition();
   const left = leftMove(row.status);
   const right = rightMove(row.status);
   const actionable = Boolean(submit);
+  // A timer reads the newest row, never the one from the render that set it.
+  const latest = useRef({ row, pending, left, right });
+  useLayoutEffect(() => {
+    latest.current = { row, pending, left, right };
+  });
 
   function close(smooth = true) {
     const el = scroller.current;
@@ -142,12 +156,22 @@ export function DeskRow({
     });
   }
   // Start closed, before the first paint after hydration. Until then the trays
-  // are not drawn, so the server's markup shows the row alone.
+  // are not drawn, so the server's markup shows the row alone. Close again
+  // whenever the row or its tray changes size (a folded section opening, a
+  // status change that swaps the tray), unless a finger is on it.
   useLayoutEffect(() => {
     const el = scroller.current;
+    const tray = leftTray.current;
     if (!el || !actionable) return;
     el.dataset.ready = "true";
     close(false);
+    if (typeof ResizeObserver === "undefined") return;
+    const watcher = new ResizeObserver(() => {
+      if (!touching.current) close(false);
+    });
+    watcher.observe(el);
+    if (tray) watcher.observe(tray);
+    return () => watcher.disconnect();
   }, [actionable]);
   useEffect(
     () => () => {
@@ -155,41 +179,49 @@ export function DeskRow({
     },
     [],
   );
-
   function run(move: Move) {
     if (!submit) return;
+    const target = latest.current.row;
     setResult(null);
-    setLeaving(true);
+    setLeftFrom(version);
     close(false);
     startTransition(async () => {
-      const outcome = await setStatus(submit, row, move.to);
+      const outcome = await setStatus(submit, target, move.to);
       setResult(outcome);
-      // A success refreshes the screen, which drops the row; anything else
-      // brings it back with the reason.
-      if (outcome.state !== "ok") setLeaving(false);
+      // A success refreshes the screen, which drops or updates the row;
+      // anything else brings it back with the reason.
+      if (outcome.state !== "ok") setLeftFrom(null);
     });
   }
   function snooze(until: Date) {
     if (!submit) return;
+    const target = latest.current.row;
     setSnoozing(false);
     setResult(null);
-    setLeaving(true);
+    setLeftFrom(version);
     close(false);
     startTransition(async () => {
-      const outcome = await setStatus(submit, row, "snoozed", until);
+      const outcome = await setStatus(submit, target, "snoozed", until);
       setResult(outcome);
-      if (outcome.state !== "ok") setLeaving(false);
+      if (outcome.state !== "ok") setLeftFrom(null);
     });
   }
   function checkEnds() {
     const el = scroller.current;
-    if (!el || touching.current || pending) return;
+    const from = swipeFrom.current;
+    const now = latest.current;
+    if (!el || touching.current || from === null || now.pending) return;
+    // One check per swipe.
+    swipeFrom.current = null;
+    if (getComputedStyle(el).overflowX === "visible") return;
     const end = el.scrollWidth - el.clientWidth;
-    if (el.scrollLeft <= 2 && left) run(left);
-    else if (end > 0 && el.scrollLeft >= end - 2) run(right);
+    if (end <= 0) return;
+    if (el.scrollLeft <= 2 && from > 2 && now.left) run(now.left);
+    else if (el.scrollLeft >= end - 2 && from < end - 2) run(now.right);
   }
   function scheduleCheck() {
     if (settle.current) clearTimeout(settle.current);
+    if (swipeFrom.current === null) return;
     settle.current = setTimeout(checkEnds, SETTLE_MS);
   }
 
@@ -258,8 +290,9 @@ export function DeskRow({
         ref={scroller}
         className={styles.swipe}
         onScroll={scheduleCheck}
-        onTouchStart={() => {
+        onTouchStart={(e) => {
           touching.current = true;
+          swipeFrom.current = e.currentTarget.scrollLeft;
         }}
         onTouchEnd={() => {
           touching.current = false;
@@ -267,6 +300,7 @@ export function DeskRow({
         }}
         onTouchCancel={() => {
           touching.current = false;
+          swipeFrom.current = null;
         }}
         onBlur={(e) => {
           if (!e.currentTarget.contains(e.relatedTarget as Node | null)) close();

@@ -69,7 +69,7 @@ def summary_query() -> Select[Any]:
     return select(t.item, unfinished_blocker(t.item.c.id).label("blocked"))
 
 
-TAG_LINE = re.compile(r"Type:[ \t]*([^\r\n]{1,60})")
+TAG_LINE = re.compile(r"Type:[ \t]*([^\r\n]{1,60})", re.IGNORECASE)
 
 
 def tag(row: Any) -> str | None:

@@ -521,8 +521,11 @@ export async function queue({ shell, query }: ScreenProps) {
             data-late="true"
             data-active={filters.overdue || undefined}
             aria-current={filters.overdue ? "true" : undefined}
+            // The count spans every unfinished item, watched and snoozed ones
+            // too, so the filter it opens does as well.
             href={withFilter(shell, query, {
               overdue: filters.overdue ? undefined : "1",
+              status: filters.overdue ? undefined : "all",
             })}
           >
             <Icon name="late" />

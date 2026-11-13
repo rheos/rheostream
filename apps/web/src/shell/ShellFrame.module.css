@@ -179,6 +179,11 @@
     white-space: nowrap;
   }
 
+  /* The scrolling nav clips anything drawn outside it, so the ring sits inside. */
+  .navLink:focus-visible {
+    outline-offset: calc(var(--rs-size-hairline) * -3);
+  }
+
   .main {
     padding-block: var(--rs-space-5);
   }
