@@ -1244,12 +1244,14 @@ a.rowTitle:hover {
     inset-inline-end: var(--rs-space-4);
     align-items: center;
     gap: var(--rs-space-1);
+    padding-inline-start: var(--rs-space-2);
+    background: color-mix(in oklab, var(--rs-color-surface-2) 60%, var(--rs-color-surface-1));
     opacity: 0;
     pointer-events: none;
     transition: opacity 120ms ease;
   }
   .swipe[data-ready] .trayLeft {
-    inset-inline-end: calc(var(--rs-space-4) + var(--rs-size-control) * 2 + var(--rs-space-2));
+    inset-inline-end: calc(var(--rs-space-4) + var(--rs-size-control) * 2 + var(--rs-space-1) + var(--rs-space-2));
   }
   .deskRow:hover .trayLeft,
   .deskRow:hover .trayRight,

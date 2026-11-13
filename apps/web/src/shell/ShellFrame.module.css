@@ -160,6 +160,7 @@
 
   .brand {
     flex: none;
+    font-size: var(--rs-font-size-md);
   }
 
   .nav {

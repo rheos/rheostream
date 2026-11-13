@@ -135,7 +135,11 @@ export function DeskRow({
     const el = scroller.current;
     const tray = leftTray.current;
     if (!el || !tray) return;
-    el.scrollTo({ left: tray.offsetWidth, behavior: smooth ? "smooth" : "instant" });
+    const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    el.scrollTo({
+      left: tray.offsetWidth,
+      behavior: smooth && !still ? "smooth" : "instant",
+    });
   }
   // Start closed, before the first paint after hydration. Until then the trays
   // are not drawn, so the server's markup shows the row alone.
