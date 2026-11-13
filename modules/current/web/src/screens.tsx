@@ -19,7 +19,9 @@ import {
   PRIORITY_LABEL,
   PROVENANCE_LABEL,
   STATUS_LABEL,
+  age,
   area as areaOf,
+  areaLook,
   areaLabel,
   areaLabels,
   author,
@@ -36,6 +38,8 @@ import {
   type Neighbour,
   type Project,
 } from "./data";
+import { ChipMenu, DeskRow, WokeSection, type DeskRowView } from "./desk";
+import { Icon } from "./icons";
 import styles from "./current.module.css";
 
 const PAGE = 25;
@@ -166,120 +170,12 @@ function PriorityMark({ priority }: { priority: ItemSummary["priority"] }) {
     </span>
   );
 }
-function Flags({ item }: { item: ItemSummary }) {
-  return (
-    <>
-      {item.woke ? <span className={styles.flagWoke}>Woke up</span> : null}
-      {item.overdue ? <span className={styles.flagLate}>Overdue</span> : null}
-      {item.blocked ? <span className={styles.flag}>Blocked</span> : null}
-      {item.status === "waiting" ? (
-        <span className={styles.flag}>Waiting</span>
-      ) : null}
-      {item.status === "snoozed" && !item.woke ? (
-        <span className={styles.flag}>Snoozed</span>
-      ) : null}
-      {item.status === "done" ? (
-        <span className={styles.flag}>Done</span>
-      ) : null}
-    </>
-  );
-}
-
-function ItemRows({
-  shell,
-  items,
-  labels,
-  projects,
-  label,
-  pick,
-  reloadHref,
-}: {
-  shell: ShellApi;
-  items: readonly ItemSummary[];
-  labels: ReadonlyMap<string, string>;
-  projects: ReadonlyMap<string, string>;
-  label: string;
-  /** The projects a row's project control offers; without them, no control. */
-  pick?: readonly PickableProject[];
-  /** Where "reload" goes when a row's item changed underneath it. */
-  reloadHref?: string;
-}) {
-  return (
-    <ul className={styles.rows} aria-label={label}>
-      {items.map((item) => {
-        const projectTitle = item.projectRef
-          ? projects.get(item.projectRef)
-          : undefined;
-        const status = shell.submit ? (
-          <StatusActions
-            zone={shell.timeZone}
-            submit={shell.submit}
-            itemRef={item.ref}
-            revision={item.revision}
-            status={item.status}
-            subject={item.title}
-            compact
-            reloadHref={reloadHref}
-            extra={
-              pick ? (
-                <ProjectPicker
-                  submit={shell.submit}
-                  itemRef={item.ref}
-                  revision={item.revision}
-                  subject={item.title}
-                  held={item.projectRef}
-                  projects={pick}
-                  reloadHref={reloadHref}
-                />
-              ) : null
-            }
-          />
-        ) : null;
-        return (
-          <li className={styles.row} key={item.ref}>
-            <div className={styles.rowMain}>
-              <a
-                className={styles.rowTitle}
-                href={shell.href("item", { ref: item.ref })}
-              >
-                {item.title}
-              </a>
-              <p className={styles.rowMeta}>
-                <PriorityMark priority={item.priority} />
-                <Flags item={item} />
-                {item.area ? (
-                  <span>{areaLabel(labels, item.area)}</span>
-                ) : null}
-                {projectTitle ? (
-                  <a href={shell.href("project", { ref: item.projectRef ?? "" })}>
-                    {projectTitle}
-                  </a>
-                ) : null}
-                {item.dueOn ? (
-                  <span className={item.overdue ? styles.late : undefined}>
-                    Due {day(item.dueOn)}
-                  </span>
-                ) : null}
-                {item.status === "snoozed" && item.snoozedUntil && !item.woke ? (
-                  <span>
-                    Until <LocalTime iso={item.snoozedUntil} zone={shell.timeZone} />
-                  </span>
-                ) : null}
-              </p>
-            </div>
-            {status}
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
 function Pager({
   shell,
   route,
   query,
   offset,
+  size = PAGE,
   shown,
   nextOffset,
 }: {
@@ -287,6 +183,7 @@ function Pager({
   route: string;
   query: ScreenProps["query"];
   offset: number;
+  size?: number;
   shown: number;
   nextOffset: number | null;
 }) {
@@ -298,7 +195,7 @@ function Pager({
           className={styles.secondary}
           href={shell.href(route, {
             ...query,
-            offset: String(Math.max(0, offset - PAGE)),
+            offset: String(Math.max(0, offset - size)),
           })}
         >
           Previous page
@@ -326,14 +223,15 @@ function Pager({
 // --- queue ------------------------------------------------------------------------
 
 const LIST_STATUSES = [
-  ["active", "Active"],
+  ["active", "In the queue"],
   ["open", "Open"],
-  ["waiting", "Waiting"],
+  ["waiting", "Watching"],
   ["snoozed", "Snoozed"],
   ["done", "Done"],
   ["all", "All"],
 ] as const;
 type ListStatus = (typeof LIST_STATUSES)[number][0];
+const QUEUE_PAGE = 50;
 
 /** The list filters a queue URL carries, bounded to what the operation accepts. */
 export function queueFilters(query: ScreenProps["query"]) {
@@ -354,6 +252,108 @@ export function queueFilters(query: ScreenProps["query"]) {
   };
 }
 
+/** A calendar date as "Jan 5", with the year only when it is not this one. */
+function shortDay(value: string | null, now: Date): string {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return "";
+  const d = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(d.valueOf())) return "";
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: d.getUTCFullYear() === now.getUTCFullYear() ? undefined : "numeric",
+    timeZone: "UTC",
+  }).format(d);
+}
+function untilText(iso: string, zone: string | undefined): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.valueOf())) return "";
+  const text = new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: zone ?? "UTC",
+  }).format(d);
+  return `Until ${text}${zone ? "" : " UTC"}`;
+}
+
+/** Everything a desk row shows, worked out here so the client gets text only. */
+export function deskRow(
+  shell: ShellApi,
+  item: ItemSummary,
+  labels: ReadonlyMap<string, string>,
+  now: Date,
+): DeskRowView {
+  const look = areaLook(item.area);
+  return {
+    ref: item.ref,
+    title: item.title,
+    status: item.status,
+    priority: item.priority,
+    revision: item.revision,
+    href: shell.href("item", { ref: item.ref }),
+    areaName: areaLabel(labels, item.area),
+    areaIcon: look.icon,
+    areaTone: look.tone,
+    tag: item.tag,
+    due: item.dueOn ? `Due ${shortDay(item.dueOn, now)}` : "",
+    overdue: item.overdue,
+    blocked: item.blocked,
+    until:
+      item.status === "snoozed" && item.snoozedUntil && !item.woke
+        ? untilText(item.snoozedUntil, shell.timeZone)
+        : "",
+    signals: item.eventCount,
+    age: age(item.updatedAt, now),
+    projectRef: item.projectRef,
+  };
+}
+
+function DeskRows({
+  shell,
+  items,
+  labels,
+  label,
+  pick,
+  reloadHref,
+}: {
+  shell: ShellApi;
+  items: readonly ItemSummary[];
+  labels: ReadonlyMap<string, string>;
+  label: string;
+  pick?: readonly PickableProject[];
+  reloadHref?: string;
+}) {
+  const now = new Date();
+  return (
+    <ul className={styles.desk} aria-label={label}>
+      {items.map((item) => (
+        <DeskRow
+          key={item.ref}
+          row={deskRow(shell, item, labels, now)}
+          submit={shell.submit}
+          zone={shell.timeZone}
+          projects={pick}
+          reloadHref={reloadHref}
+        />
+      ))}
+    </ul>
+  );
+}
+
+type QueueQuery = Record<string, string | undefined>;
+/** The queue's URL with one filter changed and paging reset. */
+function withFilter(
+  shell: ShellApi,
+  query: ScreenProps["query"],
+  change: QueueQuery,
+): string {
+  const next: QueueQuery = { ...query, ...change, offset: undefined };
+  for (const [key, value] of Object.entries(next))
+    if (value === undefined || value === "") delete next[key];
+  return shell.href("queue", next);
+}
+
 export async function queue({ shell, query }: ScreenProps) {
   const filters = queueFilters(query);
   const offset = pageOffset(query.offset);
@@ -367,7 +367,7 @@ export async function queue({ shell, query }: ScreenProps) {
       read(shell, "current.item.list", {
         ...filters,
         woke: splitWoke ? false : null,
-        limit: PAGE,
+        limit: QUEUE_PAGE,
         offset,
       }),
       splitWoke && offset === 0
@@ -381,7 +381,6 @@ export async function queue({ shell, query }: ScreenProps) {
   const areas = page(areaResult, areaOf).items;
   const labels = areaLabels(areas);
   const projects = page(projectResult, projectOf).items;
-  const projectTitles = new Map(projects.map((p) => [p.ref, p.title]));
   const list = page(listResult, itemSummary);
   const woke = page(wokeResult, itemSummary);
   const counts =
@@ -399,188 +398,202 @@ export async function queue({ shell, query }: ScreenProps) {
   const rowsProps = {
     shell,
     labels,
-    projects: projectTitles,
     pick: projectResult.state === "ok" ? pickable(projects) : undefined,
     reloadHref: shell.href("queue", query),
   };
+  const statusLabel =
+    filters.status === "active"
+      ? null
+      : (LIST_STATUSES.find(([v]) => v === filters.status)?.[1] ?? null);
+  const areaName = filters.area ? areaLabel(labels, filters.area) : null;
+  const projectTitle = filters.project_ref
+    ? (projects.find((p) => p.ref === filters.project_ref)?.title ?? "Project")
+    : null;
+  // Hidden fields carry the other filters through a search.
+  const carried = Object.entries({
+    status: filters.status === "active" ? undefined : filters.status,
+    area: filters.area ?? undefined,
+    project: filters.project_ref ?? undefined,
+    priority: filters.priority ?? undefined,
+    overdue: filters.overdue ? "1" : undefined,
+    blocked: filters.blocked ? "1" : undefined,
+  }).filter((e): e is [string, string] => e[1] !== undefined);
   return (
-    <Frame
-      shell={shell}
-      active="queue"
-      title="Queue"
-      description="What is in motion, most urgent first. Snoozed items come back here on their own."
-    >
-      {counts ? (
-        <ul className={styles.summary} aria-label="Summary">
-          {(
-            [
-              ["Active", counts.active, {}],
-              ["Woke up", counts.woke, {}],
-              ["Overdue", counts.overdue, { overdue: "1" }],
-              ["Blocked", counts.blocked, { blocked: "1" }],
-              ["Waiting", counts.byStatus.waiting, { status: "waiting" }],
-              ["Snoozed", counts.byStatus.snoozed, { status: "snoozed" }],
-            ] as const
-          ).map(([text, count, filter]) => (
-            <li
-              key={text}
-              className={
-                text === "Overdue" && count ? styles.summaryLate : undefined
-              }
-            >
-              <a href={shell.href("queue", filter)}>
-                <span className={styles.summaryLabel}>{text}</span>{" "}
-                <span className={styles.summaryCount}>{count}</span>
-              </a>
-            </li>
+    <section className={`${styles.surface} ${styles.deskSurface}`}>
+      <h1 className={styles.visuallyHidden}>Queue</h1>
+      <div className={styles.deskBar}>
+        <form
+          action={shell.href("queue")}
+          method="get"
+          className={styles.finder}
+          aria-label="Find items"
+        >
+          <Icon name="search" className={styles.finderIcon} />
+          <label htmlFor="current-q" className={styles.visuallyHidden}>
+            Words in titles, notes or comments
+          </label>
+          <input
+            id="current-q"
+            name="q"
+            defaultValue={query.q}
+            maxLength={512}
+            enterKeyHint="go"
+            autoComplete="off"
+            placeholder="Find items…"
+          />
+          {carried.map(([name, value]) => (
+            <input key={name} type="hidden" name={name} value={value} />
           ))}
-        </ul>
-      ) : null}
+        </form>
+        <a
+          className={styles.barIcon}
+          href={shell.href("projects")}
+          aria-label="Projects"
+          title="Projects"
+        >
+          <Icon name="folder" />
+        </a>
+        {shell.submit ? (
+          <a
+            className={styles.barAdd}
+            href={shell.href("new")}
+            aria-label="New item"
+            title="New item"
+          >
+            <Icon name="plus" />
+          </a>
+        ) : null}
+      </div>
+      <nav className={styles.chips} aria-label="Filter the queue">
+        <ChipMenu
+          label="Status"
+          icon="layers"
+          value={statusLabel}
+          options={LIST_STATUSES.map(([value, text]) => ({
+            label: text,
+            href: withFilter(shell, query, {
+              status: value === "active" ? undefined : value,
+            }),
+            current: filters.status === value,
+          }))}
+        />
+        <ChipMenu
+          label="Area"
+          icon="grid"
+          value={areaName}
+          options={[
+            {
+              label: "Any area",
+              href: withFilter(shell, query, { area: undefined }),
+              current: !filters.area,
+            },
+            ...areas
+              .filter((a) => !a.retired || a.key === filters.area)
+              .map((a) => ({
+                label: a.label,
+                href: withFilter(shell, query, { area: a.key }),
+                current: filters.area === a.key,
+                tone: areaLook(a.key).tone,
+              })),
+          ]}
+        />
+        <ChipMenu
+          label="Priority"
+          icon="flag"
+          value={filters.priority ? PRIORITY_LABEL[filters.priority as ItemSummary["priority"]] : null}
+          options={[
+            {
+              label: "Any priority",
+              href: withFilter(shell, query, { priority: undefined }),
+              current: !filters.priority,
+            },
+            ...PRIORITIES.map((p) => ({
+              label: PRIORITY_LABEL[p],
+              href: withFilter(shell, query, { priority: p }),
+              current: filters.priority === p,
+              priority: p,
+            })),
+          ]}
+        />
+        {counts && (counts.overdue || filters.overdue) ? (
+          <a
+            className={styles.chip}
+            data-late="true"
+            data-active={filters.overdue || undefined}
+            aria-current={filters.overdue ? "true" : undefined}
+            href={withFilter(shell, query, {
+              overdue: filters.overdue ? undefined : "1",
+            })}
+          >
+            <Icon name="late" />
+            Overdue <span className={styles.chipCount}>{counts.overdue}</span>
+          </a>
+        ) : null}
+        {counts && (counts.blocked || filters.blocked) ? (
+          <a
+            className={styles.chip}
+            data-active={filters.blocked || undefined}
+            aria-current={filters.blocked ? "true" : undefined}
+            href={withFilter(shell, query, {
+              blocked: filters.blocked ? undefined : "1",
+            })}
+          >
+            <Icon name="blocked" />
+            Blocked <span className={styles.chipCount}>{counts.blocked}</span>
+          </a>
+        ) : null}
+        {projectTitle ? (
+          <a
+            className={styles.chip}
+            data-active="true"
+            href={withFilter(shell, query, { project: undefined })}
+            aria-label={`Remove the project filter: ${projectTitle}`}
+          >
+            <Icon name="folder" />
+            <span className={styles.chipText}>{projectTitle}</span>
+            <Icon name="close" className={styles.chipChevron} />
+          </a>
+        ) : null}
+        {filtered ? (
+          <a className={styles.chipClear} href={shell.href("queue")}>
+            Clear
+          </a>
+        ) : null}
+      </nav>
       {listResult.state !== "ok" ? (
         <Failure outcome={listResult} />
       ) : (
         <>
-          <form
-            action={shell.href("queue")}
-            method="get"
-            className={styles.toolbar}
-            aria-label="Filter the queue"
-          >
-            <div className={`${styles.field} ${styles.grow}`}>
-              <label htmlFor="current-q">Words</label>
-              <input
-                id="current-q"
-                name="q"
-                defaultValue={query.q}
-                maxLength={512}
-                placeholder="Words in titles, notes or comments"
-              />
-            </div>
-            <div className={styles.field}>
-              <label htmlFor="current-status">Status</label>
-              <select
-                id="current-status"
-                name="status"
-                defaultValue={filters.status}
-              >
-                {LIST_STATUSES.map(([value, text]) => (
-                  <option key={value} value={value}>
-                    {text}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className={styles.field}>
-              <label htmlFor="current-area">Area</label>
-              <select
-                id="current-area"
-                name="area"
-                defaultValue={filters.area ?? ""}
-              >
-                <option value="">Any area</option>
-                {areas.map((a) => (
-                  <option key={a.key} value={a.key}>
-                    {a.retired ? `${a.label} (retired)` : a.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className={styles.field}>
-              <label htmlFor="current-project">Project</label>
-              <select
-                id="current-project"
-                name="project"
-                defaultValue={filters.project_ref ?? ""}
-              >
-                <option value="">Any project</option>
-                {projects.map((p) => (
-                  <option key={p.ref} value={p.ref}>
-                    {p.title}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className={styles.field}>
-              <label htmlFor="current-priority">Priority</label>
-              <select
-                id="current-priority"
-                name="priority"
-                defaultValue={filters.priority ?? ""}
-              >
-                <option value="">Any priority</option>
-                {priorityOptions.map((p) => (
-                  <option key={p.value} value={p.value}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className={styles.checks}>
-              <label>
-                <input
-                  type="checkbox"
-                  name="overdue"
-                  value="1"
-                  defaultChecked={filters.overdue === true}
-                />{" "}
-                Overdue
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  name="blocked"
-                  value="1"
-                  defaultChecked={filters.blocked === true}
-                />{" "}
-                Blocked
-              </label>
-            </div>
-            <div className={styles.toolbarActions}>
-              <button className={styles.secondary}>Apply</button>
-              {filtered ? (
-                <a className={styles.quietLink} href={shell.href("queue")}>
-                  Clear
-                </a>
-              ) : null}
-            </div>
-          </form>
           {woke.items.length ? (
-            <section className={styles.wokeSection} aria-labelledby="woke">
-              <h2 id="woke">Woke up</h2>
-              <p className={styles.meta}>
-                Their snooze time has passed. Pick them up, or snooze again.
-              </p>
-              <ItemRows {...rowsProps} items={woke.items} label="Woke up" />
+            <WokeSection
+              items={woke.items.map(({ ref, revision }) => ({ ref, revision }))}
+              submit={shell.submit}
+            >
+              <DeskRows {...rowsProps} items={woke.items} label="Woke up" />
               {woke.nextOffset !== null ? (
-                <p className={styles.meta}>
-                  More woke items are waiting. Finish or snooze these to see
-                  them.
+                <p className={styles.deskFoot}>
+                  More woke items are waiting. Finish or snooze these to see them.
                 </p>
               ) : null}
-            </section>
+            </WokeSection>
           ) : null}
           {list.items.length ? (
-            <section aria-labelledby="in-motion">
-              <h2 id="in-motion" className={styles.listHeading}>
-                {splitWoke ? "In motion" : "Items"}
-              </h2>
-              <ItemRows {...rowsProps} items={list.items} label="Items" />
-            </section>
+            <DeskRows
+              {...rowsProps}
+              items={list.items}
+              label={splitWoke ? "In the queue" : "Items"}
+            />
           ) : woke.items.length ? null : (
             <div className={styles.empty}>
-              <h2>{filtered ? "No items match" : "Nothing in motion"}</h2>
+              <h2>{filtered ? "No items match" : "Nothing in the queue"}</h2>
               <p>
                 {filtered
                   ? "Try other words or fewer filters."
-                  : "Add an item here, or ask a connected agent to add one for you."}
+                  : "Add an item with +, or ask a connected agent to add one."}
               </p>
               {filtered ? (
                 <a className={styles.secondary} href={shell.href("queue")}>
                   Clear filters
-                </a>
-              ) : shell.submit ? (
-                <a className={styles.primary} href={shell.href("new")}>
-                  New item
                 </a>
               ) : null}
             </div>
@@ -590,12 +603,13 @@ export async function queue({ shell, query }: ScreenProps) {
             route="queue"
             query={query}
             offset={offset}
+            size={QUEUE_PAGE}
             shown={list.items.length}
             nextOffset={list.nextOffset}
           />
         </>
       )}
-    </Frame>
+    </section>
   );
 }
 
@@ -1272,11 +1286,10 @@ export async function project({ shell, query }: ScreenProps) {
             {itemResult.state !== "ok" ? (
               <Failure outcome={itemResult} />
             ) : list.items.length ? (
-              <ItemRows
+              <DeskRows
                 shell={shell}
                 items={list.items}
                 labels={labels}
-                projects={new Map()}
                 label="Project items"
                 pick={
                   projectResult?.state === "ok" ? pickable(allProjects) : undefined

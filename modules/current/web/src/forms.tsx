@@ -338,7 +338,13 @@ export function ProjectPicker({
   held,
   projects,
   reloadHref,
+  buttonClass,
+  buttonText,
 }: {
+  /** The trigger's look where a row draws it as a swipe tray button. */
+  buttonClass?: string;
+  /** A visible label beside the icon, for the tray. */
+  buttonText?: string;
   submit: Submit;
   itemRef: string;
   revision: number;
@@ -399,13 +405,14 @@ export function ProjectPicker({
     <>
       <button
         type="button"
-        className={styles.iconButton}
+        className={buttonClass ?? styles.iconButton}
         aria-label={`${verb}: ${subject}`}
         title={verb}
         aria-haspopup="dialog"
         onClick={open}
       >
         <FolderIcon plus={!held} />
+        {buttonText ? <span aria-hidden="true">{buttonText}</span> : null}
       </button>
       <dialog
         ref={dialog}
@@ -585,7 +592,7 @@ function savedStatus(result: unknown): string {
 
 const VERB: Record<Status, string> = {
   open: "Open",
-  waiting: "Wait",
+  waiting: "Watch",
   snoozed: "Snooze",
   done: "Done",
 };

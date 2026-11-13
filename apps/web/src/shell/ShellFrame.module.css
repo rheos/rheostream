@@ -5,8 +5,10 @@
  * the hairline, not by background alone: the seed's surfaces are close in
  * luminance by design, so an edge carries the separation.
  *
- * Narrow screens: the header wraps into rows (brand and settings, then
- * navigation), and every child may shrink below its content width.
+ * Narrow screens: brand, navigation and settings stay on one row (#563). The
+ * navigation takes the room left between them and scrolls sideways if a
+ * workspace has more modules than fit, so the settings button never drops to a
+ * row of its own.
  */
 
 .frame {
@@ -148,6 +150,32 @@
   .main,
   .footer {
     padding-inline: var(--rs-space-4);
+  }
+
+  .header {
+    flex-wrap: nowrap;
+    gap: var(--rs-space-2);
+    padding-block: var(--rs-space-1);
+  }
+
+  .brand {
+    flex: none;
+  }
+
+  .nav {
+    flex: 1 1 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .navList {
+    flex-wrap: nowrap;
+    gap: 0;
+  }
+
+  .navLink {
+    padding-inline: var(--rs-space-2);
+    white-space: nowrap;
   }
 
   .main {
