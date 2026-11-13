@@ -21,16 +21,19 @@ The fourth is enumerated on purpose, so it cannot grow when an operation is adde
 four.** Each evaluator subtracts every operation such a module registered
 (:func:`explicit_only_operations`), so no rule-set issuance, no existing set name and
 no connector grant (``agent_default``, bounded by role) taken after it loads reaches
-it, whatever the module adds later. A snapshot never changes, so this is a property
-of a module that is ``explicit_only`` from its first load; switching a loaded
-``default`` module over leaves earlier snapshots holding what they held until they
-are revoked. The one named set that reaches it is ``module_read:<module_id>``
-(:func:`module_read`): that module's ``READ`` operations and nothing else,
-resolved only for a registered ``explicit_only`` module, so the operator command,
-which takes only a set name, can issue the opt-in. :func:`package_set` resolves both
-kinds of name. The opt-out is read from the registration itself
-(:attr:`RegisteredOperation.explicit_only`, set by the loader), never from the
-loader's manifest table, so clearing or half-filling that table fails closed.
+it, whatever the module adds later. A stored snapshot is never rewritten, but every
+reader of one goes through :func:`effective_operations`, which takes the current
+``explicit_only`` modules' operations out of any token issued from a named set (an
+unknown or legacy set name included) and leaves a ``module_read`` token and an
+explicit list as they were issued, so switching a loaded ``default`` module over
+takes it out of earlier routine tokens at once. The one named set that reaches it
+is ``module_read:<module_id>`` (:func:`module_read`): that module's ``READ``
+operations and nothing else, resolved only for a registered ``explicit_only``
+module, so the operator command, which takes only a set name, can issue the opt-in.
+:func:`package_set` resolves both kinds of name. The opt-out is read from the
+registration itself (:attr:`RegisteredOperation.explicit_only`, set by the loader),
+never from the loader's manifest table, so clearing or half-filling that table fails
+closed.
 
 :class:`ToolRegistry` is also the MCP facade's tool table
 (``apps/mcp/src/rheo_app_mcp/tools.py`` lists exactly what this registry holds --
@@ -667,6 +670,25 @@ def explicit_only_operations() -> frozenset[str]:
 
 MODULE_READ_PREFIX: Final = "module_read:"
 """``module_read:<module_id>`` names the opt-in set of one ``explicit_only`` module."""
+
+
+def effective_operations(
+    set_name: str | None, snapshot: frozenset[str]
+) -> frozenset[str]:
+    """A stored snapshot as it may be used now.
+
+    ``set_name`` is ``access_token.set_name``. ``None`` (a session's or operator's
+    explicit list, a runtime or bridge token) and ``module_read:<module_id>`` keep
+    the snapshot exactly. Every other name -- the four routine sets, a connector
+    grant's ``agent_default``, and any unknown or legacy name, which fails closed --
+    loses every operation of a module that is ``explicit_only`` now, read from the
+    live registry (:func:`explicit_only_operations`). Only ever subtracts, so a
+    default module's operations are never lost, and the stored rows are never
+    rewritten: switching the module back to ``default`` restores them.
+    """
+    if set_name is None or set_name.startswith(MODULE_READ_PREFIX):
+        return snapshot
+    return snapshot - explicit_only_operations()
 
 
 def module_read(module_id: str) -> frozenset[str]:

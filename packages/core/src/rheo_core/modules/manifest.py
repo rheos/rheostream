@@ -1234,11 +1234,12 @@ class ModuleManifest(BaseModel):
 
     ``default``: ``read_only``, ``agent_default`` and ``cli_full`` take them by their
     rules. ``explicit_only``: no named package set ever does, so no rule-set
-    issuance or connector grant snapshotted while it is loaded reaches the module's
-    own operations; core operations on its records keep their own sets. Snapshots
-    never change, so set it from the module's first release, or revoke the tokens
-    issued before switching it. A token reaches its operations only by naming them:
-    ``module_read:<module_id>`` (its ``READ`` operations, the one set the operator
+    issuance or connector grant reaches the module's own operations; core
+    operations on its records keep their own sets. A token issued from a named set
+    before the switch loses the module's operations at presentation; a
+    ``module_read`` token or an explicit list keeps what it was issued. A token
+    reaches its operations only by naming them: ``module_read:<module_id>`` (its
+    ``READ`` operations, the one set the operator
     command can issue for it) or an explicit operation list a session issuer's own
     role permits (``rheo_core.tokens.sets``)."""
 

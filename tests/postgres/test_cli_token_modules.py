@@ -22,6 +22,8 @@ in the session. Each table is swapped for a copy (or a fresh instance) through
 ``monkeypatch``, which puts the original back on teardown.
 """
 
+import dataclasses
+import hashlib
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import EntryPoint
@@ -33,6 +35,7 @@ from conftest import ClusterSession
 from harness.modules import install, manifest, publish
 from pydantic import BaseModel, ConfigDict
 from rheo_app_cli.main import main
+from rheo_app_mcp.tools import call_tool, list_tools
 from rheo_contracts import (
     AuditSpec,
     Idempotency,
@@ -42,22 +45,42 @@ from rheo_contracts import (
     ToolDeclaration,
     WorkspaceContext,
 )
+from rheo_core.approvals.guards import _permission_detail
 from rheo_core.audit import sink as sink_module
+from rheo_core.boundary.context import Refusal
+from rheo_core.boundary.factories import (
+    context_from_operation,
+    context_from_session,
+    context_from_token,
+)
 from rheo_core.deletion.registry import OwnedDeletionRegistry
 from rheo_core.modules import ENTRY_POINT_GROUP, discovered
 from rheo_core.modules import loader as loader_module
-from rheo_core.operations.registry import REGISTRY
+from rheo_core.operations import dispatch
+from rheo_core.operations.core_ops import TOKEN_ISSUE
+from rheo_core.operations.dispatch import OperationOutcome
+from rheo_core.operations.refusals import OPERATION_NOT_PERMITTED
+from rheo_core.operations.registry import REGISTRY, Authorized
 from rheo_core.redaction.registry import RenderingRegistry
 from rheo_core.refs.resolver import RESOLVERS
+from rheo_core.sessions import create_session, mint_host_secret, switch_workspace
 from rheo_core.settings.schema import REGISTRY as SETTINGS_REGISTRY
 from rheo_core.settings.schema import SettingsRegistry
 from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.control_plane import (
     get_access_token,
+    insert_access_token,
+    insert_access_token_operations,
     list_access_token_operations,
 )
-from rheo_core.tokens.issue import connector_operations
-from rheo_core.tokens.sets import PACKAGE_SETS, TOOL_REGISTRY, package_set
+from rheo_core.tokens.format import mint
+from rheo_core.tokens.issue import connector_operations, issue_connector_token
+from rheo_core.tokens.sets import (
+    PACKAGE_SETS,
+    TOOL_REGISTRY,
+    explicit_only_operations,
+    package_set,
+)
 
 pytestmark = pytest.mark.postgres
 
@@ -91,6 +114,7 @@ def _issue(
     *,
     set_name: str,
     kind: str,
+    discover: bool = False,
 ) -> tuple[int, str, str]:
     capsys.readouterr()
     code = main(
@@ -105,6 +129,7 @@ def _issue(
             set_name,
             "--kind",
             kind,
+            *(["--discover"] if discover else []),
         ]
     )
     out, err = capsys.readouterr()
@@ -296,20 +321,36 @@ VAULT_MANIFEST: Final = manifest(
 Owner-only, so an owner's role reaches every operation and only the set decides."""
 
 
-@pytest.fixture
-def vault_beside_current(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Discovery sees the real Current and the fabricated opt-in module, and the
-    deployment allows both, so the command loads both."""
+VAULT_DEFAULT_MANIFEST: Final = VAULT_MANIFEST.model_copy(
+    update={"package_sets": "default"}
+)
+"""The same module before it opted out: every named set takes its operations."""
+
+
+def _publish_vault(monkeypatch: pytest.MonkeyPatch, attribute: str) -> None:
     current = [entry for entry in discovered() if entry.name == CURRENT]
     assert current
     publish(
         monkeypatch,
         *current,
         EntryPoint(
-            name=VAULT, value=f"{__name__}:VAULT_MANIFEST", group=ENTRY_POINT_GROUP
+            name=VAULT, value=f"{__name__}:{attribute}", group=ENTRY_POINT_GROUP
         ),
     )
     install(monkeypatch, CURRENT, VAULT)
+
+
+@pytest.fixture
+def vault_beside_current(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Discovery sees the real Current and the fabricated opt-in module, and the
+    deployment allows both, so the command loads both."""
+    _publish_vault(monkeypatch, "VAULT_MANIFEST")
+
+
+@pytest.fixture
+def vault_default_beside_current(monkeypatch: pytest.MonkeyPatch) -> None:
+    """As :func:`vault_beside_current`, with the vault still a default module."""
+    _publish_vault(monkeypatch, "VAULT_DEFAULT_MANIFEST")
 
 
 @pytest.mark.usefixtures("isolated_process_tables", "vault_beside_current")
@@ -421,3 +462,351 @@ def test_module_read_refuses_a_default_or_unknown_module(
     assert code == 1
     assert out == ""
     assert err.startswith("set_not_issuable"), err
+
+
+# --- a default module switched to explicit_only: narrowed at presentation (#537) ---
+
+VAULT_OPERATIONS: Final = frozenset({VAULT_GET, VAULT_LIST, VAULT_ADD})
+VAULT_GET_TOOL: Final = f"{VAULT}_get"
+SESSION_HOST: Final = "example.test"
+_FAR_FUTURE: Final = datetime(2999, 1, 1, tzinfo=UTC)
+
+
+def _switch_vault_to_explicit_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The next deploy loads the vault ``explicit_only``: its registrations carry the
+    flag, and no stored token row is touched."""
+    for name in VAULT_OPERATIONS:
+        monkeypatch.setitem(
+            REGISTRY._operations,
+            name,
+            dataclasses.replace(REGISTRY._operations[name], explicit_only=True),
+        )
+
+
+def _present(value: str, surface: str) -> WorkspaceContext:
+    ctx = context_from_token(value, surface)
+    assert isinstance(ctx, WorkspaceContext), ctx
+    return ctx
+
+
+def _scope(value: str, surface: str) -> frozenset[str]:
+    """The operation set the token presents with: always a closed list."""
+    operation_set = _present(value, surface).operation_set
+    assert isinstance(operation_set, frozenset), operation_set
+    return operation_set
+
+
+def _vault_enabled(ctx: WorkspaceContext) -> WorkspaceContext:
+    """``ctx`` with the vault enabled, so module enablement is not what decides."""
+    return ctx.model_copy(update={"enabled_modules": ctx.enabled_modules | {VAULT}})
+
+
+def _issued(
+    capsys: pytest.CaptureFixture[str],
+    workspace: UUID,
+    account: UUID,
+    *,
+    set_name: str,
+    kind: str,
+    discover: bool = False,
+) -> tuple[str, UUID]:
+    """The value and id of a token the operator command issued."""
+    code, out, err = _issue(
+        capsys, workspace, account, set_name=set_name, kind=kind, discover=discover
+    )
+    assert code == 0, err
+    return out.strip(), _token_id(err)
+
+
+def _stored(cluster: ClusterSession, token_id: UUID) -> frozenset[str]:
+    with cluster.backend.control_engine.connect() as connection:
+        return list_access_token_operations(connection, token_id)
+
+
+def _session_ctx(workspace: UUID, account: UUID) -> WorkspaceContext:
+    session_row = create_session(account)
+    secret = mint_host_secret(session_row.id, SESSION_HOST)
+    assert switch_workspace(session_row.id, workspace) is None
+    ctx = context_from_session(secret, SESSION_HOST)
+    assert isinstance(ctx, WorkspaceContext), ctx
+    return ctx
+
+
+def _inserted(
+    cluster: ClusterSession,
+    workspace: UUID,
+    account: UUID,
+    *,
+    set_name: str | None,
+    operations: frozenset[str],
+) -> str:
+    """A ``cli`` token row written outside ``core.token.issue``, with ``set_name``."""
+    value, raw = mint("cli")
+    with cluster.backend.control_engine.begin() as connection:
+        row = insert_access_token(
+            connection,
+            account_id=account,
+            workspace_id=workspace,
+            kind="cli",
+            issued_from="operator",
+            token_hash=hashlib.sha256(raw).digest(),
+            set_name=set_name,
+            purpose=None,
+            expires_at=_FAR_FUTURE,
+        )
+        insert_access_token_operations(
+            connection, token_id=row.id, operation_names=sorted(operations)
+        )
+    return value
+
+
+def _error_text(outcome: OperationOutcome) -> str | None:
+    return None if outcome.error is None else outcome.error.error_text
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "vault_default_beside_current")
+def test_routine_sets_lose_a_module_switched_to_explicit_only_at_presentation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """Issued while the vault was default, each routine token holds vault
+    operations; after the switch none presents with one, the stored rows are
+    unchanged, and dispatch refuses the vault read on the set, not on enablement."""
+    tokens = [
+        (
+            *_issued(capsys, workspace, owner_account_id, set_name=name, kind=kind),
+            surface,
+        )
+        for name, kind, surface in (
+            ("cli_full", "cli", "api"),
+            ("read_only", "cli", "api"),
+            ("agent_default", "mcp", "mcp"),
+        )
+    ]
+    stored = {token_id: _stored(cluster, token_id) for _, token_id, _ in tokens}
+    for value, token_id, surface in tokens:
+        assert VAULT_GET in stored[token_id]
+        assert "current.item.get" in stored[token_id]
+        before = _present(value, surface)
+        assert before.operation_set == stored[token_id]
+        assert isinstance(
+            REGISTRY.authorize(_vault_enabled(before), VAULT_GET), Authorized
+        )
+
+    _switch_vault_to_explicit_only(monkeypatch)
+
+    for value, token_id, surface in tokens:
+        after = _scope(value, surface)
+        assert after == stored[token_id] - VAULT_OPERATIONS
+        assert "current.item.get" in after
+        assert _stored(cluster, token_id) == stored[token_id]  # no row rewrite
+        refused = REGISTRY.authorize(
+            _vault_enabled(_present(value, surface)), VAULT_GET
+        )
+        assert isinstance(refused, Refusal) and refused.state == OPERATION_NOT_PERMITTED
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "vault_default_beside_current")
+def test_the_facade_stops_listing_and_calling_a_switched_modules_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """Direct listing, the discover catalogue and ``operations_call`` all follow the
+    narrowed scope. ``_vault_handler`` raises, so a call that got through fails."""
+    direct_value, _ = _issued(
+        capsys, workspace, owner_account_id, set_name="agent_default", kind="mcp"
+    )
+    discover_value, _ = _issued(
+        capsys,
+        workspace,
+        owner_account_id,
+        set_name="agent_default",
+        kind="mcp",
+        discover=True,
+    )
+
+    def catalogue(ctx: WorkspaceContext) -> list[str]:
+        outcome = call_tool(ctx, "operations_catalog", {"limit": 500}, consumers=None)
+        assert outcome.ok, outcome
+        return [entry.name for entry in outcome.result.tools]  # type: ignore[union-attr]
+
+    direct = _vault_enabled(_present(direct_value, "mcp"))
+    discovering = _vault_enabled(_present(discover_value, "mcp"))
+    assert VAULT_GET_TOOL in {tool.name for tool in list_tools(direct)}
+    assert VAULT_GET_TOOL in catalogue(discovering)
+
+    _switch_vault_to_explicit_only(monkeypatch)
+
+    direct = _vault_enabled(_present(direct_value, "mcp"))
+    discovering = _vault_enabled(_present(discover_value, "mcp"))
+    assert VAULT_GET_TOOL not in {tool.name for tool in list_tools(direct)}
+    assert VAULT_GET_TOOL not in catalogue(discovering)
+    by_name = call_tool(direct, VAULT_GET_TOOL, {}, consumers=None)
+    generic = call_tool(
+        discovering,
+        "operations_call",
+        {"name": VAULT_GET_TOOL, "input": {}},
+        consumers=None,
+    )
+    assert by_name.state == "not_found", by_name
+    assert generic.state == by_name.state, generic
+    assert _error_text(generic) == _error_text(by_name)
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "vault_default_beside_current")
+def test_a_connector_grant_loses_a_switched_module_at_presentation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    _issued(capsys, workspace, owner_account_id, set_name="read_only", kind="cli")
+    # The command above loaded the default vault into this process.
+    with cluster.backend.control_engine.begin() as connection:
+        token_id, value, _ = issue_connector_token(
+            connection,
+            account_id=owner_account_id,
+            workspace_id=workspace,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    stored = _stored(cluster, token_id)
+    assert {VAULT_GET, VAULT_ADD} <= stored  # owner role, the two vault tools
+    assert _scope(value, "mcp") == stored
+
+    _switch_vault_to_explicit_only(monkeypatch)
+
+    after = _scope(value, "mcp")
+    assert after == stored - VAULT_OPERATIONS
+    assert "current.item.get" in after
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "vault_default_beside_current")
+def test_an_explicit_list_keeps_what_it_was_issued_after_the_switch(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """A session's explicit list is kept whole by the same switch that narrows a
+    routine token beside it."""
+    routine_value, routine_id = _issued(
+        capsys, workspace, owner_account_id, set_name="cli_full", kind="cli"
+    )
+    outcome = dispatch(
+        _session_ctx(workspace, owner_account_id),
+        TOKEN_ISSUE,
+        {"kind": "cli", "operations": [VAULT_GET, VAULT_ADD, "current.item.get"]},
+    )
+    assert outcome.ok, outcome
+    result = outcome.result
+    assert result is not None
+    explicit_value: str = result.value  # type: ignore[attr-defined]
+    explicit_id: UUID = result.token_id  # type: ignore[attr-defined]
+    explicit = _stored(cluster, explicit_id)
+    assert explicit == {VAULT_GET, VAULT_ADD, "current.item.get"}
+
+    _switch_vault_to_explicit_only(monkeypatch)
+
+    assert _scope(explicit_value, "api") == explicit
+    routine = _stored(cluster, routine_id)
+    assert VAULT_OPERATIONS <= routine
+    assert _scope(routine_value, "api") == routine - VAULT_OPERATIONS
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "vault_beside_current")
+def test_a_module_read_token_keeps_the_opt_in_reads_at_presentation(
+    capsys: pytest.CaptureFixture[str],
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    value, _ = _issued(
+        capsys,
+        workspace,
+        owner_account_id,
+        set_name=f"module_read:{VAULT}",
+        kind="mcp",
+    )
+    # A routine name would strip both: the vault is opt-in in this process.
+    assert {VAULT_GET, VAULT_LIST} <= explicit_only_operations()
+    assert _scope(value, "mcp") == {VAULT_GET, VAULT_LIST}
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "vault_beside_current")
+def test_an_unknown_set_name_is_narrowed_as_routine(
+    capsys: pytest.CaptureFixture[str],
+    cluster: ClusterSession,
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """A row naming a set nothing resolves fails closed; the same row with no set
+    name, an explicit list, keeps the vault read."""
+    _issued(capsys, workspace, owner_account_id, set_name="read_only", kind="cli")
+    held = frozenset({VAULT_GET, "current.item.get"})
+    legacy = _inserted(
+        cluster, workspace, owner_account_id, set_name="legacy_probe", operations=held
+    )
+    unnamed = _inserted(
+        cluster, workspace, owner_account_id, set_name=None, operations=held
+    )
+
+    assert _scope(legacy, "api") == {"current.item.get"}
+    assert _scope(unnamed, "api") == held
+
+
+@pytest.mark.usefixtures("isolated_process_tables", "vault_default_beside_current")
+def test_a_stored_caller_and_the_approval_guard_follow_the_narrowing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    workspace: UUID,
+    owner_account_id: UUID,
+) -> None:
+    """A run, continuation or approved execution rebuilds its token caller through
+    ``context_from_operation``; an approval's actor guard reads the token's scope.
+    Both narrow exactly as presentation does."""
+    _, token_id = _issued(
+        capsys, workspace, owner_account_id, set_name="cli_full", kind="cli"
+    )
+
+    def rebuilt() -> WorkspaceContext:
+        ctx = context_from_operation(
+            workspace,
+            actor_kind="token",
+            actor_id=token_id,
+            audience_kind="token",
+            audience_id=token_id,
+            entry="api",
+            purpose=None,
+        )
+        assert isinstance(ctx, WorkspaceContext), ctx
+        return ctx
+
+    def detail() -> str | None:
+        return _permission_detail(
+            workspace,
+            actor_kind="token",
+            actor_id=token_id,
+            roles=frozenset({Role.OWNER}),
+            operation_name=VAULT_ADD,
+            whose="the gated actor",
+            now=datetime.now(UTC),
+        )
+
+    before = rebuilt().operation_set
+    assert isinstance(before, frozenset) and VAULT_ADD in before
+    assert detail() is None
+
+    _switch_vault_to_explicit_only(monkeypatch)
+
+    narrowed = rebuilt().operation_set
+    assert isinstance(narrowed, frozenset)
+    assert not narrowed & VAULT_OPERATIONS
+    assert "current.item.get" in narrowed
+    text = detail()
+    assert text is not None and f"no longer permits {VAULT_ADD}" in text
