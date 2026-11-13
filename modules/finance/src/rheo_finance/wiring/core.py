@@ -1,10 +1,11 @@
 """The finance context over core: the workspace's layout, its sessions, the CLI's
 workspace.
 
-``context_over_core`` builds the ``FinanceContext`` a tick or a command dispatches
-with: settings from the bound layout's data directory, the system clock, and
-``operations.with_core_sessions`` over ``open_unit_of_work``, so every operation runs on
-a fresh core session as ``finance_owner`` or ``finance_reader``.
+``handler_context`` builds the ``FinanceContext`` with settings from the bound layout's
+data directory and the system clock. ``context_over_core`` is that context with
+``operations.with_core_sessions`` over ``open_unit_of_work``, so every operation a tick
+or a command dispatches runs on a fresh core session as ``finance_owner`` or
+``finance_reader``.
 
 The CLI names its workspace with ``FINANCE_WORKSPACE_ID`` (a UUID, not a secret) and
 reaches it as the operator; the module must be enabled there and the layout must
@@ -46,6 +47,28 @@ def layout_for(core_ctx: WorkspaceContext) -> db.FinanceLayout:
     return db.layout_under(workspace_dir(core_ctx, Purpose.UPLOADS))
 
 
+def handler_context(
+    role: Role,
+    *,
+    model_client: ModelClient | None = None,
+    snapshot_provider: SnapshotProvider = txn_snapshot,
+    progress: Callable[[], None] | None = None,
+) -> FinanceContext:
+    """The finance context under the bound layout, with no databases: what a handler
+    is given (``dispatch`` clears them too), so it can neither open a session nor
+    dispatch again. The read adapter (``wiring.reads``) runs a handler with it."""
+    data = db.data_dir()
+    return FinanceContext(
+        settings=load_settings(settings_path(data)),
+        clock=SystemClock(),
+        paths=FinancePaths(data=data),
+        role=role,
+        snapshot_provider=snapshot_provider,
+        model_client=model_client,
+        progress=progress if progress is not None else no_progress,
+    )
+
+
 def context_over_core(
     core_ctx: WorkspaceContext,
     role: Role,
@@ -54,19 +77,15 @@ def context_over_core(
     snapshot_provider: SnapshotProvider = txn_snapshot,
     progress: Callable[[], None] | None = None,
 ) -> FinanceContext:
-    """The finance context on ``core_ctx``'s workspace, under the bound layout.
+    """``handler_context`` on ``core_ctx``'s workspace, with its core sessions.
 
     ``progress`` is the job's checkpoint when a tick builds it; the CLI passes none,
     so its long steps beat a no-op."""
-    data = db.data_dir()
-    ctx = FinanceContext(
-        settings=load_settings(settings_path(data)),
-        clock=SystemClock(),
-        paths=FinancePaths(data=data),
-        role=role,
-        snapshot_provider=snapshot_provider,
+    ctx = handler_context(
+        role,
         model_client=model_client,
-        progress=progress if progress is not None else no_progress,
+        snapshot_provider=snapshot_provider,
+        progress=progress,
     )
     return operations.with_core_sessions(
         ctx, open_session=lambda: open_unit_of_work(core_ctx)

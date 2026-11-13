@@ -9,11 +9,11 @@ before the prune, while a model call waits and inside each long step, through th
 context's ``progress`` beat (ADR-0027).
 
 The worker stores ``str(exc)`` of whatever a handler raises, so every failure leaves
-here as ``FinanceJobFailed`` carrying a fixed code and nothing chained; cancellation,
-a lost lease and a module that is not ready pass through unchanged, from inside a due
-job too (the tick is handed the same classes). The ledger is
-imported inside the handler, so loading the manifest (``rheo web compose`` loads every
-discovered one) does not import it.
+here as ``FinanceJobFailed`` carrying a fixed code (``wiring.errors``) and nothing
+chained; cancellation, a lost lease and a module that is not ready pass through
+unchanged, from inside a due job too (the tick is handed the same classes). The tick's
+own steps are imported inside the handler; the ledger's read operations load with the
+manifest itself (``wiring.reads``, ADR-0028).
 """
 
 from __future__ import annotations
@@ -28,6 +28,8 @@ from rheo_core.events import ConsumerRegistry
 from rheo_core.modules.readiness import ModuleNotReady
 from rheo_core.storage.backend import HandlerUnitOfWork
 from rheo_core.work.cancellation import CancellationToken, JobCancelled, JobLeaseLost
+
+from rheo_finance.wiring.errors import matching_code
 
 TICK_JOB_KIND: Final = "finance.tick"
 TICK_MAX_ATTEMPTS: Final = 3
@@ -50,35 +52,10 @@ class FinanceJobFailed(RuntimeError):
     """A tick failure. The message is a fixed code and nothing else."""
 
 
-def failure_codes() -> tuple[tuple[type[BaseException], str], ...]:
-    """Each failure class with its code, subclasses before their bases."""
-    from rheo_core.storage.backend import StorageRefusal
-    from sqlalchemy.exc import SQLAlchemyError
-
-    from rheo_finance.db import LayoutRefused, WriterBusy
-    from rheo_finance.jobs.tick import SchemaBehind, SchemaUnknown
-    from rheo_finance.operations import OperationError
-    from rheo_finance.settings import SettingsError
-
-    return (
-        (SchemaBehind, "finance_schema_behind"),
-        (SchemaUnknown, "finance_schema_unknown"),
-        (WriterBusy, "finance_writer_busy"),
-        (SettingsError, "finance_settings_invalid"),
-        (LayoutRefused, "finance_layout_invalid"),
-        (OperationError, "finance_operation_refused"),
-        (StorageRefusal, "finance_workspace_unavailable"),
-        (SQLAlchemyError, "finance_storage_failed"),
-    )
-
-
 def failure_code(exc: BaseException) -> str:
-    """The code of the first entry whose class ``exc`` is, else ``GENERIC``."""
-    lineage = type(exc).__mro__
-    for kind, code in failure_codes():
-        if kind in lineage:
-            return code
-    return GENERIC
+    """The code ``wiring.errors`` gives ``exc``, else ``GENERIC``."""
+    code = matching_code(exc)
+    return GENERIC if code is None else code
 
 
 def _run(

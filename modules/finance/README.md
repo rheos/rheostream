@@ -63,9 +63,51 @@ parsers.
 The `tick` schedule (`finance.tick`, every 15 minutes) is written at enable but
 enqueues only once the workspace itself sets `finance.jobs.enabled` to true with
 `core.settings.set`. The tick renews its job's lease inside its long steps, per file,
-document, stage, series and reminder key (ADR-0027). The module registers no core
-operations or tools, so no token,
-package set or agent reaches it, and core's workspace export carries none of its rows.
+document, stage, series and reminder key (ADR-0027). Core's workspace export carries
+none of the module's rows.
+
+### Agent reads
+
+The module registers eight read operations in core, each with its tool, for the
+workspace owner alone (ADR-0028):
+
+| Tool | Operation | What it shows |
+| --- | --- | --- |
+| `finance_status` | `finance.status.get` | the status lines |
+| `finance_coverage` | `finance.coverage.get` | statement coverage by account and month |
+| `finance_documents` | `finance.document.list` | documents with their kind, status and period |
+| `finance_sinks` | `finance.sink.state` | each sink's setting and approval state |
+| `finance_lines` | `finance.txn.list` | ledger lines, filtered by account, dates and state |
+| `finance_open_items` | `finance.openitem.list` | open items and counts per kind |
+| `finance_owed` | `finance.owed.list` | obligations with dates, status and flags, credits and bill gaps |
+| `finance_trace` | `finance.owed.trace` | each obligation with its payments and evidence |
+
+No restricted field reaches a model: every field finance tiers restricted (amounts,
+totals, the owed headline) is left out of what these operations return. An agent sees
+the fields finance tiers public or internal (structure, dates, states, counts, labels
+and the status lines' text), as finance tiers them. Labels (payees, accounts,
+document paths) are public under finance's own tiers and do reach it.
+
+The reads are opt-in. No routine token, named package set or connector grant reaches
+them, and the module's other operations are not registered in core at all. The one
+way in is a token issued for them, by the operator, inside the core container:
+
+```sh
+rheo token issue --account <account id> --workspace <workspace id> --set module_read:finance --kind mcp
+```
+
+The token holds the eight reads and nothing else, and lasts as long as core's
+`identity.token_max_days.mcp` allows (30 days by default). Each read runs
+as `finance_reader` and needs the workspace's data layout mounted where it runs; a
+missing layout refuses with `finance_layout_invalid`.
+
+A failed read refuses with one fixed code as both state and detail, and nothing else:
+the code the tick's table gives its class (`finance_layout_invalid`,
+`finance_settings_invalid`, `finance_schema_behind`, `finance_schema_unknown`,
+`finance_operation_refused`, `finance_storage_failed`), `finance_output_invalid` when
+a handler answers another type, or `finance_read_failed` for any other failure, a
+view that cannot be built included. Core's own refusals (a module that is not ready,
+an unavailable workspace) come back as core gives them.
 
 ### A non-superuser application role
 

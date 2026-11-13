@@ -1,6 +1,6 @@
-"""The manifest (L1, L2): one job, one gated schedule, the settings keys, no operation,
-tool or exportable record type, refusing export stubs, and the flagship still loading
-nothing of finance. No database.
+"""The manifest (L1, L2, RS-6d L8): one job, one gated schedule, the settings keys,
+the eight opt-in reads and nothing else core can reach, refusing export stubs, and the
+flagship still loading nothing of finance. No database.
 """
 
 from __future__ import annotations
@@ -69,14 +69,26 @@ def test_one_job_and_one_gated_schedule() -> None:
     )
 
 
-def test_nothing_reaches_finance_through_core() -> None:
-    assert MANIFEST.operations == ()
-    assert MANIFEST.tools == ()
+def test_only_the_eight_opt_in_reads_reach_finance_through_core() -> None:
+    """L8: eight READ operations and their tools, opt-in only; nothing else core can
+    reach (no record type, resolver, deletion, event, subscription, sensitivity map,
+    web contribution, audit sink, connector, secret scope, authorization callback or
+    agent guidance). The reads themselves are pinned in ``test_reads``."""
+    assert len(MANIFEST.operations) == 8
+    assert len(MANIFEST.tools) == 8
+    assert MANIFEST.package_sets == "explicit_only"
     assert MANIFEST.record_types == ()
-    assert not any(record.exportable for record in MANIFEST.record_types)
+    assert MANIFEST.resolvers == ()
+    assert MANIFEST.deletion_participants == ()
+    assert MANIFEST.events == ()
+    assert MANIFEST.subscriptions == ()
+    assert dict(MANIFEST.sensitivity) == {}
     assert MANIFEST.audit_sink is None
     assert MANIFEST.web is None
     assert MANIFEST.connector_bindings == ()
+    assert MANIFEST.secret_scopes == ()
+    assert MANIFEST.authorization_completion is None
+    assert MANIFEST.agent_guidance is None
     assert MANIFEST.storage.schema_name == "finance"
     assert MANIFEST.storage.migrations_path == "rheo_finance.migrations"
     assert MANIFEST.health_checks == (wiring.install_check,)

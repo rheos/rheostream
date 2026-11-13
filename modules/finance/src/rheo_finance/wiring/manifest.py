@@ -1,8 +1,12 @@
 """Finance's ``ModuleManifest``: one job, one gated schedule, its core settings keys,
-an install check, and no operation, tool or exportable record type.
+an install check, eight READ operations with their tools, and no exportable record
+type.
 
-- No operations or tools, so no token, package set or connector grant reaches finance;
-  ``audit_sink`` is ``None`` because nothing above READ exists on core's side.
+- The eight reader reads (``wiring.reads``, ADR-0028) are owner-only and
+  ``package_sets="explicit_only"``: no named package set, connector grant or routine
+  token reaches them, only a ``module_read:finance`` token. Their registered outputs
+  leave out every restricted field. ``audit_sink`` is ``None`` because nothing above
+  READ exists on core's side.
 - ``export`` is required, but core exports only modules with an exportable record
   type, and finance declares none: ledger state never enters a workspace export. The
   two callables refuse loudly if that ever changes; state moves with
@@ -10,8 +14,8 @@ an install check, and no operation, tool or exportable record type.
 - The ``tick`` schedule is written at enable but enqueues only once the workspace
   itself sets ``finance.jobs.enabled`` to true.
 
-Imports only ``rheo_core``, ``rheo_contracts``, ``rheo_finance.db`` and the tick job,
-whose handler imports the ledger inside itself.
+Loading the manifest loads the ledger's operation catalogue (``wiring.reads``);
+importing ``rheo_finance`` alone still imports no core.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from rheo_core.settings import KeySpec, Scope, ValueType
 from sqlalchemy import text
 
 from rheo_finance import db
+from rheo_finance.wiring.reads import OPERATIONS, TOOLS
 from rheo_finance.wiring.tick_job import (
     TICK_JOB_KIND,
     TICK_MAX_ATTEMPTS,
@@ -114,8 +119,8 @@ MANIFEST = ModuleManifest(
         required_extensions=(),
     ),
     configuration_schema=SETTINGS,
-    operations=(),
-    tools=(),
+    operations=OPERATIONS,
+    tools=TOOLS,
     events=(),
     subscriptions=(),
     jobs=(
@@ -154,4 +159,5 @@ MANIFEST = ModuleManifest(
     contract_tests="modules/finance/tests",
     sensitivity={},
     audit_sink=None,
+    package_sets="explicit_only",
 )
