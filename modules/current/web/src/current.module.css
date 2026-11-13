@@ -776,18 +776,22 @@ a.rowTitle:hover {
   --desk-unit: calc(var(--rs-size-control) * 1.75);
   --desk-tile: calc(var(--rs-size-control) + var(--rs-space-1));
 }
-.tone_slate{ --desk-tone: var(--rs-color-ink-dim); }
-.tone_gold{ --desk-tone: var(--rs-color-warning); }
-.tone_green{ --desk-tone: var(--rs-color-success); }
-.tone_sky{ --desk-tone: var(--rs-color-info); }
-.tone_indigo{ --desk-tone: color-mix(in oklch, var(--rs-color-info) 72%, var(--rs-color-danger)); }
-.tone_violet{ --desk-tone: color-mix(in oklch, var(--rs-color-info) 42%, var(--rs-color-danger)); }
-.tone_rose{ --desk-tone: color-mix(in oklch, var(--rs-color-danger) 70%, var(--rs-color-ink)); }
-.tone_teal{ --desk-tone: var(--rs-color-accent); }
-[data-priority="critical"]{ --desk-priority: var(--rs-color-danger); }
-[data-priority="high"]{ --desk-priority: color-mix(in oklch, var(--rs-color-warning) 65%, var(--rs-color-danger)); }
-[data-priority="normal"]{ --desk-priority: var(--rs-color-info); }
-[data-priority="low"]{ --desk-priority: var(--rs-color-ink-faint); }
+.tone_slate { --desk-tone: var(--rs-color-ink-dim); }
+.tone_gold { --desk-tone: var(--rs-color-warning); }
+.tone_green { --desk-tone: var(--rs-color-success); }
+.tone_sky { --desk-tone: var(--rs-color-info); }
+.tone_indigo { --desk-tone: color-mix(in oklch, var(--rs-color-info) 72%, var(--rs-color-danger)); }
+.tone_violet { --desk-tone: color-mix(in oklch, var(--rs-color-info) 42%, var(--rs-color-danger)); }
+.tone_rose { --desk-tone: color-mix(in oklch, var(--rs-color-danger) 70%, var(--rs-color-ink)); }
+.tone_teal { --desk-tone: var(--rs-color-accent); }
+.deskRow[data-priority="critical"],
+.swatchSquare[data-priority="critical"] { --desk-priority: var(--rs-color-danger); }
+.deskRow[data-priority="high"],
+.swatchSquare[data-priority="high"] { --desk-priority: color-mix(in oklch, var(--rs-color-warning) 65%, var(--rs-color-danger)); }
+.deskRow[data-priority="normal"],
+.swatchSquare[data-priority="normal"] { --desk-priority: var(--rs-color-info); }
+.deskRow[data-priority="low"],
+.swatchSquare[data-priority="low"] { --desk-priority: var(--rs-color-ink-faint); }
 
 .deskBar {
   display: flex;
@@ -921,6 +925,12 @@ a.rowTitle:hover {
   padding-inline: var(--rs-space-2);
   color: var(--rs-color-ink-dim);
   font-size: var(--rs-font-size-sm);
+}
+/* Behind an open menu: a tap anywhere else lands here and folds it. */
+.chipBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 19;
 }
 .chipList {
   position: absolute;

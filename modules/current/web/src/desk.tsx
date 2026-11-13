@@ -596,8 +596,8 @@ export interface ChipOption {
 }
 /**
  * A filter chip that opens a short list of links. A native disclosure, so it
- * works before the page's scripts load; once they have, a tap outside or Escape
- * folds it.
+ * works before the page's scripts load; once they have, a tap outside (on a
+ * backdrop drawn behind the open list) or Escape folds it.
  */
 export function ChipMenu({
   label,
@@ -612,27 +612,20 @@ export function ChipMenu({
   options: readonly ChipOption[];
 }) {
   const box = useRef<HTMLDetailsElement | null>(null);
-  useEffect(() => {
-    function outside(e: PointerEvent) {
-      const el = box.current;
-      if (el?.open && !el.contains(e.target as Node)) el.open = false;
-    }
-    function key(e: KeyboardEvent) {
-      const el = box.current;
-      if (e.key === "Escape" && el?.open) {
-        el.open = false;
-        el.querySelector("summary")?.focus();
-      }
-    }
-    document.addEventListener("pointerdown", outside);
-    document.addEventListener("keydown", key);
-    return () => {
-      document.removeEventListener("pointerdown", outside);
-      document.removeEventListener("keydown", key);
-    };
-  }, []);
+  function fold(refocus: boolean) {
+    const el = box.current;
+    if (!el?.open) return;
+    el.open = false;
+    if (refocus) el.querySelector("summary")?.focus();
+  }
   return (
-    <details ref={box} className={styles.chipMenu}>
+    <details
+      ref={box}
+      className={styles.chipMenu}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") fold(true);
+      }}
+    >
       <summary
         className={styles.chip}
         data-active={value !== null || undefined}
@@ -642,6 +635,11 @@ export function ChipMenu({
         <span aria-hidden="true">{value ?? label}</span>
         <Icon name="chevron" className={styles.chipChevron} />
       </summary>
+      <span
+        className={styles.chipBackdrop}
+        aria-hidden="true"
+        onClick={() => fold(false)}
+      />
       <ul className={styles.chipList}>
         {options.map((o) => (
           <li key={o.href}>
