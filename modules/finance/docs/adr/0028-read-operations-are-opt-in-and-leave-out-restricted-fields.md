@@ -1,4 +1,4 @@
-# ADR-0028: Read operations are opt-in and show no figures
+# ADR-0028: Read operations are opt-in and leave out restricted fields
 Status: accepted
 Date: 2026-11-12
 
@@ -28,24 +28,28 @@ two things stood in the way of simply registering the reads.
   set (`read_only`, `cli_full`, `agent_default`), no connector grant and no routine
   token reaches them; a `module_read:finance` token does, and it holds these eight and
   nothing else.
-- **No figure reaches a model.** Each registered output is a view derived from
-  finance's own model: a restricted field is left out, a public or internal one
-  carries core's marker of the same tier, and a field with no finance tier refuses
-  the import. The view is filled by reading only its own fields off the finance
-  result, so a restricted value is never copied. An agent sees structure, dates,
-  states, counts and labels; payee, account and document labels are public under
-  finance's own tiers and do reach it.
+- **No restricted field reaches a model.** Each registered output is a view derived
+  from finance's own model: a field finance tiers restricted is left out, a public or
+  internal one carries core's marker of the same tier, and a field with no finance
+  tier refuses the import. The view is filled by reading only its own fields off the
+  finance result, so a restricted value is never copied. What an agent sees is every
+  field finance tiers public or internal, as finance tiers it: structure, dates,
+  states, counts, labels and the status lines' text. Payee, account and document
+  labels are public under finance's own tiers and do reach it.
 - **The reader role, on core's transaction.** The adapter binds the workspace's
   layout, runs the handler as `finance_reader` with `SET LOCAL ROLE` on core's own
   work transaction, and resets the role before it returns, because core goes on using
   that transaction. After a failure it does not reset: core's rollback ends the
   transaction and the role with it.
-- **Fixed-code refusals.** A finance failure leaves as an `OperationRefused` whose
-  state and detail are one fixed code (`finance_layout_invalid`,
-  `finance_settings_invalid`, `finance_schema_behind`, `finance_operation_refused`,
-  `finance_storage_failed` and the rest of the tick's table), with nothing chained.
-  Core's own refusals and anything else pass unchanged; core answers those with its
-  own state or the class name alone.
+- **Fixed-code refusals.** Every failure of a read, in the handler or in building its
+  view, leaves as an `OperationRefused` whose state and detail are one fixed code,
+  with no class name, message or value and nothing chained: the class's code from the
+  table the tick shares (`finance_layout_invalid`, `finance_settings_invalid`,
+  `finance_schema_behind`, `finance_operation_refused`, `finance_storage_failed` and
+  the rest), `finance_output_invalid` for a handler output of another type, and
+  `finance_read_failed` for anything else. Only core's own refusals
+  (`ModuleNotReady`, `StorageRefusal`) pass unchanged, and core answers those with its
+  own safe state and text.
 
 ## Consequences
 

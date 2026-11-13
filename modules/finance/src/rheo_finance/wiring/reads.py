@@ -11,10 +11,13 @@ Three parts:
   view's fields off the finance result, so a restricted value is never copied.
 - ``read_handler``: runs one spec's handler on core's unit of work under the
   workspace's layout, as ``finance_reader`` (``SET LOCAL ROLE``, reset before it
-  returns, since core goes on using the transaction), and returns the view. A finance
-  failure leaves as an ``OperationRefused`` whose state and detail are one fixed code
-  (``wiring.errors``); core's own refusals and anything else pass unchanged, which
-  core answers with the class name alone.
+  returns, since core goes on using the transaction), and returns the view. Core's own
+  refusals (``PASS_THROUGH``) pass unchanged, since core answers them with its own safe
+  text. Every other failure, of the handler or of the view, leaves as an
+  ``OperationRefused`` whose state and detail are one fixed code: the class's code in
+  ``wiring.errors``, ``finance_output_invalid`` for an output of another type, else
+  ``finance_read_failed``. No class name, message or value goes with it, and nothing
+  is chained.
 - ``OPERATIONS`` and ``TOOLS``: every READ spec on the reader connection that is not
   owner-only, declared for the owner alone. The manifest sets ``explicit_only``, so
   only a ``module_read:finance`` token reaches them.
@@ -55,7 +58,10 @@ from rheo_finance.tier import Tier
 from rheo_finance.wiring.core import handler_context, layout_for
 from rheo_finance.wiring.errors import matching_code
 
+# The adapter's own fixed codes, beside the table in ``wiring.errors``: a handler that
+# answered another type, and any other failure of the handler or of its view.
 OUTPUT_INVALID: Final = "finance_output_invalid"
+READ_FAILED: Final = "finance_read_failed"
 
 # Finance's tier to core's, for the tiers a view keeps. RESTRICTED has no entry: a
 # restricted field is never in a view.
@@ -208,7 +214,7 @@ def read_handler(spec: OperationSpec) -> Handler:
     def handle(
         ctx: WorkspaceContext, uow: CoreUnitOfWork, data: BaseModel
     ) -> BaseModel:
-        code: str | None = None
+        code = READ_FAILED
         token: db.LayoutToken | None = None
         try:
             token = db.use_layout(db.check_layout(layout_for(ctx)))
@@ -216,21 +222,20 @@ def read_handler(spec: OperationSpec) -> Handler:
             connection = uow.connection
             with db.acting_as(connection, db.READER_ROLE):
                 out = spec.handler(finance_ctx, UnitOfWork(connection), data)
+            if isinstance(out, spec.output_model):
+                return as_view(spec.output_model, out)
+            code = OUTPUT_INVALID
         except PASS_THROUGH:
             raise
         except Exception as exc:
-            code = matching_code(exc)
-            if code is None:
-                raise
+            # A class in the table gives its code; anything else, a failed view
+            # included, gives READ_FAILED. Neither carries the exception.
+            code = matching_code(exc) or READ_FAILED
         finally:
             if token is not None:
                 db.release_layout(token)
-        if code is not None:
-            # Outside the except block, so nothing is chained.
-            raise OperationRefused(code, code)
-        if not isinstance(out, spec.output_model):
-            raise OperationRefused(OUTPUT_INVALID, OUTPUT_INVALID)
-        return as_view(spec.output_model, out)
+        # Outside the except block, so nothing is chained.
+        raise OperationRefused(code, code)
 
     return handle
 

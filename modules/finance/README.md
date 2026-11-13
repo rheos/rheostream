@@ -82,10 +82,11 @@ workspace owner alone (ADR-0028):
 | `finance_owed` | `finance.owed.list` | obligations with dates, status and flags, credits and bill gaps |
 | `finance_trace` | `finance.owed.trace` | each obligation with its payments and evidence |
 
-No amount reaches a model: every field finance tiers restricted (amounts, totals,
-the owed headline) is left out of what these operations return, so an agent sees
-structure, dates, states, counts and labels, never a figure. Labels (payees,
-accounts, document paths) are public under finance's own tiers and do reach it.
+No restricted field reaches a model: every field finance tiers restricted (amounts,
+totals, the owed headline) is left out of what these operations return. An agent sees
+the fields finance tiers public or internal (structure, dates, states, counts, labels
+and the status lines' text), as finance tiers them. Labels (payees, accounts,
+document paths) are public under finance's own tiers and do reach it.
 
 The reads are opt-in. No routine token, named package set or connector grant reaches
 them, and the module's other operations are not registered in core at all. The one
@@ -99,6 +100,14 @@ The token holds the eight reads and nothing else, and lasts as long as core's
 `identity.token_max_days.mcp` allows (30 days by default). Each read runs
 as `finance_reader` and needs the workspace's data layout mounted where it runs; a
 missing layout refuses with `finance_layout_invalid`.
+
+A failed read refuses with one fixed code as both state and detail, and nothing else:
+the code the tick's table gives its class (`finance_layout_invalid`,
+`finance_settings_invalid`, `finance_schema_behind`, `finance_schema_unknown`,
+`finance_operation_refused`, `finance_storage_failed`), `finance_output_invalid` when
+a handler answers another type, or `finance_read_failed` for any other failure, a
+view that cannot be built included. Core's own refusals (a module that is not ready,
+an unavailable workspace) come back as core gives them.
 
 ### A non-superuser application role
 

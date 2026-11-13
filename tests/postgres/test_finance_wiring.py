@@ -696,7 +696,7 @@ def _audit_rows(finance: Finance) -> int:
         )
 
 
-def test_an_owner_reads_through_the_tools_and_no_figure_reaches_the_model(
+def test_an_owner_reads_through_the_tools_and_no_restricted_field_reaches_the_model(
     finance: Finance, owner_account_id: UUID
 ) -> None:
     """D4: ``finance_status`` and ``finance_owed`` succeed for the owner's session over

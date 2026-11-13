@@ -2,8 +2,13 @@
 
 Core shows what it is handed: the worker stores ``str(exc)`` of a failed job, and a
 dispatch answers an ``OperationRefused`` with its ``detail``. So a finance failure
-crosses into core as one of these codes and nothing else; the tick (``tick_job``) and
-the read adapter (``reads``) both map through this one table.
+crosses into core as a fixed code and nothing else. The tick (``tick_job``) and the
+read adapter (``reads``) both map through this one table, and each answers a class
+the table does not name with its own one fallback code: the tick
+``finance_tick_failed``, the adapter ``finance_read_failed`` (and
+``finance_output_invalid`` for a handler output of another type). Only the classes
+each passes through unchanged (core's own refusals, cancellation, a lost lease) leave
+otherwise.
 """
 
 from __future__ import annotations

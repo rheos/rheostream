@@ -14,9 +14,10 @@
 - L6: every registered output, built with sentinel values in each restricted field,
   dumps through its view without either sentinel.
 - L7: the adapter over a recording connection and a synthetic layout: the role is set
-  and reset around the handler, the layout bound for it and released; finance
-  failures leave as their fixed code with nothing chained; anything else, and core's
-  own refusals, pass unchanged; a missing layout refuses before any statement.
+  and reset around the handler, the layout bound for it and released; every failure
+  of the handler or of the view leaves as one fixed code (its class's, else
+  ``finance_read_failed``) with nothing chained; only core's own refusals pass
+  unchanged; a missing layout refuses before any statement.
 
 Values are synthetic.
 """
@@ -512,10 +513,12 @@ def test_l7_the_role_is_set_and_reset_around_the_handler_under_the_layout(
         (db.LayoutRefused(SENTINEL_TEXT), "finance_layout_invalid"),
         (SettingsError(SENTINEL_TEXT), "finance_settings_invalid"),
         (db.WriterBusy(SENTINEL_TEXT), "finance_writer_busy"),
+        (KeyError(SENTINEL_TEXT), "finance_read_failed"),
+        (ValueError(SENTINEL_TEXT), "finance_read_failed"),
     ],
-    ids=["layout", "settings", "writer"],
+    ids=["layout", "settings", "writer", "unmapped-key", "unmapped-value"],
 )
-def test_l7_a_finance_failure_leaves_as_its_code_alone(
+def test_l7_a_failure_leaves_as_its_code_alone(
     rig: _Rig, exc: BaseException, code: str
 ) -> None:
     rig.make()
@@ -524,23 +527,53 @@ def test_l7_a_finance_failure_leaves_as_its_code_alone(
         rig.run()
     refused = caught.value
     assert (refused.state, refused.detail) == (code, code)
-    assert SENTINEL_TEXT not in str(refused)
+    assert str(refused) == f"{code}: {code}"
+    assert type(exc).__name__ not in str(refused)
     assert refused.__cause__ is None
     assert refused.__context__ is None
     # No reset after a failure: core's rollback ends the transaction and the role.
     assert rig.connection.statements == [SET, MARK]
 
 
+class _BadLabel:
+    """A public value the view cannot validate as text; its repr carries the
+    sentinel, as a validation error's message would."""
+
+    def __repr__(self) -> str:
+        return SENTINEL_TEXT
+
+
+def test_l7_a_view_that_fails_leaves_as_the_read_code_alone(rig: _Rig) -> None:
+    rig.make()
+    # ``model_construct`` skips finance's validation, so the instance is an ``_Out``
+    # whose public field cannot validate into the view.
+    rig.returns = _Out.model_construct(label=_BadLabel(), amount=SENTINEL_AMOUNT)
+    with pytest.raises(OperationRefused) as caught:
+        rig.run()
+    refused = caught.value
+    assert (refused.state, refused.detail) == (
+        "finance_read_failed",
+        "finance_read_failed",
+    )
+    seen = f"{refused.state} {refused.detail} {refused}"
+    for leak in (SENTINEL_TEXT, str(SENTINEL_AMOUNT), "ValidationError", "_BadLabel"):
+        assert leak not in seen
+    assert refused.__cause__ is None
+    assert refused.__context__ is None
+    assert refused.__suppress_context__ is False
+    # The view is built after the handler, so the role was already reset.
+    assert rig.connection.statements == [SET, MARK, RESET]
+
+
 @pytest.mark.parametrize(
     "exc",
     [
-        KeyError(SENTINEL_TEXT),
         ModuleNotReady("module_unavailable", "synthetic retry"),
         StorageRefusal("workspace_unavailable", "synthetic detail"),
     ],
-    ids=["other", "not-ready", "storage"],
+    ids=["not-ready", "storage"],
 )
-def test_l7_anything_else_passes_unchanged(rig: _Rig, exc: BaseException) -> None:
+def test_l7_cores_own_refusals_pass_unchanged(rig: _Rig, exc: BaseException) -> None:
     rig.make()
     rig.raises = exc
     with pytest.raises(type(exc)) as caught:

@@ -60,8 +60,10 @@ whole record.
 ADR-0028 records that the eight reader reads register in core as owner-only READ
 operations with their tools, `explicit_only`, so only a `module_read:finance` token
 reaches them; that each registered output is a view of finance's own model with every
-restricted field left out, so no amount reaches a model; that the adapter runs each
-as `finance_reader` on core's transaction and resets the role before it returns; and
-that a finance failure leaves as a fixed-code refusal. It replaces one bullet of
+field finance tiers restricted left out, so no restricted field reaches a model; that
+the adapter runs each as `finance_reader` on core's transaction and resets the role
+before it returns; and that every failure of a read, in the handler or its view,
+leaves as a fixed-code refusal (`finance_read_failed` when its class has no code of
+its own). It replaces one bullet of
 ADR-0024 ("no operations or tools in core"), which stays accepted with a `Partly
 replaced by ADR-0028` line.
