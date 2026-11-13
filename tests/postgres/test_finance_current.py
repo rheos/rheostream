@@ -19,7 +19,8 @@ RS-6c, kept:
   succeeds; the tick in one worker visit syncs, and a second visit creates nothing new;
 - a sink row pointing at an item with another source pair is never changed (now set
   aside, ``partial``); the control with the pair is;
-- no ``finance.`` name in the loaded registries or the token sets.
+- the loaded registries hold exactly finance's eight opt-in reads and their tools
+  (RS-6d), and no named set or owner's connector grant holds a ``finance`` name.
 
 A refused key is set aside (#548):
 
@@ -72,6 +73,7 @@ from rheo_core.events import ConsumerRegistry
 from rheo_core.modules.loader import loaded_manifests
 from rheo_core.modules.readiness import ModuleNotReady
 from rheo_core.operations import dispatch, register_core_operations, transaction
+from rheo_core.operations import registry as operation_registry
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs.resolver import RESOLVERS, register_resolver
 from rheo_core.settings import resolver as settings_resolver
@@ -83,6 +85,7 @@ from rheo_core.storage.repositories import upsert_workspace_setting
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_index import DueWorkspace
 from rheo_core.tokens import sets as token_sets
+from rheo_core.tokens.issue import connector_operations
 from rheo_core.work.jobs import enqueue_job
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import visit_workspace
@@ -103,6 +106,8 @@ from rheo_finance.wiring.core import context_over_core
 from rheo_finance.wiring.manifest import JOBS_ENABLED_KEY, MANIFEST
 from rheo_finance.wiring.tick_job import TICK_JOB_KIND, TickPayload, finance_tick_job
 from sqlalchemy import Connection, Engine, func, select, text
+
+from postgres.test_finance_wiring import FINANCE_READS, FINANCE_TOOLS
 
 pytestmark = pytest.mark.postgres
 
@@ -876,8 +881,30 @@ def test_an_item_erased_in_current_is_filed_again_or_forgotten(
 # --- D8: package sets -----------------------------------------------------------------
 
 
-def test_no_finance_name_reaches_the_registries_or_the_token_sets(rig: Rig) -> None:
-    named = rig.surfaces.operations.names() | rig.surfaces.tools.names()
-    sets = token_sets.read_only() | token_sets.agent_default() | token_sets.cli_full()
-    assert not {name for name in named | sets if name.startswith("finance")}
-    assert "current.item.create" in rig.surfaces.operations.names()
+def test_only_the_eight_reads_reach_the_registries_and_no_named_set_holds_one(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The loaded registries hold exactly finance's eight opt-in reads and their eight
+    tools (RS-6d); no named set and no owner's connector grant holds any of them.
+
+    The set evaluators read the process-wide operation and tool tables, which the rig's
+    local load never fills, so they are pointed at the loaded ones for this test: the
+    controls show the eight are there, and opt-in, for every set to leave out."""
+    operations = rig.surfaces.operations
+    tools = rig.surfaces.tools
+    assert {n for n in operations.names() if n.startswith("finance")} == FINANCE_READS
+    assert {n for n in tools.names() if n.startswith("finance")} == FINANCE_TOOLS
+    assert "current.item.create" in operations.names()  # the control
+    monkeypatch.setattr(operation_registry, "REGISTRY", operations)
+    monkeypatch.setattr(token_sets, "TOOL_REGISTRY", tools)
+    # The controls: the evaluators now see the eight, as one module's opt-in reads.
+    assert FINANCE_READS <= token_sets.explicit_only_operations()
+    assert token_sets.module_read("finance") == FINANCE_READS
+    assert {"read_only", "agent_default", "cli_full", "alert_writer"} <= set(
+        token_sets.PACKAGE_SETS
+    )
+    for set_name, evaluator in token_sets.PACKAGE_SETS.items():
+        assert not {op for op in evaluator() if op.startswith("finance")}, set_name
+    granted = connector_operations(CoreRole.OWNER)
+    assert "current.item.get" in granted  # the control
+    assert not {op for op in granted if op.startswith("finance")}

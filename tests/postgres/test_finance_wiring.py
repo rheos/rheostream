@@ -29,7 +29,8 @@ under the session's temporary data root.
   restricted totals, and no audit row is written.
 - RS-6d D5: in one open core unit of work the adapter runs a synthetic reader spec as
   ``finance_reader`` and leaves the transaction as the session user.
-- RS-6d D6: the operator context is refused ``role_not_permitted``.
+- RS-6d D6: an operator context over the workspace with finance enabled is refused
+  ``role_not_permitted`` and no handler runs; the owner's dispatch is the control.
 
 The long steps renew the lease (#546, ADR-0027), over a filing step that hashes four
 archive files while the worker's clock moves 25 s per file (100 s in all, longer than
@@ -68,7 +69,7 @@ from rheo_core.boundary.factories import context_from_session
 from rheo_core.events import ConsumerRegistry
 from rheo_core.migrations.module_chain import run_module_chain
 from rheo_core.operations import dispatch, register_core_operations
-from rheo_core.operations.refusals import ROLE_NOT_PERMITTED
+from rheo_core.operations.refusals import ROLE_NOT_PERMITTED, SUCCEEDED
 from rheo_core.redaction.tiers import restricted_fields, unrenderable_paths
 from rheo_core.sessions import create_session, mint_host_secret, switch_workspace
 from rheo_core.settings import resolver as resolver_module
@@ -764,14 +765,46 @@ def test_the_adapter_reads_as_finance_reader_and_hands_back_the_session_user(
         assert _session_user_again(uow.connection)
 
 
-def test_the_operator_cannot_dispatch_a_finance_read(finance: Finance) -> None:
-    """D6: the reads are the owner's alone; the operator context (role ``operator``)
-    is refused before any handler runs."""
+def test_the_operator_cannot_dispatch_a_finance_read(
+    finance: Finance, owner_account_id: UUID, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D6: the reads are the owner's alone; an operator context whose workspace has
+    finance enabled is refused ``role_not_permitted`` before any handler runs.
+
+    Core checks module enablement before role, and the fixture's operator context was
+    built before finance was enabled, so its enabled set lacks finance and it would be
+    refused ``module_disabled`` without reaching the role rule. A fresh one is built
+    here, after the enable, the way the owner's session sees the workspace. A spy on
+    the adapter's first call counts handler runs; the owner's dispatch of the same
+    read is the control that the spy sees one."""
     _layout(finance.workspace)
+    runs: list[UUID] = []
+    real_layout_for = reads.layout_for
+
+    def counting_layout_for(core_ctx: WorkspaceContext) -> db.FinanceLayout:
+        runs.append(core_ctx.workspace_id)
+        return real_layout_for(core_ctx)
+
+    monkeypatch.setattr(reads, "layout_for", counting_layout_for)
+    operator = context_for_operator(finance.workspace)
+    assert isinstance(operator, WorkspaceContext)
+    assert operator.role is Role.OPERATOR
+    assert "finance" in operator.enabled_modules  # the pre-condition
     outcome = dispatch(
-        finance.operator,
+        operator,
         "finance.status.get",
         {},
         registry=finance.surfaces.operations,
     )
     assert outcome.state == ROLE_NOT_PERMITTED, outcome
+    assert runs == []
+    # The control: the owner's dispatch of the same read runs the handler once.
+    owner = _owner_session(finance.workspace, owner_account_id)
+    outcome = dispatch(
+        owner,
+        "finance.status.get",
+        {},
+        registry=finance.surfaces.operations,
+    )
+    assert outcome.state == SUCCEEDED, outcome
+    assert runs == [finance.workspace]
