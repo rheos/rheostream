@@ -1,6 +1,7 @@
 # ADR-0024: The module runs on core's connections and worker
 Status: accepted
 Date: 2026-11-11
+Partly replaced by ADR-0028: "No operations or tools in core"
 
 ## Context
 
