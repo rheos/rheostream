@@ -133,6 +133,7 @@ from rheo_core.modules.manifest import (
     ManifestInvalid,
     ModuleManifest,
     WebSurface,
+    check_explicit_only_tools,
     check_module_id,
     check_name_prefixes,
     check_sensitivity,
@@ -391,8 +392,9 @@ def load_modules(
     **No manifest is registered until the whole loaded set has passed every check
     this module makes.** The permitted manifests are collected first, each gated on
     the entry-point name and on the contract version; then the set's event
-    declarations, subscription ownership, name prefixes, web surface names,
-    dependency ranges and dependency graph are checked; and only then is anything
+    declarations, subscription ownership, name prefixes, redaction rules, the
+    ``explicit_only`` tool rule, web surface names, dependency ranges and dependency
+    graph are checked; and only then is anything
     registered, in dependency-sorted order. So a
     ``ManifestInvalid`` raised here leaves every registry as it found it rather than
     stranding half a set behind the manifest that failed — which matters most on a
@@ -422,6 +424,7 @@ def load_modules(
     _check_subscriptions(manifests)
     _check_name_prefixes(manifests)
     _check_redaction(manifests)
+    _check_explicit_only_tools(manifests)
     # Against what this process already loaded as well as the incoming set:
     # ``module_surfaces()`` reads the accumulated ``_LOADED`` table, so a surface an
     # earlier load registered is one this load must not collide with. A manifest
@@ -635,6 +638,27 @@ def _check_name_prefixes(manifests: Sequence[ModuleManifest]) -> None:
                 tools=manifest.tools,
                 jobs=manifest.jobs,
                 subscriptions=manifest.subscriptions,
+            )
+        except ValueError as refusal:
+            raise ManifestInvalid(manifest.module_id, str(refusal)) from refusal
+
+
+def _check_explicit_only_tools(manifests: Sequence[ModuleManifest]) -> None:
+    """The ``explicit_only`` tool rule, again, before anything registers (#537).
+
+    The manifest's own validator already ran
+    :func:`~rheo_core.modules.manifest.check_explicit_only_tools`; this re-runs it for
+    :func:`_check_redaction`'s reason. A manifest built with ``model_construct`` skips
+    validators, so an ``explicit_only`` module could otherwise register a tool naming
+    a core operation such as ``core.record.delete``, which every routine token
+    holding that operation would then reach past the module's opt-in.
+    """
+    for manifest in manifests:
+        try:
+            check_explicit_only_tools(
+                manifest.package_sets,
+                tools=manifest.tools,
+                declarations={d.name: d for d, _ in manifest.operations},
             )
         except ValueError as refusal:
             raise ManifestInvalid(manifest.module_id, str(refusal)) from refusal
