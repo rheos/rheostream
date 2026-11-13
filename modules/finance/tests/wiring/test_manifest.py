@@ -1,6 +1,6 @@
 """The manifest (L1, L2, RS-6d L8): one job, one gated schedule, the settings keys,
 the eight opt-in reads and nothing else core can reach, refusing export stubs, and the
-flagship still loading nothing of finance. No database.
+flagship loading the module beside the four it already loaded. No database.
 """
 
 from __future__ import annotations
@@ -94,14 +94,20 @@ def test_only_the_eight_opt_in_reads_reach_finance_through_core() -> None:
     assert MANIFEST.health_checks == (wiring.install_check,)
 
 
-def test_the_flagship_does_not_load_finance() -> None:
+def test_the_flagship_loads_finance_beside_its_other_modules() -> None:
     anchor = re.search(
         r"RHEO__modules__installed:\s*(\S+)", FLAGSHIP.read_text(encoding="utf-8")
     )
     assert anchor is not None
     installed = anchor.group(1).split(",")
-    assert "recallatron" in installed  # the control: the anchor was read
-    assert "finance" not in installed
+    assert set(installed) == {
+        "recallatron",
+        "relationships",
+        "leads",
+        "current",
+        "finance",
+    }
+    assert len(installed) == len(set(installed))
 
 
 def test_the_model_and_account_keys() -> None:
