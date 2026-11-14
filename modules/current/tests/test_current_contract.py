@@ -542,6 +542,7 @@ DETAIL: dict[str, Any] = {
     "woke": False,
     "overdue": False,
     "blocked": False,
+    "tag": "support-ticket",
     "event_count": 1,
     "revision": 1,
     "updated_at": "2026-10-21T09:00:00Z",

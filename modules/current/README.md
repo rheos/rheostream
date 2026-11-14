@@ -29,7 +29,9 @@ does not establish that an external submission or business decision succeeded.
 `open`, `waiting` and `snoozed` move freely between each other; any status can become
 `done`, and `done` reopens to `open`. Only a snoozed item holds `snoozed_until`, which
 must be in the future when set; database checks hold the same rule. An expired snooze
-needs no job: the default `active` list includes it, flagged `woke`.
+needs no job: the default `active` list includes it, flagged `woke`. The `active` list is
+open items plus woke ones; a `waiting` item is being watched (the screens call it
+Watching) and stays out of it until someone moves it.
 
 ## Source dedup
 
@@ -247,7 +249,7 @@ and adds one main-nav entry, Current. Routes are exact paths; a record travels a
 
 | Path | Screen |
 | --- | --- |
-| `/` | Queue: summary counts, a Woke up section for expired snoozes, then active items by priority and last update. Filters for status, area, project, priority, overdue and blocked, full-text search and paging. Each row has Done, Snooze and Wait (or Back to open). |
+| `/` | Queue: a find box, Projects and `+`; chips for status, area and priority; overdue and blocked counters only when above zero; a folding Woke up section with Wake all; then active items by priority and last update, with paging. A row shows the area's icon and colour, title, priority, type tag, signals and due date or age. Swipe left for Project and Done, right for Watch and Snooze; a long swipe runs Done or Watch. The tray buttons are reachable by keyboard and screen reader, and show as hover icons with a mouse. |
 | `/item?ref=` | Item: details, notes, status controls, snooze picker, comments, blocked-by and blocking links, and origin. |
 | `/new` | New item. `?project=` preselects a project. |
 | `/projects`, `/project?ref=` | Projects with item counts by status; one project's items, with create and edit. |
