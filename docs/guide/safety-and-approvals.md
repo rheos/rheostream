@@ -18,6 +18,10 @@ that declares none.
 Deleting a memory is destructive even though nothing leaves the building. Sending,
 submitting and creating work in another system are external. Paying is financial.
 
+One external operation is built: `current.item.create_external`, which a Leads handoff
+uses to create a Current item. Core and the worker refuse to start with any financial
+operation registered, or with an external one that is not on that fixed list.
+
 ## What you can do with it
 
 - Call a gated operation from anywhere: an agent over MCP, a script over the API, the
@@ -28,8 +32,8 @@ submitting and creating work in another system are external. Paying is financial
   recipient, the payload snapshot, the purpose), and approve or refuse it.
 - Give a token or session a standing grant for named read, draft or mutate operations,
   for a fixed period.
-- Tighten your workspace: require confirmation for a named mutate operation as well.
-  The list can only grow.
+- Tightening a workspace (requiring confirmation for a named mutate operation as well)
+  is designed but not built yet; see below.
 
 ## How it works
 
@@ -44,9 +48,11 @@ the window refuses with `invalid_approval` and records nothing at the destinatio
 
 ### No token can approve
 
-Six operations can never appear in any token's operation set: approve, refuse, create and
-revoke a standing grant, and issue and revoke a token. The rule is checked when a token is
-issued and again every time one is presented. So approval is always the act of a signed-in
+Ten operations can never appear in any token's operation set: preview, approve and refuse
+an approval; resolve an unknown outcome; create and revoke a standing grant; issue and
+revoke a token; and create and rotate a bridge enrollment. Preview is on the list because
+it shows the whole held payload a person is about to approve. The rule is checked when a
+token is issued and again every time one is presented. So approval is always the act of a signed-in
 person in a web session, or of an enrolled account confirming in a channel. A model cannot
 approve what it proposed, because nothing a model can hold is able to approve anything. A
 gated operation in a token's set only lets the token ask for it.
@@ -85,10 +91,11 @@ something only a web session can do.
 
 ### Workspaces can only tighten policy
 
-The table mapping classes to dispatcher behaviour is code, not configuration. A workspace
-may require confirmation for a named mutate operation (`approvals.confirm_operations`, a
-list under a `union` floor). No setting can move a destructive, external or financial
-operation under a standing grant.
+The table mapping classes to dispatcher behaviour is code, not configuration. No setting
+can move a destructive, external or financial operation under a standing grant. The
+design also lets a workspace require confirmation for a named mutate operation
+(`approvals.confirm_operations`, a list under a `union` floor), but that key is not
+declared yet, so a workspace cannot add one today.
 
 ### Untrusted text never approves
 
@@ -131,6 +138,8 @@ contact-permission guard sees the withdrawal and refuses.
   [what a token can never carry](../architecture/identity-and-topology.md#what-a-token-can-never-carry-and-what-it-holds-for-a-gated-operation),
   [theme contract](../architecture/theme-contract.md)
 - Code: [approval gate](../../packages/core/src/rheo_core/approvals/gate.py),
+  [external action continuation](../../packages/core/src/rheo_core/operations/continuation.py),
+  [production external allowlist](../../packages/core/src/rheo_core/modules/production.py),
   [binding](../../packages/core/src/rheo_core/approvals/binding.py),
   [guards](../../packages/core/src/rheo_core/approvals/guards.py),
   [standing grants](../../packages/core/src/rheo_core/approvals/grants.py),

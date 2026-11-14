@@ -11,10 +11,15 @@ or rheo's own model runs. A tool is a name and a description over a registered o
 It has no handler of its own, so it cannot reach storage except through that operation.
 
 **Runtime adapters** run a model's conversation loop when rheoStream itself starts a model
-run. The Claude CLI adapter spawns `claude -p`; the OpenRouter adapter calls the
-provider's API and supplies its own loop; Codex CLI is a further target held to the same
-contract. The runtime owns conversation mechanics. rheoStream owns identity,
-authorization, tool policy, domain data, audit and durable work state.
+run. One adapter is built: the Claude CLI adapter, which spawns `claude -p`. An OpenRouter
+adapter (which would call the provider's API and supply its own loop) and a Codex CLI
+adapter are planned to the same contract and are not built yet. The runtime owns
+conversation mechanics. rheoStream owns identity, authorization, tool policy, domain data,
+audit and durable work state.
+
+Separate from the conversational runtimes, a **typed judgment provider** answers fixed
+questions with typed answers and no tools. One is built: Jev, which Leads can use as an
+optional pre-filter before full job scoring.
 
 ## What you can do with it
 
@@ -44,10 +49,25 @@ runs.
 ### A token's scope is frozen at issuance
 
 Its operation set is copied into rows when it is issued and never widened; a new scope is
-a new token. Three named sets ship: `read_only` (every read operation), `agent_default`
-(every operation an MCP tool names) and `cli_full` (everything except the six operations
-no token may hold). A token never exceeds its account's role, rechecked on every
-presentation, and never exceeds the authority that issued it.
+a new token. Four named sets ship: `read_only` (every read operation), `agent_default`
+(every operation an MCP tool names), `cli_full` (everything except the ten operations no
+token may hold, such as approving, issuing tokens and creating standing grants) and
+`alert_writer` (exactly `current.item.create` and `current.item.close_by_source`, for an
+outside service that opens and closes alert items in Current). A token never exceeds its
+account's role, rechecked on every presentation, and never exceeds the authority that
+issued it.
+
+### Some modules are opt-in only
+
+A module can declare itself `explicit_only` in its manifest. Finance is the one that does.
+No named set and no connector grant reaches such a module's operations, whatever the
+module adds later. The only set that does is `module_read:<module_id>`, which holds that
+module's read operations and nothing else, so reaching Finance from an agent takes a token
+issued for it on purpose (`--set module_read:finance`). The rule also holds for tokens
+issued before a module went opt-in: the stored scope is never rewritten, but every
+presentation of a token issued from a named set subtracts the current `explicit_only`
+modules' operations. Such a module's MCP tools may name only its own operations; the
+loader checks that before anything registers.
 
 ### Listing grants nothing
 
@@ -131,7 +151,9 @@ An adapter yields progress, tool calls, tool results, usage and a final output, 
 with exactly one terminal event. Failures come from a fixed list:
 `executable_unavailable`, `credential_invalid`, `credential_not_owned`, `tool_denied`,
 `deadline_exceeded`, `stream_truncated`, `output_invalid`, `iteration_limit`,
-`runtime_error`. Usage is marked `exact` or `estimate`, never mixed.
+`usage_limited`, `runtime_error`. `usage_limited` means the provider refused the run for
+the account's usage limit; nothing about the request caused it, so callers wait and try
+again without counting a failed attempt. Usage is marked `exact` or `estimate`, never mixed.
 
 ### The run's token is the boundary
 
@@ -163,13 +185,40 @@ secret reference. A personal login or subscription token is bound to one account
 started by anyone else fails `credential_not_owned` before a process starts. A
 deployment-owned API key carries no such binding.
 
-### The OpenRouter adapter
+### One-shot runs for module jobs
 
-It sends the task and context, receives tool-call requests, dispatches each through the
-same door with the same run token, and repeats up to the iteration limit. Nothing runs
-locally, so it reports enforced isolation. Its model and provider allow lists and its
-fallback policy sit under the operator's floor and can never widen who receives private
-context.
+Modules that ask a model one question (Leads job scoring and proposal drafting,
+Recallatron's evidence extraction, Finance's document reading) use a one-shot runner over
+the Claude CLI adapter rather than building a runtime request themselves. A one-shot run has no built-in tools,
+an empty run token, one turn, and a throwaway directory removed afterwards whatever
+happens. The caller owns the response schema and validates what comes back. Failures
+carry a fixed word and never the task text or the model's output.
+
+### The OpenRouter adapter (not built)
+
+The contract is written for it: it would send the task and context, receive tool-call
+requests, dispatch each through the same door with the same run token, and repeat up to
+the iteration limit. Its model and provider allow lists and its fallback policy would sit
+under the operator's floor. Until it exists, `runtime.allowed_runtimes` defaults to
+`claude_cli` only.
+
+### The Jev judgment provider
+
+Jev (TypeSafe System One) answers typed questions about a job posting with calibrated
+scores. It is not a conversational runtime: it has no tools and no loop, and the worker
+calls it through a judgment runner with a 30-second deadline. The adapter calls one fixed
+HTTPS endpoint, refuses redirects, ignores ambient proxies, bounds request and response
+sizes, validates every answer and exposes only fixed failure codes. One bounded attempt;
+on any failure the caller falls through to full scoring.
+
+It is off twice by default. The operator turns it on with `runtime.jev.enabled`, a
+credential reference and `runtime.jev.model_id` (default `jev-latest`), and the workspace
+owner turns it on with `leads.scoring.prefilter_enabled`, because that sends the
+workspace's postings and profile to the provider. Setup and rollback are in the
+[runtimes README](../../runtimes/README.md#jev-typed-judgments). A job Jev confidently
+scores below the workspace's threshold (`leads.scoring.prefilter_threshold`, default 50)
+is held with no final score and shows in the Leads Review queue, where Promote sends it
+on to full scoring.
 
 ### What the core keeps about a run
 
@@ -201,7 +250,10 @@ discover-then-call keeps the visible tool list small as it grows.
   [connector sign-in](../../packages/core/src/rheo_core/oauth),
   [runtime orchestration](../../packages/core/src/rheo_core/runtime),
   [runtime contract](../../packages/contracts/src/rheo_contracts/runtime.py),
-  [Claude CLI adapter](../../runtimes/src/rheo_runtimes/claude_cli.py)
+  [Claude CLI adapter](../../runtimes/src/rheo_runtimes/claude_cli.py),
+  [one-shot runner](../../packages/core/src/rheo_core/runtime/oneshot.py),
+  [Jev adapter](../../runtimes/src/rheo_runtimes/jev.py),
+  [package sets and `explicit_only`](../../packages/core/src/rheo_core/tokens/sets.py)
 - Tests: [MCP boundary](../../tests/test_mcp_boundary.py),
   [MCP surface](../../tests/test_mcp_surface.py),
   [MCP redaction](../../tests/postgres/test_mcp_redaction.py),
@@ -209,4 +261,6 @@ discover-then-call keeps the visible tool list small as it grows.
   [OAuth boundary](../../tests/postgres/test_oauth_boundary.py),
   [runtime gate](../../tests/test_runtime_gate.py),
   [Claude CLI adapter](../../tests/test_claude_cli.py),
-  [continuation binding](../../tests/postgres/test_runtime_continuation_binding.py)
+  [continuation binding](../../tests/postgres/test_runtime_continuation_binding.py),
+  [opt-in token scope](../../tests/test_token_effective_scope.py),
+  [Jev adapter](../../tests/test_jev.py)
