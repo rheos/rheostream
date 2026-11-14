@@ -199,8 +199,10 @@ The relationships module registers `party` as deletable. Its `delete(ref)` for t
   `merged_into_id` names it (those alias rows hold nothing but a display name and the pointer,
   and they are the same person), and returns the full set of references it removed. The
   coordinator runs the participants and writes one deletion record per reference returned, so
-  every alias id resolves to `state = deleted` afterward and Leads nulls the party reference on
-  observations that named any of them.
+  Leads nulls the party reference on observations that named any of them, and every alias id is
+  to resolve to `state = deleted` afterward. The resolver does not read the deletion record yet,
+  so today a deleted id resolves to `unavailable`
+  ([deletion record](deletion-export-migration.md#the-deletion-record)).
 - Merge records naming a removed party as survivor or merged keep their identifiers, timestamps,
   actor, and `evidence_refs`, and have their free-text `evidence` set null, because a reviewer's
   note about why two records were one person can restate that person; review candidates naming

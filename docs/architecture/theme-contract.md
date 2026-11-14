@@ -149,46 +149,66 @@ explicit token-driven style, can therefore still shift visually when a third-par
 different `scheme`. This is a separate channel from the token values, and the defences above do
 not close it.
 
-No chrome-consuming component exists yet, so nothing is exposed today. The first change that
-ships a confirmation or approval screen chooses one of two ways to close it:
+Two ways close it:
 
-- the reserved chrome set declares its **own** explicit `color-scheme` from a built-in-only
-  value, isolating its user-agent-drawn parts from whatever `scheme` an overlay chose for the rest
-  of the page; or
+- the chrome declares its **own** explicit `color-scheme` from a built-in-only value, isolating
+  its user-agent-drawn parts from whatever `scheme` an overlay chose for the rest of the page; or
 - the confirmation interface avoids native user-agent rendering entirely for chrome elements and
   tokenises every part of it, for example a checkbox styled from `chrome.*` tokens rather than
   left to the browser's `color-scheme`-dependent native rendering.
 
-This choice is tracked in [Deferred](#deferred) below.
+**The shipped chrome takes the first.** The one chrome consumer is the shell's approval review
+and decision screen, styled by `apps/web/src/shell/chrome/approval-detail.module.css`. Its
+`.chrome` rule sets `color-scheme: dark` itself, beside the `chrome.*` tokens it reads, so a
+theme's `scheme` does not reach the native controls inside it. The value lives in that
+shell-owned file rather than in `compileTheme`'s chrome rule, and every built-in theme carries
+the same dark chrome tokens to match it (a test holds them equal to `seed-dark`'s).
 
-## The seed default
+## The built-in themes
 
-The application ships one built-in theme, `seed-dark`, in
-`apps/web/src/theme/themes/seed-dark.json`, registered in `apps/web/src/theme/builtins.ts`. It is
-**the seed default that a later UI phase replaces or extends**, not the final visual canon: that
-phase adds its built-in themes as further entries in the same registry, and a third-party theme
-needs no contract change at all.
+The application registers four built-in themes in `apps/web/src/theme/builtins.ts`, each a
+contract-v1 file under `apps/web/src/theme/themes/`:
 
-Eight of its colors are taken verbatim from the project site's design tokens (`ground`,
-`ground-raised` as `surface-1`, `ink`, `ink-dim`, `ink-faint`, `accent`, `accent-strong`,
-`hairline`). Every other value is derived from those tokens' own rules and labelled as derived in
-`builtins.ts`, so the later phase can see which values are sourced and which are extrapolated. A
-contrast test holds every text color, the state colors included, at WCAG AA (4.5:1) or better on
-all three surfaces, and the control border and focus colors at the 3:1 non-text floor.
+| Id | Scheme | Offered to viewers |
+| --- | --- | --- |
+| `greenstream-dark` | dark | Yes, as "GreenStream". The default, and the fallback for a missing or unknown choice. |
+| `novadiem-dark` | dark | Yes, as "Novadiem" with the dark mode. |
+| `novadiem-light` | light | Yes, as "Novadiem" with the light mode. |
+| `seed-dark` | dark | No. The original seed, kept in the registry as the reference the other themes' chrome tokens are tested against. |
 
-The root layout validates the seed as a built-in theme and compiles it once at module load. A
-built-in theme that fails validation throws there, which fails the build or the server's boot
-rather than rendering an unstyled page.
+Registry membership, never anything in a theme file, is what makes a theme built-in. The two
+Novadiem modes are two theme files that share every non-color token (a test holds their type and
+shape equal); the picker groups them as one family with a dark and light switch, which is
+registry work, not a contract change. `font.sans` in each starts with `var(--rs-font-brand)`,
+the vendored Geist variable font the application loads from `apps/web/src/theme/font.ts`.
+
+A contrast test holds each offered theme's text colors (the state colors and the placeholder
+included) at WCAG AA (4.5:1) or better on all three surfaces, `on-accent` at 4.5:1 on both accent
+colors, and the control border at the 3:1 non-text floor. `seed-dark`'s own test traces its
+eight verbatim site colors and its derived values.
+
+The root layout validates every built-in theme and compiles it once at module load
+(`apps/web/src/theme/built-in-css.ts`). A built-in theme that fails validation throws there,
+which fails the build or the server's boot rather than rendering an unstyled page.
+
+**Choosing a theme.** The viewer picks one from the shell's settings menu. The choice is a
+per-browser preference, not a workspace setting: the `selectTheme` server action stores the
+theme id in the `rheo_theme_site` cookie (`HttpOnly`, `SameSite=Lax`, one year), set on the
+deployment's base host in subdomain mode so every module host shares it, and host-only in path
+mode. The layout reads it on each request, and still falls back to the host-only `rheo_theme`
+cookie an earlier release wrote, which the next choice deletes
+([preference cookies](identity-and-topology.md#sessions-and-cookies)).
 
 ## Writing against the contract
 
 - Every color, font and spacing value in a shell or module screen comes from a `var(--rs-…)`
   token. No literal. `scripts/check_theme_tokens.py` enforces this over `apps/web/src` and
-  `modules/*/web`, and until a chrome consumer ships it refuses every `--rs-chrome-*`
-  reference there.
-- Separate nested surfaces with the `color.hairline` edge, not background alone. In the seed,
-  `surface-2` is only about 1.03:1 against `surface-1`: it is held dark enough that the verbatim
-  `ink-faint` keeps AA on it, so a background change by itself does not read as an edge.
+  `modules/*/web`, and refuses any `--rs-chrome-*` reference outside the shell-owned
+  `apps/web/src/shell/chrome/` directory.
+- Separate nested surfaces with the `color.hairline` edge, not background alone. In
+  `seed-dark`, `surface-2` is only about 1.03:1 against `surface-1`: it is held dark enough that
+  the verbatim `ink-faint` keeps AA on it, so a background change by itself does not read as an
+  edge.
 - The contract has no border or ring width beyond `size.hairline` (1px). The global focus ring
   uses the CSS keyword `medium` for its width until a later contract version adds a token.
 
@@ -199,13 +219,8 @@ Version 1 validates and compiles version-1 themes only.
 
 ## Deferred
 
-- Theme selection (a settings key under the operator policy floor), importing a user theme with
-  text-on-surface contrast validation, and the built-in themes on this same contract: a later UI
-  phase, tracked as #113. Two built-ins are planned to start, both working
-  names: the current rheo.stream site look, dark only, which `seed-dark` seeds, and a Novadiem
-  theme with a light and a dark mode. Each mode is its own theme file on contract v1; grouping the
-  pair as one theme behind a user-facing switch is later registry work, not a contract change.
-- A chrome-token consumer and a lint rule scoping `chrome.*` tokens to a `chrome/` directory: the
-  first change that ships a confirmation or approval screen. That change also closes the
-  [`color-scheme` residual](#residual-a-theme-can-still-choose-the-pages-color-scheme) by one of
-  the two routes named there.
+- Importing a user (third-party) theme with text-on-surface contrast validation. `validateTheme`
+  already refuses a third-party theme that sets a `chrome.*` token, but nothing in the
+  application loads one yet; the picker offers built-in themes only.
+- A deployment or workspace default theme under the operator policy floor. Today the default is
+  fixed in code (`greenstream-dark`) and the choice is the viewer's cookie.

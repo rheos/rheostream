@@ -27,7 +27,7 @@ requirement that forces each of them.
                                  │
                     service registry (operations, classes, audit, outbox)
                                  │
-              modules: recallatron · relationships · leads · current
+        modules: recallatron · relationships · leads · current · finance
                                  │
                  one Postgres database per workspace  +  control plane
                                  │
@@ -38,7 +38,8 @@ requirement that forces each of them.
 
 Release one deploys four containers plus the operator's reverse proxy. The core and the worker
 share one image. The local stack in `deploy/compose.yaml` runs `postgres`, `core`, and `worker`;
-`web` runs under `next start` outside it.
+`web` runs under `next start` outside it. The flagship overlay, `deploy/compose.flagship.yaml`,
+runs `web` as a fourth container from `apps/web/Dockerfile`.
 
 | Process | Directory | Serves | Notes |
 | --- | --- | --- | --- |
@@ -58,9 +59,16 @@ never calls the `api` host for the first-party interface, which is why release o
 allowlist.
 
 `apps/cli` is the `rheo` operator command (account creation, workspace creation, repair, export
-and restore, member addition, token issuance on a headless install, migrate, doctor). It runs in
-the `core` image and talks to the control plane and the workspace databases directly through the
-same core packages; it is the only surface with the `operator` actor kind.
+and restore, member addition, token issuance on a headless install, module check and upgrade,
+routing, local-bridge enrollment, connector key export, migrate, doctor, `openapi` and
+`web compose`). It runs in the `core` image and talks to the control plane and the workspace
+databases directly through the same core packages; it is the only surface with the `operator`
+actor kind.
+
+`apps/bridge` is not a process in the deployment. It is the `rheo-bridge` command a person runs
+on their own machine, from a checkout's virtualenv, to send enrolled local Claude Code sessions
+to the `api` surface as automatic-memory evidence
+([the local bridge](runtime-and-mcp.md#the-local-claude-code-bridge)).
 
 ## The workspace context
 
@@ -74,7 +82,7 @@ and no service accepts a workspace or actor any other way (FR 2, FR 23).
 | `role` | `owner`, `member`, `operator`, or `service` | from `control.membership` for an account or a token's account; `operator` for the CLI; `service` for a `connection` actor and a `system` actor |
 | `entry` | `web`, `api`, `mcp`, `cli`, `job`, `intake`, `channel` | which boundary built the context |
 | `audience` | `Audience(kind, id)` | who may see outputs: `session` (id: the account), `token` (id: the token; its account is the person behind it), `job` (the originating operation's audience, copied onto the job when an operation enqueues it; a scheduled job has none), or `channel:<conversation>`. The memory module maps this to a memory's audience ([memory](memory.md#audience-and-purposes-fr-27-criteria-27-and-28)). |
-| `operation_set` | frozen set of operation names, or `all` | from the token's snapshot rows; `all` for a web session and the operator; for a `connection` actor the operations its module's `connector_bindings` name for that transport; for a `system` actor at `entry = job` the operations whose declared roles include `service` (the one `system` context built so far, the retention sweep's, carries only `core.record.delete`) |
+| `operation_set` | frozen set of operation names, or `all` | from the token's snapshot rows; `all` for a web session and the operator; for a `connection` actor the operations its module's `connector_bindings` name for that transport; for a `system` actor at `entry = job` the operations whose declared roles include `service`. As built, each `system` context carries a narrower explicit set: an event consumer's holds only the synchronous operations its subscription passes, the retention sweep's expiry only `core.record.delete`, and a scheduled job's none |
 | `enabled_modules` | frozen set of module ids | from `core.module_state` for this workspace |
 | `request_id` | uuid | for logs and the audit record |
 | `principal` | `AuthenticatedPrincipal(account_id, bound_purpose)` | server-resolved, never from a request: the account the boundary verified (null for the operator), and the purpose it is bound to (from `access_token.purpose` for a token, from the stored job or approval purpose on a rebuild, null when unbound) |
@@ -140,8 +148,9 @@ refusal state with `error_code` and `error_text` in `error`). A caller polls a l
 operation through the registered read `core.operation.get` over the same route; there is no
 separate `GET /api/v1/operations/<operation_id>` route. The webhook receiver's route
 ([intake](intake-and-events.md#transports)) is the one route outside that shape, registered by a
-connector binding. The surface accepts bearer tokens of kind `cli` and `mcp`, never a cookie and
-never a `runtime` token ([presentation](identity-and-topology.md#tokens-for-cli-and-mcp-fr-4)).
+connector binding. The surface accepts bearer tokens of kind `cli` only: an `mcp` or `runtime`
+token is refused `token_wrong_kind` (issue #130), and a cookie is never read
+([presentation](identity-and-topology.md#tokens-for-cli-and-mcp-fr-4)).
 Its OpenAPI document is generated from the registry's input and output models by `rheo openapi`
 and committed as `apps/web/src/generated/openapi.json`, which CI regenerates and diffs; the web
 tier's client is generated from that document and is never hand-edited. The internal listener
@@ -154,14 +163,15 @@ The scaffold's tree is the package layout; nothing new is invented.
 
 | Directory | Python distribution or app | Holds |
 | --- | --- | --- |
-| `packages/contracts` | `rheo_contracts` | The manifest model, `WorkspaceContext` type, safety classes, the event envelope, the observation envelope, the runtime contract types, repository protocols shared across modules, record-reference type. Pure models, no I/O. |
-| `packages/core` | `rheo_core` | Boundary adapters, service registry, storage backend and unit of work, migration orchestrator, settings, secret store, identity boundary and providers, sessions and tokens, outbox and worker runtime, operations and audit, approvals, deletion coordinator, export and restore, routing configuration, record resolver. |
-| `modules/recallatron`, `modules/relationships`, `modules/leads`, `modules/current` | `rheo_recallatron`, `rheo_relationships`, `rheo_leads`, `rheo_current` | One module each: manifest, migrations, repositories, services, tools, event handlers, web contribution (`web/` subdirectory of TypeScript). |
-| `connectors` | `rheo_connectors` | The three release-one transports (signed webhook, file import, manual capture) as thin adapters over the Leads intake service. |
-| `runtimes` | `rheo_runtimes` | `ClaudeCliRuntime`; later the OpenRouter and Codex adapters. |
+| `packages/contracts` | `rheo_contracts` | The operation and tool declarations, `WorkspaceContext` type, safety classes, the event envelope, the observation envelope, the runtime contract types, the typed-judgment types, repository protocols shared across modules, record-reference type. Pure models, no I/O. |
+| `packages/core` | `rheo_core` | Boundary adapters, service registry, the module manifest and loader, storage backend and unit of work, migration orchestrator, settings, secret store, identity boundary and providers, sessions and tokens, connector sign-in, outbox and worker runtime, operations and audit, approvals and external actions, deletion coordinator, export and restore, routing configuration, record resolver, redaction, automatic-memory evidence, and the connector transports (the signed webhook receiver and the outbound MCP and OAuth clients). |
+| `modules/recallatron`, `modules/relationships`, `modules/leads`, `modules/current`, `modules/finance` | `rheo_recallatron`, `rheo_relationships`, `rheo_leads`, `rheo_current`, `rheo_finance` | One module each: manifest, migrations, repositories, services, tools, event handlers, web contribution (`web/` subdirectory of TypeScript, for the modules with screens). |
+| `connectors` | `rheo_connectors` | Provider-specific adapters. Empty: the generic signed webhook receiver lives in `rheo_core.connectors`, driven by the Leads manifest's bindings. |
+| `runtimes` | `rheo_runtimes` | `ClaudeCliRuntime` and `JevProvider`, the typed-judgment provider ([runtime](runtime-and-mcp.md#typed-judgments)); later the OpenRouter and Codex adapters. |
 | `channels` | `rheo_channels` | Empty in release one. |
 | `packs` | data only | Reusable defaults; empty of behaviour in release one. |
 | `apps/core`, `apps/worker`, `apps/mcp`, `apps/cli` | entry points | Composition roots. `apps/mcp` is a package imported by `apps/core`, kept separate so criterion 20's import check has a boundary to test. |
+| `apps/bridge` | `rheo_bridge` | The `rheo-bridge` command for a person's own machine. |
 | `apps/web` | Next.js application | The shell and the composed module screens. |
 | `packages/web-contract` | `@rheo-stream/web-contract` | The TypeScript screen contract module web packages build against, and the theme token contract. |
 | `deploy` | container and proxy templates | Generic. |
@@ -169,9 +179,11 @@ The scaffold's tree is the package layout; nothing new is invented.
 | `examples` | synthetic fixtures | The synthetic funnel, demo workspace content. |
 
 Only part of this tree holds code today. `modules/recallatron` (phase two),
-`modules/relationships` and `modules/leads` (phase three) and `modules/current` (phase five)
-are built modules; `connectors` and `channels` are placeholder distributions with an empty
-package.
+`modules/relationships` and `modules/leads` (phase three), `modules/current` (phase five) and
+`modules/finance` are built modules. Finance is a personal ledger and reminder module with no
+screens; it is `explicit_only`, so no named token set reaches its operations
+([module contract](module-contract.md#the-manifest)). `connectors` and `channels` are
+placeholder distributions with an empty package, and `packs` holds one README.
 
 The core carries no import of any module: `rheo_core` and `rheo_contracts` list no module
 distribution as a dependency, and modules are discovered through the `rheo.modules` packaging
@@ -186,27 +198,34 @@ The idea document's six core responsibilities map onto `packages/core` subpackag
 
 | Responsibility | Subpackage | Contract document |
 | --- | --- | --- |
-| Identity and access | `identity`, `sessions`, `tokens`, `boundary` | [identity and topology](identity-and-topology.md) |
+| Identity and access | `identity`, `sessions`, `tokens`, `boundary`, `oauth` (connector sign-in) | [identity and topology](identity-and-topology.md) |
 | Extension lifecycle | `modules` (registry, install, enable, manifest validation) | [module contract](module-contract.md) |
-| Agent and application access | `operations` (service registry), `routing`, `runtime`, `apps/mcp` | [runtime and MCP](runtime-and-mcp.md), [confirmation](confirmation-and-safety.md) |
-| Durable execution | `events` (outbox, deliveries, consumers), `work` (jobs, schedules), `approvals`, `secrets` | [intake and events](intake-and-events.md), [confirmation](confirmation-and-safety.md) |
+| Agent and application access | `operations` (service registry, external actions), `routing`, `runtime`, `redaction`, `evidence` (automatic-memory evidence), `apps/mcp` | [runtime and MCP](runtime-and-mcp.md), [confirmation](confirmation-and-safety.md) |
+| Durable execution | `events` (outbox, deliveries, consumers), `work` (jobs, schedules), `approvals`, `secrets`, `connectors` (the webhook receiver and the outbound MCP and OAuth clients) | [intake and events](intake-and-events.md), [confirmation](confirmation-and-safety.md) |
 | Data operations | `storage`, `migrations`, `exports`, `deletion`, `audit` | [storage](storage-and-workspaces.md), [deletion, export, migration](deletion-export-migration.md) |
 | Record references | `refs` | [identifiers](identifiers.md) |
 
 The core knows no record type of its own beyond those tables. It has no `party`, no
-`opportunity`, no `memory`. The three release-one modules and their ownership:
+`opportunity`, no `memory`. The three release-one modules and the two built after them, with
+their ownership:
 
 | Module | Owns | Depends on |
 | --- | --- | --- |
 | `relationships` | Party, contact point, affiliation, merge record and its items, review candidate (R4; [relationships](relationships.md)) | core only |
 | `recallatron` | Memory and its purposes, memory entity, mention, link, embedding, migration batch ([memory](memory.md)) | core only; `leads` and `relationships` optional |
-| `leads` | Intake connection, field mapping, routing rule, funnel, campaign, delivery receipt, payload, conflict, observation, import batch ([intake](intake-and-events.md)); opportunity, its party and observation links, field state, notes, pipeline preset and pipeline, qualification, draft, handoff and snapshot ([opportunity records](confirmation-and-safety.md#opportunities-parties-qualifications-and-handoffs)); contact permission and suppression records | core, `relationships` (required), `recallatron` (optional) |
+| `leads` | Intake connection, field mapping, routing rule, funnel, campaign, delivery receipt, payload, conflict, observation, import batch ([intake](intake-and-events.md)); opportunity, its party and observation links, field state, notes, pipeline preset and pipeline, qualification, draft, handoff and snapshot ([opportunity records](confirmation-and-safety.md#opportunities-parties-qualifications-and-handoffs)); contact permission and suppression records; the job feed's connection, postings and run reports, job scoring state, proposals and the answer library | core, `relationships` (required) |
+| `current` | Work item, project, comment, dependency, area, and the link a source record holds to its item | core only |
+| `finance` | A personal ledger (statements, lines, payees, open items, reminders) in its own `finance` schema. It declares no record type, so none of it is resolved or exported through the core; it moves with its own `finance state export` | core only |
 
 `leads` requires `relationships`; `relationships` requires nothing (FR 40, criterion 54).
-`recallatron` links to Leads records by reference and declares Leads an optional dependency, which
-is what lets the phase-three suite run with memory absent (criterion 66) and memory run with Leads
-absent. The shipped `recallatron` manifest declares no dependencies yet, because neither optional
-module exists.
+The design has `recallatron` link to Leads records by reference with Leads as an optional
+dependency, which is what lets the phase-three suite run with memory absent (criterion 66) and
+memory run with Leads absent. As shipped, neither manifest names the other and neither calls the
+other. Leads hands a qualified opportunity to Current without declaring a dependency: it stages
+`current.item.create_external` through the core's external-action path and reads Current only
+through registered operation names, so Leads runs with Current absent. Finance writes its
+reminders as Current items the same way, through a service context that names Current's
+operations.
 
 ## Stack decision record (D3)
 
@@ -281,11 +300,14 @@ Recorded here so a reader does not mistake them for oversights.
   milestone's re-enable rule (no replay of completed external effects) is the same rule from the
   other side.
 - Criterion 18's second check, that the production registration set carries no external-class
-  or financial-class operation, is a **release-one invariant** (phases one to three), true
-  because the handoff request is mutate class and the only external-class operation is the test
-  sink. Phase five introduces the first production external-class operation, the handoff
-  destination's execution ([later phases](later-phases.md#phase-5-the-work-in-motion-module)),
-  and must change that CI assertion when it lands; until then the assertion is exact.
+  or financial-class operation, was a **release-one invariant** (phases one to three), true
+  because the handoff request is mutate class and the only external-class operation was the test
+  sink. Phase five brought the first production external-class operation, the handoff
+  destination's execution `current.item.create_external`
+  ([later phases](later-phases.md#phase-5-the-work-in-motion-module)). The check is now a
+  startup assertion in both the core and the worker that admits that one exact registration and
+  nothing else, and still no financial-class operation
+  ([module contract](module-contract.md#discovery-and-registration), step 5).
 - Approval is a web-session act in release one: no token of any kind carries `core.approval.*`
   ([tokens](identity-and-topology.md#what-a-token-can-never-carry-and-what-it-holds-for-a-gated-operation)).
   A person working from a terminal opens the interface to approve. The requirements do not ask

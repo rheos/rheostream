@@ -28,11 +28,12 @@ grow) and can never loosen (the three upper classes cannot be moved to a standin
 setting; the class-to-behaviour table is code, not configuration). `approvals.confirm_operations`
 is not a declared setting yet, so no lower-class call requires confirmation today.
 
-Core migration `0014_external_actions` creates the durable `external_action` shape. No production
-operation is external or financial class yet; final composition nevertheless reserves exactly
-one future external tuple, `current.item.create_external` owned by Current with its exact
-`ExternalSpec` and in-process `current` destination. Every other external declaration or
-registration and every financial declaration fails both shipped composition roots. The allowed
+Core migration `0014_external_actions` creates the durable `external_action` shape. One
+production operation is external class: `current.item.create_external`, owned by Current with
+its exact `ExternalSpec` and in-process `current` destination, the only entry in
+`PRODUCTION_EXTERNAL_ALLOWLIST` (`rheo_core/modules/production.py`). No production operation is
+financial class. Every other external declaration or registration and every financial
+declaration fails both shipped composition roots. The allowed
 operation must be keyed: unkeyed external and financial inline holds are rejected at those roots,
 including in tests. Approving a staged keyed external or financial action never runs it inline:
 approval rechecks the binding, the held caller and the guards, then queues one
@@ -175,7 +176,7 @@ it must add, because the core's are always present.
 | `WindowGuard` | every upper-class operation, by the core | Outside `window_start` to `window_end`. |
 | `RecordStateGuard` | every upper-class operation whose input names a `subject_ref`, by the core, calling the owning module's resolver | The subject resolves to `deleted` or `unavailable`, or its `RecordHead.revision` ([identifiers](identifiers.md#resolution-under-permission)) differs from `approval.subject_revision`. A mutable type's `revision` is advanced only by a compare-and-set write ([storage adapter seam](storage-and-workspaces.md#revision-is-a-compare-and-set-not-a-counter)), never by a bare increment; an immutable type (an observation, a receipt) reports the constant `1`, so the guard on it can only fail by deletion. |
 | `ContactPermissionGuard` | external operations with a party destination, by Leads | `leads.contact_permission.check(destination party, purpose, channel)` returns anything but `permitted` (criterion 61). |
-| `DestinationGuard` | external operations that execute a handoff or send through a connector, by the connector owning the destination | The destination is not registered, or the connector's credential is unavailable. Release one has no such operation outside the test harness: `leads.handoff.request` is mutate class and records `unavailable` itself ([handoffs](#opportunities-parties-qualifications-and-handoffs)), and the guard's first production use is the phase-five execution operation. |
+| `DestinationGuard` | external operations that execute a handoff or send through a connector, by the connector owning the destination | The destination is not registered, or the connector's credential is unavailable. Its one production use is `current.item.create_external`, which an approved `leads.handoff.request` stages ([the handoff operation](#the-handoff-operation-fr-45-criterion-64)). |
 
 The four Core guards, including fail-closed `DestinationGuard`, are built in
 `rheo_core.approvals.guards`. `ContactPermissionGuard` is supplied by Leads and resolved through
@@ -207,8 +208,9 @@ moved because the profile gate is the part that carries a criterion.
 ## Pipeline presets and their limits
 
 Answers idea-document question 17: what a preset can configure, and how records move when it
-changes. Leads is phase-three work and not built yet (`modules/leads` is a placeholder), so
-everything from here to the end of this document is design.
+changes. Leads is built ([`modules/leads/`](../../modules/leads/README.md)); the tables and
+operations from here to the end of this document are its shipped shape, and the few parts not
+built are marked.
 
 ### Entities
 
@@ -223,21 +225,23 @@ All in the `leads` schema.
 | `preset_requirement` | `preset_id`, `version`, `to_stage_id`, `field text` | Fields that must hold a value before entering `to_stage_id`. Presence only; no expressions. |
 | `preset_field` | `preset_id`, `version`, `target text`, `type text`, `required boolean`, `sensitivity text` | Extension fields `ext.<namespace>.<field>` with `type` from `text`, `integer`, `decimal`, `date`, `boolean`, `enum(values)`. |
 | `preset_rubric` | `preset_id`, `version`, `rubric_slug text`, `rubric_version integer` | The qualification rubric this version uses, named from the package rubrics ([below](#opportunities-parties-qualifications-and-handoffs)). |
-| `preset_template` | `preset_id`, `version`, `kind text`, `body text` | Draft templates with named placeholders; `kind` in `followup` only. Phase four adds `proposal` in a Leads migration when the drafting screens arrive. |
+| `preset_template` | `preset_id`, `version`, `kind text`, `body text` | Draft templates with named placeholders; the seeded presets use `kind = followup` only. Job proposals did not become a template kind: they have their own tables (`job_proposal`, `proposal_section`, `answer_library`, `job_pricing`, `proposal_milestone`; see the [Leads README](../../modules/leads/README.md#job-proposals)). |
 | `pipeline` | `id uuid`, `preset_id`, `name`, `owner_id`, `created_at` | A working instance. New opportunities enter it at the preset's `current_version`. |
 
-Handoff destinations are not preset configuration in release one: there are none, and the
-phase-five destination is registered by the destination module, not chosen per preset. A
-`preset_handoff` table arrives with phase five if a preset then needs to name one.
+Handoff destinations are not preset configuration: the one destination, `current`, is
+registered by the Current module, not chosen per preset. No `preset_handoff` table exists; one
+would arrive only if a preset needed to name a destination.
 
-**Seeded at Leads enable.** The enable step writes, when absent: the package preset
+**Seeded by migration.** Leads migration `0004_opportunities` writes the package preset
 `inbound_services` as `pipeline_preset` plus `preset_version 1` with its stages, transitions,
-requirements, fields, `preset_rubric` pin (`inbound_services`, 1), and `followup` template, from
-`modules/leads/presets/inbound_services/1.toml`; one `pipeline` named `inbound` on it, owned by
-the workspace's owner account; and the manual-capture connection with its mapping
-([intake](intake-and-events.md#transports)). Rubrics are package data and need no seeding. A
-funnel is not seeded, because criterion 40 wants a capture with no funnel refused and the owner
-to name the first one; the demo fixtures under `examples/` create theirs.
+requirements, fields, `preset_rubric` pin (`inbound_services`, 1), and `followup` template, and
+`0007_jobsearch_preset` writes the Job search preset the same way. No pipeline is seeded: an
+owner creates one with `leads.pipeline.create` (the `job_search` preset only while
+`leads.capabilities.jobsearch` is on), and routing rules are set explicitly before
+opportunities are created automatically. The manual-capture connection and its mapping are
+written at enable ([intake](intake-and-events.md#transports)). A funnel is not seeded, because
+criterion 40 wants a capture with no funnel refused and the owner to name the first one; the
+demo fixtures under `examples/` create theirs.
 
 Opportunities and qualifications pin `preset_version` at creation; their full rows are in
 [the opportunity records](#opportunities-parties-qualifications-and-handoffs).
@@ -300,7 +304,7 @@ state) is in [intake](intake-and-events.md#entities).
 | `opportunity_observation` | `opportunity_id`, `observation_id`, `decision text`, `decided_by_kind`, `decided_by_id`, `decided_at` | Primary key `(opportunity_id, observation_id)`. FR 39's recorded decision that an observation supports an opportunity: `decision` is `routing_rule:<rule id>` or `manual`. One observation may appear under several opportunities, one row each. |
 | `qualification` | `opportunity_id`, `preset_version integer`, `rubric_slug text`, `rubric_version integer`, `objective text`, `evidence_refs text[]`, `input_revision integer`, `fit text`, `intent text`, `evidence_completeness text`, `urgency text`, `explanation text`, `uncertainty text`, `model_id text null`, `prompt_version text null`, `created_by_kind`, `created_by_id`, `created_at`, `evidence_digest text null` | A record of its own, never a column on the opportunity (criterion 58). The four dimensions are separate, each in `high`, `medium`, `low`, `needs_information`, with no combined score (idea document); `uncertainty` in `low`, `medium`, `high`. `input_revision` is the opportunity revision the assessment read. A later assessment never replaces an earlier one; the current view is the newest by `input_revision`, then `created_at`, and an assessment whose `input_revision` is older than the current view's is stored and never shown as current. `model_id` and `prompt_version` are set when a model participated. `evidence_digest` (schema 0006) is a SHA-256 over what the assessment judged: the attached observations, the non-orphaned field states, the active parties and the value group. `leads.opportunity.get` returns the current digest, and the interface asks for reassessment only when the two differ, so notes, drafts, follow-ups and transitions, which advance `revision` without changing evidence, never do. An assessment recorded before 0006 has a null digest and falls back to comparing `input_revision` with the current revision. |
 | `draft` | `opportunity_id`, `kind text`, `body text`, `template_version integer null`, `runtime_request_id uuid null`, `created_by_kind`, `created_by_id`, `created_at` | The draft class's result is a record (R3): `leads.followup.draft` writes one with `kind = followup`. Nothing leaves. |
-| `handoff` | `opportunity_id`, `purpose text`, `destination_ref text null`, `idempotency_key text`, `snapshot_digest bytea`, `state text`, `result_ref text null`, `result_detail text null`, `approval_id uuid null`, `external_action_id uuid null`, `requested_by_kind`, `requested_by_id`, `requested_at`, `resolved_at null` | The six FR 45 and criterion 64 facts: durable identifier (`id`), source opportunity, purpose, destination, approved payload snapshot (`handoff_snapshot` plus `snapshot_digest`), and result (`state`, `result_ref`, `result_detail`). Unique `(opportunity_id, idempotency_key)`. `state` in `unavailable`, `pending`, `succeeded`, `failed`, `unresolved`, `cancelled`. Release one writes only `unavailable` with `result_detail = no_destination`; `approval_id` and `external_action_id` are filled by the phase-five execution. Several intentional handoffs from one opportunity are several rows with distinct purposes; there is no `converted` flag (idea document). |
+| `handoff` | `opportunity_id`, `purpose text`, `destination_ref text null`, `idempotency_key text`, `snapshot_digest bytea`, `state text`, `result_ref text null`, `result_detail text null`, `approval_id uuid null`, `external_action_id uuid null`, `requested_by_kind`, `requested_by_id`, `requested_at`, `resolved_at null` | The six FR 45 and criterion 64 facts: durable identifier (`id`), source opportunity, purpose, destination, approved payload snapshot (`handoff_snapshot` plus `snapshot_digest`), and result (`state`, `result_ref`, `result_detail`). Unique `(opportunity_id, idempotency_key)`. `state` in `unavailable`, `pending`, `succeeded`, `failed`, `unresolved`, `cancelled`. A request with no destination writes `unavailable` with `result_detail = no_destination`; one with `destination_ref = current` writes `pending` with its `approval_id` and `external_action_id`, and the outcome is copied from core later ([the handoff operation](#the-handoff-operation-fr-45-criterion-64)). Format 14 of the export adds the attempt count, the Current project projection and the qualification the request was made against. Several intentional handoffs from one opportunity are several rows with distinct purposes; there is no `converted` flag (idea document). |
 | `handoff_snapshot` | `handoff_id pk`, `body jsonb`, `byte_length integer` | The payload as requested, never queried, bounded by `approvals.max_payload_bytes`. Its digest is what a phase-five approval binds. Removed with the opportunity. |
 | `opportunity_note` | `opportunity_id`, `body text`, `stage_id text null`, `created_by_kind`, `created_by_id`, `created_at` | A note a person wrote on the opportunity. `leads.opportunity.transition` writes one when its `note` argument is non-empty, with the `stage_id` it accompanied; `leads.opportunity.add_note` writes one without a stage. Intake never writes or reads this table, which is how criterion 49's note survives any later observation: there is no rule under which a source could touch it. Removed with the opportunity. |
 
@@ -321,14 +325,18 @@ assessments remain readable through `leads.qualification.list`. Omitting
 and urgency left as `needs_information`. Neither path advances the stage, creates
 contact permission or invokes a model.
 
-**Where a rubric lives.** A rubric is **package data referenced by slug and version**
-(`modules/leads/rubrics/<slug>/<version>.toml`, listing the objective and the four dimensions'
-criteria), not a workspace record. The reason is that the scoring code that interprets a rubric
-ships in the package and changes with it, so a rubric's identity is a package fact, and release
-one has exactly one (`inbound_services`, version 1) that no workspace edits. `preset_rubric`
-pins the slug and version; the qualification result is a record either way, and a rubric that a
-workspace could edit would arrive as a `leads.rubric` record type in a later migration without
-changing `qualification`'s columns.
+**Where a rubric lives.** A rubric is **package data referenced by slug and version**, not a
+workspace record. The reason is that the scoring code that interprets a rubric ships in the
+package and changes with it, so a rubric's identity is a package fact. Two exist, each at
+version 1 and edited by no workspace: `inbound_services` and `job_search`. Today a rubric is only
+that reference: `preset_rubric` pins the slug and version, an assessment copies them, and the
+caller supplies the `objective`; the planned rubric files listing the objective and the four
+dimensions' criteria were not written. Job scoring copies the `job_search` pin onto its
+qualifications the same way, and takes its criteria from the workspace's job-search profile
+([Leads](../../modules/leads/README.md#job-scoring)). The
+qualification result is a record either way, and a rubric that a workspace could edit would
+arrive as a `leads.rubric` record type in a later migration without changing
+`qualification`'s columns.
 
 ### The handoff operation (FR 45, criterion 64)
 
@@ -389,36 +397,48 @@ workspace export carries no core external action, so a restored pending handoff 
 brings handoffs to Current turns the job's schedule on.
 
 The request is mutate class because writing the record is an internal, reversible state change
-with no external effect; the external effect, when a destination exists, is the destination's
-operation. That is what keeps criterion 18's production registration set free of external-class
-operations while the handoff operation still exists and is callable.
+with no external effect; the external effect is the destination's operation,
+`current.item.create_external`, which is external class and needs its own approval. Criterion
+18's production check is therefore an explicit allow list holding that one operation, not an
+assertion that no external-class operation exists.
 
 ### Operations and roles
 
 | Operation | Class | Roles | Tool |
 | --- | --- | --- | --- |
-| `leads.opportunity.create_from_observation` | mutate | service, owner, member | none (routing calls it) |
+| `leads.opportunity.create_from_observation` | mutate | service, owner, member | `leads_ingest_link` (routing also calls it) |
 | `leads.opportunity.get`, `.list`, `.search` | read | owner, member, service | `leads_get`, `leads_list`, `leads_search` |
+| `leads.observation.get` | read | owner, member, service | `leads_get_observation` |
 | `leads.opportunity.update` (title, owner, value, extension fields; sets field `owner = user`) | mutate | owner, member | `leads_update` |
 | `leads.opportunity.transition(ref, to_stage_id, note)` | mutate | owner, member | `leads_transition` |
-| `leads.opportunity.add_note(ref, body)`, `.list_notes` | mutate, read | owner, member | none in release one |
-| `leads.opportunity.attach_observation`, `.add_party`, `.remove_party` | mutate | owner, member | none in release one |
+| `leads.opportunity.add_note(ref, body)` | mutate | owner, member | none |
+| `leads.opportunity.attach_observation` | mutate | owner, member, service | `leads_attach_observation` |
+| `leads.opportunity.add_party`, `.remove_party` | mutate | owner, member | none |
 | `leads.qualification.assess` (long-running when a model participates), `.list` | mutate, read | owner, member, service | `leads_qualify` |
 | `leads.followup.draft` | draft | owner, member, service | `leads_prepare_followup` |
+| `leads.followup.schedule`, `.resolve` | mutate | owner, member, service | `leads_schedule_followup`, `leads_resolve_followup` |
 | `leads.handoff.request`, `.get` | mutate, read | owner, member | `leads_handoff`, `leads_get_handoff` |
-| `leads.handoff.restage`, `.list` | mutate, read | owner, member | none |
-| `leads.pipeline.create`, `.migrate_version` | mutate | owner | none in release one |
-| `leads.preset.edit` (creates the next version) | mutate | owner | none in release one |
-| `leads.funnel.create`, `.archive`, `leads.campaign.create`, `.archive` | mutate | owner | none in release one |
-| `leads.connection.create`, `.update_mapping`, `.set_routing`, `.rotate_secret`, `.revoke_secret`, `.revoke` | mutate | owner | none in release one |
-| `leads.connection.health`, `.list` | read | owner | `leads_connection_health` |
-| `leads.conflict.list(connection_ref, state)`, `.resolve(conflict_ref, note)` | read, mutate | owner | none in release one |
-| `leads.import.run` | mutate, long-running | owner | none |
+| `leads.handoff.restage`, `.list`, `.current_view` | mutate, read, read | owner, member | none |
+| `leads.pipeline.create`, `.migrate_version` | mutate | owner | none |
+| `leads.pipeline.list` | read | owner, member, service | `leads_pipelines` |
+| `leads.preset.edit` (creates the next version) | mutate | owner | none |
+| `leads.connection.create_webhook`, `.rotate_secret`, `.revoke_secret`, `.revoke` | mutate | owner | `leads_connection_create_webhook`, `leads_connection_rotate_secret`, `leads_connection_revoke_secret`, `leads_connection_revoke` |
+| `leads.connection.set_routing` | mutate | owner | none |
+| `leads.connection.health` | read | owner | none |
 | `leads.intake.capture` | mutate | owner, member | `leads_capture` |
 | `leads.intake.accept_delivery` | mutate; `AuditSpec(subject = the receipt)` | service, owner, member (called by the three connectors only: the webhook route as a `connection` actor, the import job as a `system` actor, and `leads.intake.capture` in the capturing person's context) | none |
 | `leads.contact_permission.record`, `.withdraw`, `.suppress` | mutate | owner, member | none in release one |
 | `leads.contact_permission.check` | read | owner, member, service | none |
 | `core.record.delete` for `leads.observation`, `leads.opportunity` | destructive | owner | `leads_delete` |
+
+Not built from this design: funnel and campaign operations (`leads.funnel.create`, `.archive`,
+`leads.campaign.create`, `.archive`), `leads.connection.update_mapping` and `.list`,
+`leads.conflict.list` and `.resolve`, `leads.opportunity.list_notes`, and `leads.import.run`.
+The job-search operations (`leads.jobfeed.*`, `leads.jobprofile.*`, `leads.jobscoring.retry_failed`,
+`leads.jobreview.promote`, `leads.jobproposal.*`, `leads.jobpricing.request`,
+`leads.proposalprofile.*`, `leads.proposalsection.*`, `leads.proposalmilestone.set`,
+`leads.answerlibrary.*`) are documented in the job-search sections of the
+[Leads README](../../modules/leads/README.md#job-search-capability).
 
 Configuration (connections, mappings, routing, funnels, campaigns, presets, pipelines) is
 `owner` only, and record work is `owner` or `member`, which is R1's split applied to Leads.

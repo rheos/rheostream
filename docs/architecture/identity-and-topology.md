@@ -94,7 +94,7 @@ host's cookie at once because every host's secret resolves to the one revoked se
 | Format | `rheo_<kind>_<43 base64url chars>`: 256 random bits from a CSPRNG. Only the SHA-256 is stored (`access_token.token_hash`). |
 | Scope | Exactly one account, one workspace, one operation set. The operation set is **snapshotted at issuance** into `control.access_token_operation`, one row per permitted operation name, and nothing widens it later; a new scope is a new token. The snapshot is expanded from a named package set ([below](#the-named-package-operation-sets)) or, for a run-scoped token, from an explicit list. |
 | Kinds | `cli` (a person's command-line token), `mcp` (a person's token for an MCP client), `runtime` (the run-scoped token the core issues for one model run, [runtime](runtime-and-mcp.md#the-run-scoped-token)). `access_token.kind` holds the value; `issued_from` records the issuing authority (`session`, `operator`, `runtime`, `connector`). |
-| Issuance | From one of four issuing authorities. Three go through `core.token.issue`: an authenticated web session (the account issuing for itself in a workspace it belongs to); the operator command on a headless install (`rheo token issue --account <id> --workspace <id> --set <name> --kind <cli\|mcp>`, against the control plane); or the core's `runtime` package, on behalf of the actor that started a run. The fourth, `connector`, is the OAuth code exchange of [connector sign-in](#connector-sign-in-oauth-for-mcp-clients): it mints an `mcp` token through `issue_connector_token` inside the exchange's own transaction, never through an operation, and only after the account approved it on the consent page. The value is shown once, or handed to the adapter or the connector once. No token can issue a token: `core.token.issue` is itself non-token-issuable (below), and the connector exchange takes no bearer. |
+| Issuance | From one of four issuing authorities. Three go through `core.token.issue`: an authenticated web session (the account issuing for itself in a workspace it belongs to); the operator command on a headless install (`rheo token issue --account <id> --workspace <id> --set <name> --kind <cli\|mcp>`, against the control plane); or the core's `runtime` package, on behalf of the actor that started a run. The fourth, `connector`, is the OAuth code exchange of [connector sign-in](#connector-sign-in-oauth-for-mcp-clients): it mints an `mcp` token through `issue_connector_token` inside the exchange's own transaction, never through an operation, and only after the account approved it on the consent page. The value is shown once, or handed to the adapter or the connector once. No token can issue a token: `core.token.issue` is itself non-token-issuable (below), and the connector exchange takes no bearer. A local bridge's token is minted outside `core.token.issue` too, by `core.evidence_enrollment.create` or `.rotate` (`rheo evidence enroll` and `rotate` for the operator): a `cli` token whose snapshot is exactly `core.evidence.ingest`, issued from a session or the operator ([the local bridge](runtime-and-mcp.md#the-local-claude-code-bridge)). |
 | Lifetime | `cli` default 90 days, `mcp` default 30 days (`identity.token_max_days.cli` and `identity.token_max_days.mcp`, floor `min`), `runtime` the run's deadline. A `connector` token's value lives `identity.oauth.access_token_minutes` (default 60) and is rotated in place on the same row at every refresh, so its id never changes; the grant behind it ends at `min(identity.oauth.grant_days, identity.token_max_days.mcp)` days (default 30) after issuance, and no refresh outlives that end. |
 | Presentation | `Authorization: Bearer` on the `api` and `mcp` surfaces, each accepting the kinds made for it: the `api` surface accepts `cli` only; the `mcp` surface accepts `mcp` and `runtime`. An `mcp` token on the `api` surface is `token_wrong_kind` (issue #130): it is a model's credential, and over HTTP it would receive an operation's raw output past the tool facade's redaction, so a `cli` token is the HTTP credential. Neither surface reads a cookie, and a session secret presented as a bearer value is `token_malformed` because it matches no token row. A person's `cli` token is refused on the `mcp` surface as `token_wrong_kind`, so a person's command-line credential handed to an MCP client is refused by kind before its scope is even read. No browser flow is ever involved after issuance. |
 | Refusal | Malformed, wrong kind for the surface, expired, revoked, scope-invalid, carrying an unusable stored purpose, and out-of-scope each return a distinct state (`token_malformed`, `token_wrong_kind`, `token_expired`, `token_revoked`, `token_scope_invalid`, `token_purpose_invalid`, `operation_not_permitted`) at the boundary, before any service runs, with no partial effect (criterion 9). `token_scope_invalid` is returned when a presented token's snapshot contains a non-token-issuable operation; it can only arise from a row written outside `core.token.issue`, and the boundary checks it anyway so that the rule below is enforced at both ends. |
@@ -104,9 +104,13 @@ host's cookie at once because every host's secret resolves to the one revoked se
 
 **The non-token-issuable set.** One rule, enforced by `core.token.issue` on every issuance
 whatever the kind and whoever the issuer: the operations that grant, waive, or exercise the right
-to let an effect proceed never appear in a token's snapshot. In release one that set is
-`core.approval.approve`, `core.approval.refuse`, `core.standing_grant.create`,
-`core.standing_grant.revoke`, `core.token.issue`, and `core.token.revoke`. An issuance whose
+to let an effect proceed never appear in a token's snapshot. The set is ten names
+(`rheo_core.tokens.policy.NON_TOKEN_ISSUABLE`): `core.approval.approve`, `core.approval.refuse`,
+`core.approval.preview` (it shows the whole held payload a person is about to approve, which no
+model may read), `core.operation.resolve` (the act that settles an unresolved external action),
+`core.standing_grant.create`, `core.standing_grant.revoke`, `core.token.issue`,
+`core.token.revoke`, and `core.evidence_enrollment.create` and `.rotate`, which each mint a
+local bridge's token. An issuance whose
 expanded set contains one of them is refused with `set_not_issuable` naming the operation, and
 `token_scope_invalid` at presentation is the same check from the other end. The consequence is
 that approval is an act of a web session (and, in phase six, of a channel confirmation by an
@@ -148,7 +152,7 @@ registry at issuance the same way:
 | --- | --- | --- |
 | `read_only` | Every registered operation of class `read`. | Workspace status, operation reads, audit (owner), every module read. |
 | `agent_default` | Every operation named by a registered MCP tool ([tool set](runtime-and-mcp.md#the-mcp-facade)). | The reads, drafts, and mutates a tool exposes, plus the request right for the three deletion tools' `core.record.delete`; by construction no configuration, token, grant, or approval operation, because none has a tool. |
-| `cli_full` | Every registered operation except the non-token-issuable set. | Everything the account's role permits, including configuration operations for an owner, minus the six operations no token may carry. |
+| `cli_full` | Every registered operation except the non-token-issuable set. | Everything the account's role permits, including configuration operations for an owner, minus the ten operations no token may carry. |
 | `alert_writer` | Exactly `current.item.create` and `current.item.close_by_source`, enumerated on purpose so the set never grows when an operation is added. | The two Current writes an external alert writer needs (a probe, a guardrail, a form): open an item and close it by its source pair. Issued per writer as a `cli` token by the operator command. Empty when Current is not installed, so issuance refuses `set_empty`. |
 
 A module can opt out of all four. A manifest that declares `package_sets = "explicit_only"` has
@@ -420,6 +424,19 @@ reverse proxy cannot strip what is sent to a different server. This specificatio
   `invalid_return`, clears the cookie only if its session is dead, and redirects to the return
   path, where the steps above run as for a request with no cookie. A live session that core refuses
   because it can no longer open its workspace gets sign-out on that panel instead.
+
+**Preference cookies are the one exception to host-only, and they carry no authority.** The
+web tier keeps two per-browser display preferences in cookies of its own: the theme
+(`rheo_theme_site`, a built-in theme id, [theme contract](theme-contract.md#the-built-in-themes))
+and the viewer's time zone (`rheo_tz_site`, `auto:<IANA zone>` when it follows the browser and
+`set:<IANA zone>` when the viewer chose one in settings). Screens render on the server, so these
+are how a choice reaches it. Both are written only by shell server actions, `HttpOnly`,
+`SameSite=Lax`, one year. In subdomain mode they are set with `Domain=<base_host>` so a choice made
+on `circuit.` holds on every module host; that also sends them to the apex and the other hosts
+under the base, which is acceptable only because neither names an account, a session or a
+workspace and core never reads them. In path mode, and for a bare name or an IP address, they are
+host-only. An unknown theme id falls back to the default, and an unrecognised time zone is
+ignored.
 
 CSRF: the `/auth/*` POSTs check `Origin` against the routing configuration's host set and refuse
 `origin_not_allowed` otherwise; apart from `GET /auth/restart`, which needs no such check because
