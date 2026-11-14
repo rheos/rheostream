@@ -429,10 +429,10 @@ module, which is the point of the second adapter (D4).
 
 A module job that needs one structured answer from a model, with no tools, does not build a
 `RuntimeRequest` itself. It calls `rheo_core.runtime.oneshot.OneShotRunner`, which the worker
-registers over its `claude_cli` adapter. Leads' job scoring, proposal drafting and pricing use
-it, each choosing its model through a module setting (`leads.scoring.model_id`,
-`leads.proposals.model_id`, `leads.proposals.analysis_model_id`; empty leaves the CLI's
-default). A run is one turn with the CLI's built-in tools disabled, a run token with an empty
+registers over its `claude_cli` adapter. Recallatron's evidence extraction, Finance's model
+steps, and Leads' job scoring, proposal drafting and pricing use it. Leads' three choose
+their model through a module setting (`leads.scoring.model_id`, `leads.proposals.model_id`,
+`leads.proposals.analysis_model_id`; empty leaves the CLI's default). A run is one turn with the CLI's built-in tools disabled, a run token with an empty
 snapshot, nothing pre-approved, the deadline capped by `runtime.max_deadline_seconds`, and a
 throwaway directory removed whatever happens. The task carries the account the work belongs to,
 and the [single-account login rule](#the-login-credential-is-bound-to-one-account) applies to it

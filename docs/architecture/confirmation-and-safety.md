@@ -238,10 +238,9 @@ requirements, fields, `preset_rubric` pin (`inbound_services`, 1), and `followup
 `0007_jobsearch_preset` writes the Job search preset the same way. No pipeline is seeded: an
 owner creates one with `leads.pipeline.create` (the `job_search` preset only while
 `leads.capabilities.jobsearch` is on), and routing rules are set explicitly before
-opportunities are created automatically. The manual-capture connection and its mapping are
-written at enable ([intake](intake-and-events.md#transports)). A funnel is not seeded, because
-criterion 40 wants a capture with no funnel refused and the owner to name the first one; the
-demo fixtures under `examples/` create theirs.
+opportunities are created automatically. Migration `0003_seed_manual_capture` seeds the
+manual-capture connection, its mapping and a default funnel, "General inquiries", at install
+([intake](intake-and-events.md#transports)).
 
 Opportunities and qualifications pin `preset_version` at creation; their full rows are in
 [the opportunity records](#opportunities-parties-qualifications-and-handoffs).

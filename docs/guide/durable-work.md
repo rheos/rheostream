@@ -3,7 +3,8 @@
 ## What it is
 
 The machinery that lets work outlive a crash, a restart or a lost connection. It is nine
-plain tables in each workspace's `core` schema, in six groups, plus a worker:
+plain tables in each workspace's `core` schema, in six groups, plus a worker. (A bookkeeping
+table, `outbox_retention`, records the outbox sweep and is not counted here.)
 
 - The outbox (`outbox_event`, `event_delivery`, `consumer_processed`): events written
   in the same transaction as the change they describe, delivered to each consumer
