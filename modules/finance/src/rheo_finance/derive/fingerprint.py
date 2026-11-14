@@ -15,8 +15,10 @@ Its parts:
 - ``parsers``: every registered parser's id, issuer, format and version, the
   installed ``doc-extraction-api`` (``docextract_adapter.docextract_version``), the
   digest of ``reference/patterns.json`` (``reference.patterns.patterns_digest``),
-  which the hint-setting parsers read, and the digest of ``reference/assets.json``
-  (``reference.assets.assets_digest``), whose codes stage 3 keys crypto lines by;
+  which the hint-setting parsers read, the digest of ``reference/assets.json``
+  (``reference.assets.assets_digest``), whose codes stage 3 keys crypto lines by, and
+  the digest of the owner's identities file (``identities.digest``), whose wording
+  and layouts the parsers match;
 - ``features``: the feature packages in the tree (Key decision 14);
 - ``local_date``: today in ``finance.locale.timezone``. Stage 6 reads today, and later
   stage 14's overdue figures and stage 16's overdue-statement event do too, so a run
@@ -50,7 +52,7 @@ from typing import Final
 
 from sqlalchemy import func, select
 
-from rheo_finance import features
+from rheo_finance import features, identities
 from rheo_finance.clock import local_today
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.documents.registry import ARCHIVE_KEY
@@ -153,6 +155,7 @@ def _parsers() -> str:
             docextract_adapter.docextract_version(),
             patterns.patterns_digest(),
             assets.assets_digest(),
+            identities.digest(),
         ]
     )
 

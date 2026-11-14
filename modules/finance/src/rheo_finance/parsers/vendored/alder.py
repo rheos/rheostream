@@ -17,41 +17,52 @@ own (identities.layout and identities.real).
 import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from rheo_finance.identities import layout, real as _real, real_re as _real_re
+from types import SimpleNamespace
+from rheo_finance.identities import layout, per_identities, real as _real, real_re as _real_re
 
 MONTHS = "JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC"
-OD = layout("alder.statement.overdraft", "neg")
-MARK = re.escape(layout("alder.statement.number_mark", " No "))
-# 9,999.99 / 99.99- neg / 99.99- / -99.99
-MONEY = rf"-?\d{{1,3}}(?:,\d{{3}})*\.\d\d(?:- ?(?:{re.escape(OD)})?)?"
-
-PERIOD = re.compile(layout(
-    "alder.statement.period",
-    r"ALDER CYCLE\s+(\d{1,2} (?:@MONTHS@) \d{4}) UNTIL (\d{1,2} (?:@MONTHS@) \d{4})",
-).replace("@MONTHS@", MONTHS))
 PRINTED_DATE = re.compile(r"^\s*([A-Z]+ \d{1,2}, \d{4})\s*$", re.M)
-# An account can carry a nickname after its number, "ALDER BASIC CHEQUING No ... (SPARE JAR)",
-# and its continuation header adds a marker in brackets.
-SUMMARY_LINE = re.compile(rf"^([A-Z][A-Z0-9 &'/-]*?){MARK}(\d{{6,}})(?: \([^)]*\))?((?:\s+{MONEY}){{4}})\s*$")
-ACCOUNT_HEADER = re.compile(rf"^\s*([A-Z][A-Z0-9 &'/-]*?){MARK}(\d{{6,}})(?: \([^)]*\))*\s*$")
-OPENING = re.compile(_real_re(rf"^\s*ALDER START FIGURE\s+({MONEY})\s*$"))
 TXN_START = re.compile(rf"^\s{{0,3}}(\d{{2}}) ({MONTHS})\s+(\S.*)$")
-AMOUNT_TAIL = re.compile(rf"(?:\s{{2,}}{MONEY})+\s*$")
-
-# The fee types this layout names. Anything else is new and worth a look.
-# ALDER UNNAMED CHARGE names its fee in brackets after it.
-KNOWN_FEES = {_real("ALDER MONTH FEE"), _real("ALDER COUNT FEES"), "OVERDRAFT FEE", _real("ALDER MACHINE FEE"),
-              "OVERDRAFT INTEREST", _real("ALDER UNNAMED CHARGE")}
 NSF = re.compile(r"\bNSF\b|NON[- ]?SUFFICIENT|RETURNED ITEM|ITEM RETURNED|DISHONOU?RED")
+
+
+@per_identities
+def patterns():
+    """The patterns that read the owner's layout and wording, built from the identities file
+    in force when a statement is read (identities.per_identities), never at import: a module
+    imported before the workspace layout is bound would otherwise keep the stand-ins."""
+    OD = layout("alder.statement.overdraft", "neg")
+    MARK = re.escape(layout("alder.statement.number_mark", " No "))
+    # 9,999.99 / 99.99- neg / 99.99- / -99.99
+    MONEY = rf"-?\d{{1,3}}(?:,\d{{3}})*\.\d\d(?:- ?(?:{re.escape(OD)})?)?"
+
+    PERIOD = re.compile(layout(
+        "alder.statement.period",
+        r"ALDER CYCLE\s+(\d{1,2} (?:@MONTHS@) \d{4}) UNTIL (\d{1,2} (?:@MONTHS@) \d{4})",
+    ).replace("@MONTHS@", MONTHS))
+    # An account can carry a nickname after its number, "ALDER BASIC CHEQUING No ... (SPARE JAR)",
+    # and its continuation header adds a marker in brackets.
+    SUMMARY_LINE = re.compile(rf"^([A-Z][A-Z0-9 &'/-]*?){MARK}(\d{{6,}})(?: \([^)]*\))?((?:\s+{MONEY}){{4}})\s*$")
+    ACCOUNT_HEADER = re.compile(rf"^\s*([A-Z][A-Z0-9 &'/-]*?){MARK}(\d{{6,}})(?: \([^)]*\))*\s*$")
+    OPENING = re.compile(_real_re(rf"^\s*ALDER START FIGURE\s+({MONEY})\s*$"))
+    AMOUNT_TAIL = re.compile(rf"(?:\s{{2,}}{MONEY})+\s*$")
+
+    # The fee types this layout names. Anything else is new and worth a look.
+    # ALDER UNNAMED CHARGE names its fee in brackets after it.
+    KNOWN_FEES = {_real("ALDER MONTH FEE"), _real("ALDER COUNT FEES"), "OVERDRAFT FEE", _real("ALDER MACHINE FEE"),
+                  "OVERDRAFT INTEREST", _real("ALDER UNNAMED CHARGE")}
+    return SimpleNamespace(OD=OD, MONEY=MONEY, PERIOD=PERIOD, SUMMARY_LINE=SUMMARY_LINE,
+                           ACCOUNT_HEADER=ACCOUNT_HEADER, OPENING=OPENING, AMOUNT_TAIL=AMOUNT_TAIL,
+                           KNOWN_FEES=KNOWN_FEES)
 
 
 class AlderParseError(ValueError):
     """The text is not an Alder statement this parser can read."""
 
 
-def money(s):
+def money(s, od):
     s = s.strip()
-    bare = s.removesuffix(OD).rstrip()
+    bare = s.removesuffix(od).rstrip()
     negative = s.startswith("-") or bare.endswith("-")
     value = Decimal(bare.replace(",", "").strip(" -"))
     return -value if negative else value
@@ -109,7 +120,8 @@ def movement(prev, values):
 
 
 def parse(text: str) -> dict:
-    period = PERIOD.search(text)
+    p = patterns()
+    period = p.PERIOD.search(text)
     if not period:
         raise AlderParseError("no period line")
     start, end = _day(period.group(1)), _day(period.group(2))
@@ -141,7 +153,7 @@ def parse(text: str) -> dict:
         acct = accounts[current]
         txns = acct["transactions"]
         prev = txns[-1]["balance"] if txns else acct["opening"]
-        values = [money(a) for a in amounts]
+        values = [money(a, p.OD) for a in amounts]
         got = movement(prev, values)
         # an ambiguous line before this one: did it take the account to zero?
         ambiguous_before = bool(txns) and txns[-1].pop("ambiguous", False)
@@ -167,19 +179,19 @@ def parse(text: str) -> dict:
         if pending is not None and line.strip() and (TXN_START.match(line) or not line[0].isspace()):
             close_pending()
             pending = None
-        if pending is None and (m := SUMMARY_LINE.match(line)):
-            o, wd, dp, c = (money(v) for v in re.findall(MONEY, m.group(3)))
+        if pending is None and (m := p.SUMMARY_LINE.match(line)):
+            o, wd, dp, c = (money(v, p.OD) for v in re.findall(p.MONEY, m.group(3)))
             summary[m.group(2)] = {"name": m.group(1).strip(), "opening": o, "withdrawals": wd,
                                    "deposits": dp, "closing": c}
             continue
-        if pending is None and (m := ACCOUNT_HEADER.match(line)):
+        if pending is None and (m := p.ACCOUNT_HEADER.match(line)):
             current = m.group(2)
             open_account(m.group(1).strip(), current)
             continue
         if current is None:
             continue
-        if pending is None and (m := OPENING.match(line)):
-            accounts[current]["opening"] = money(m.group(1))
+        if pending is None and (m := p.OPENING.match(line)):
+            accounts[current]["opening"] = money(m.group(1), p.OD)
             continue
         if pending is None:
             m = TXN_START.match(line)
@@ -192,12 +204,12 @@ def parse(text: str) -> dict:
                 continue
             rest = line
             pending["raw"] += "\n" + line
-        tail = AMOUNT_TAIL.search(rest)
+        tail = p.AMOUNT_TAIL.search(rest)
         head = rest[:tail.start()] if tail else rest
         pending["parts"].append(" ".join(head.split()))
         if tail:
             description = " ".join(p for p in pending["parts"] if p)
-            add_transaction(pending["date"], description, re.findall(MONEY, tail.group()), pending["raw"])
+            add_transaction(pending["date"], description, re.findall(p.MONEY, tail.group()), pending["raw"])
             pending = None
         elif len(pending["parts"]) > 3:
             checks.append(f"unfinished transaction: {pending['raw'].strip()[:60]}")
