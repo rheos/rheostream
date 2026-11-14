@@ -772,7 +772,8 @@ a.rowTitle:hover {
    One compact bar (find, projects, +), filter chips, then rows. A row's tray unit
    is a little under twice the control size; the outermost tray button has a
    second unit beyond it, so a long swipe reaches an end that runs it. */
-.deskSurface {
+.deskSurface,
+.desk {
   --desk-unit: calc(var(--rs-size-control) * 1.75);
   --desk-tile: calc(var(--rs-size-control) + var(--rs-space-1));
 }
@@ -1122,7 +1123,10 @@ a.rowTitle:hover {
   background: var(--rs-color-ink-faint);
 }
 .deskArea {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: min(6ch, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--desk-tone);
   font-weight: 600;
 }

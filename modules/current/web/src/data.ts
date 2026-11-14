@@ -360,8 +360,7 @@ const DEFAULT_AREA_LOOK: Record<string, { icon: AreaIcon; tone: AreaTone }> = {
 };
 export function areaLook(key: string | null): { icon: AreaIcon; tone: AreaTone } {
   if (!key) return { icon: "tag", tone: "slate" };
-  const known = DEFAULT_AREA_LOOK[key];
-  if (known) return known;
+  if (Object.hasOwn(DEFAULT_AREA_LOOK, key)) return DEFAULT_AREA_LOOK[key]!;
   let hash = 0;
   for (const ch of key) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
   return { icon: "tag", tone: AREA_TONES[hash % AREA_TONES.length] ?? "slate" };

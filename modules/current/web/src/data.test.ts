@@ -253,6 +253,9 @@ describe("desk helpers", () => {
     const garden = areaLook("garden");
     expect(garden.icon).toBe("tag");
     expect(areaLook("garden")).toEqual(garden);
+    for (const inherited of ["constructor", "toString", "__proto__"]) {
+      expect(areaLook(inherited).icon).toBe("tag");
+    }
   });
   it("reads the row tag from a summary", () => {
     expect(itemSummary({ tag: "bill-due" }).tag).toBe("bill-due");
