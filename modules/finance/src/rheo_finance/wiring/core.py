@@ -10,6 +10,14 @@ or a command dispatches runs on a fresh core session as ``finance_owner`` or
 The CLI names its workspace with ``FINANCE_WORKSPACE_ID`` (a UUID, not a secret) and
 reaches it as the operator; the module must be enabled there and the layout must
 exist. Nothing here creates a directory: ``finance init-data`` does.
+
+The ``finance`` command is a composition root of its own, so ``operator_context`` first
+calls core's early settings hook, ``register_module_settings()``, as core startup, the
+worker and the ``rheo`` command do (#574). Without it, a deployment variable of any
+installed module (``RHEO__<module>__<key>``) is a stray to core's resolver, and every
+command that reaches core refuses ``SettingUndeclared``. A variable no installed module
+declares is still refused. The tick and the read operations run inside core or the
+worker, whose own roots have already called the hook.
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ from uuid import UUID
 from rheo_contracts import WorkspaceContext
 from rheo_core.boundary.context import Refusal
 from rheo_core.boundary.factories import context_for_operator
+from rheo_core.modules import register_module_settings
 from rheo_core.storage.data_root import Purpose, workspace_dir
 from rheo_core.storage.routing import open_unit_of_work
 
@@ -101,8 +110,14 @@ def workspace_id() -> UUID:
 
 
 def operator_context() -> WorkspaceContext:
-    """The operator's context on the CLI's workspace, with finance enabled there."""
-    core_ctx = context_for_operator(workspace_id())
+    """The operator's context on the CLI's workspace, with finance enabled there.
+
+    Every CLI path to core goes through here (``build_context``,
+    ``bind_workspace_layout``), so this is where the command registers the installed
+    modules' settings before core first resolves them (#574). The hook is idempotent."""
+    workspace = workspace_id()
+    register_module_settings()
+    core_ctx = context_for_operator(workspace)
     if isinstance(core_ctx, Refusal):
         raise db.LayoutRefused("finance_workspace_unavailable")
     if MODULE_ID not in core_ctx.enabled_modules:
