@@ -2,8 +2,10 @@
 
 No transaction surrounds callbacks. Each dispatched operation commits before the
 next callback. The reminder sync commits per step over HTTPS, and under core in one
-transaction of its own that commits only when it synced, so a refusal rolls back the
-sync alone and the steps before it stay committed. Skips/pending have
+transaction of its own with a savepoint per key, committed when its key loop finishes
+(ADR-0027): a key refused for itself is set aside, a global condition rolls back the
+sync alone, and the steps before it stay committed. Inside each long step the context's
+``progress`` beat renews the job's lease. Skips/pending have
 no success anchor, but suppress duplicate work for the same scheduled moment;
 failures remain eligible for retry. No attempt is claimed before callback work.
 """

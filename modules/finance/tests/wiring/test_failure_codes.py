@@ -1,6 +1,6 @@
-"""The tick job's failures (L3): each class and a subclass give its fixed code, anything
-else the generic one, no exception text survives, and cancellation, a lost lease and a
-module that is not ready pass through. No database.
+"""The tick job's failures (L3): each class and a subclass give its fixed code from
+``wiring.errors``, anything else the generic one, no exception text survives, and
+cancellation, a lost lease and a module that is not ready pass through. No database.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from rheo_finance.db import LayoutRefused, WriterBusy
 from rheo_finance.jobs.tick import SchemaBehind, SchemaUnknown
 from rheo_finance.operations import OperationError, RoleRefused
 from rheo_finance.settings import SettingsError
-from rheo_finance.wiring import tick_job
+from rheo_finance.wiring import errors, tick_job
 
 SECRET = "synthetic-secret-path /data/finance/keys/token.env"
 
@@ -52,7 +52,7 @@ def test_each_failure_class_has_its_code(exc: BaseException, code: str) -> None:
 
 
 def test_subclasses_come_before_their_bases() -> None:
-    codes = tick_job.failure_codes()
+    codes = errors.failure_codes()
     for index, (kind, _) in enumerate(codes):
         for later, _ in codes[index + 1 :]:
             assert not issubclass(later, kind) or later is kind, (later, kind)

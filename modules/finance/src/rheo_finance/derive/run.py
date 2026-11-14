@@ -243,17 +243,24 @@ def run(
     # The whole rebuild is one savepoint: a failure at any step puts back every row the
     # derive cleared or rewrote, so a caller that records the failure and commits
     # commits the ledger as it was, never a half-cleared one.
+    # ``beat`` renews a tick's lease before each stage (ADR-0027); a lost lease or a
+    # cancel it raises leaves through the savepoint, which rolls the rebuild back.
+    beat = ctx.progress
     with uow.savepoint():
         # A caller's earlier check may have left the constraints immediate; clearing
         # the txn tables needs them deferred (a txn is briefly without its source).
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))
+        beat()
         _clear(uow, reparse=reparse)
 
+        beat()
         manual = stage2.load_manual(uow, ctx.paths.data)
+        beat()
         parsing = stage1.parse_all(
-            uow, archive, extract_pdf=extract_pdf, reparse=reparse
+            uow, archive, extract_pdf=extract_pdf, reparse=reparse, progress=beat
         )
         currencies = {row.slug: set(row.currencies) for row in manual.registry.accounts}
+        beat()
         lines = stage3.build_lines(
             uow,
             manual.cash_lines,
@@ -266,18 +273,25 @@ def run(
             payees=manual.payees,
         )
 
+        beat()
         stage4.convert(uow)
+        beat()
         stage5.recognize(uow)
         today = local_today(ctx.clock, ctx.settings.timezone)
+        beat()
         months = coverage.build_coverage(uow, manual.document_periods.periods, today)
+        beat()
         stage7.attribute(uow)
+        beat()
         decided = pair_decisions.read(uow)
+        beat()
         stage8.pair_reversals(
             uow,
             window_days=ctx.settings.get_int(stage8.WINDOW_KEY),
             hint_rows=manual.transfer_hints.rows,
             decided=decided,
         )
+        beat()
         stage9.pair_transfers(
             uow,
             tolerance=stage9.Tolerance(
@@ -292,6 +306,7 @@ def run(
             hint_rows=manual.transfer_hints.rows,
             decided=decided,
         )
+        beat()
         crypto_edges.pair_crypto(
             uow,
             tolerance=crypto_edges.Tolerance(
@@ -301,7 +316,9 @@ def run(
             ),
             decided=decided,
         )
+        beat()
         stage11.resolve(uow, decided)
+        beat()
         merchant_keys.build(uow, manual.payees)
 
         rules = stage15_apply.Rules(
@@ -312,6 +329,7 @@ def run(
             ),
         )
 
+        beat()
         presumed_paid = presumed.presumed(uow)
 
         def obligations(finished: Mapping[str, dt.date] | None = None) -> None:
@@ -329,12 +347,15 @@ def run(
         def obligations_again(finished: Mapping[str, dt.date]) -> None:
             """Make the obligations again with ``finished`` paid up, and apply again
             to what they now owe."""
+            beat()
             uow.execute(delete(payment_application))
             uow.execute(delete(obligation))
             obligations(finished)
             stage15_apply.apply_payments(uow, rules)
 
+        beat()
         obligations()
+        beat()
         stage15.build_payments(
             uow,
             manual.payees,
@@ -345,6 +366,7 @@ def run(
                 hold_days=ctx.settings.get_int(stage15.HOLD_KEY),
             ),
         )
+        beat()
         stage15_apply.apply_payments(uow, rules)
         # A paid-up arrangement no longer sets the bills issued after its last
         # instalment, so make them again until finishing changes nothing more.
@@ -362,15 +384,23 @@ def run(
             stage15_apply.mark_unsettled(
                 uow, {slug for each in rounds for slug in each} - settled.keys()
             )
+        beat()
         stage15_apply.record_detected(uow)
+        beat()
         presumed.mark_floor(uow, ctx.settings.get_date(presumed.FLOOR_KEY))
 
+        beat()
         stage16.build(uow, ctx, statement_ready=statement_ready)
+        beat()
         orphans.build(uow, overlap_days=ctx.settings.get_int(OVERLAP_DAYS_KEY))
+        beat()
         open_items.build(uow, known_periods=manual.document_periods.periods)
+        beat()
         queue_counts.refresh(ctx, uow, as_of_date=today)
+        beat()
         uow.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         uow.execute(text("SET CONSTRAINTS ALL DEFERRED"))
+        beat()
         write_sink_specs(uow)
     return Derived(
         documents=parsing.outcomes,

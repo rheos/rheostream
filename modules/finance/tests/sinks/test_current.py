@@ -1165,3 +1165,51 @@ def test_lost_create_answer_is_recovered_then_paid_item_closed(
     assert len(current_stub.items) == 1
     assert next(iter(current_stub.items.values()))["status"] == "done"
     assert rows(owner_conn)[0].external_id is not None
+
+
+def test_https_still_stops_at_a_refused_key_and_never_refiles(
+    current_context: FinanceContext,
+    current_stub: CurrentStub,
+    owner_conn: Connection,
+) -> None:
+    """#548 L10: over HTTPS a refusal still stops the keys after it (the earlier
+    keys committed in their own steps), and a stored item Current no longer has is
+    refused, never created again."""
+    for slug, label in (
+        ("sample-alpha", "Sample Alpha"),
+        ("sample-beta", "Sample Beta"),
+        ("sample-gamma", "Sample Gamma"),
+    ):
+        add(owner_conn, slug=slug, label=label)
+    facts = PostgresReminderRepository(UnitOfWork(owner_conn))
+    keys = sorted(t.source_ref for t in desired_tickets(current_context, facts).tickets)
+    assert len(keys) == 3
+    alpha, beta, _gamma = keys
+    current_stub.refuse_source_ref = beta
+    assert current.sync_reminders(current_context) == current.SyncResult(
+        "failed", "refused"
+    )
+    # Alpha's create and beta's refused one; nothing for gamma.
+    assert current_stub.operations() == ["create", "create"]
+    by_key = {row.source_ref: row for row in rows(owner_conn)}
+    assert set(by_key) == {alpha, beta}
+    assert by_key[alpha].last_status == "open"
+    assert by_key[alpha].last_error_code is None
+    assert by_key[beta].last_error_code == "refused"
+    assert by_key[beta].external_id is None
+
+    current_stub.refuse_source_ref = None
+    assert current.sync_reminders(current_context) == current.SyncResult("synced")
+    assert len(current_stub.items) == 3
+    stored = {row.source_ref: row.external_id for row in rows(owner_conn)}
+    gone = stored[alpha]
+    assert gone is not None
+    del current_stub.items[gone]
+    owner_conn.execute(update(obligation).values(threshold_remaining=Decimal("16.59")))
+    current_stub.requests.clear()
+    # Current's not_found envelope is a refusal here: no create follows it.
+    assert current.sync_reminders(current_context) == current.SyncResult(
+        "failed", "refused"
+    )
+    assert current_stub.operations() == ["get"]
+    assert {row.source_ref: row.external_id for row in rows(owner_conn)} == stored

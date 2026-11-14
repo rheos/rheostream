@@ -67,6 +67,7 @@ from rheo_core.storage.control_plane import (
     list_access_token_operations,
 )
 from rheo_core.storage.postgres import get_backend
+from rheo_core.tokens.sets import effective_operations
 
 if TYPE_CHECKING:
     from rheo_core.modules.execution import DestinationRegistry, GuardRegistry
@@ -171,7 +172,9 @@ def _permission_detail(
                     f"{whose} token {actor_id} expired at "
                     f"{token.expires_at.isoformat()}"
                 )
-            if operation_name not in list_access_token_operations(connection, actor_id):
+            if operation_name not in effective_operations(
+                token.set_name, list_access_token_operations(connection, actor_id)
+            ):
                 return f"{whose} token {actor_id} no longer permits {operation_name}"
             account_id = token.account_id
         membership = get_membership(

@@ -502,7 +502,11 @@ def fetch(ctx: FinanceContext, uow: UnitOfWork, data: FetchIn) -> FetchOut:
     assert current is not None  # the gate found an approval for it
     client = make_client(uow, current)
     at = ctx.clock.now_utc()
-    results = [_fetch_one(uow, client, each, end, at) for each, end in planned]
+    results: list[SeriesFetched] = []
+    for each, end in planned:
+        # Renews a tick's lease before each request; outside _fetch_one's excepts.
+        ctx.progress()
+        results.append(_fetch_one(uow, client, each, end, at))
     return FetchOut(
         enabled=True,
         planned=len(planned),

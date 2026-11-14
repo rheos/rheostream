@@ -1,5 +1,8 @@
 """Schedule health over the tick history: ``finance.job.health`` and ``health``.
 
+Health also names each reminder key whose last sync set it aside (ADR-0027), with its
+fixed code, read from ``sink_ticket`` on the owner connection.
+
 The foreground scheduler that once lived here (``serve``, ``run_once`` and the
 signal handling around them) was not imported into rheoStream: core's worker runs
 the tick as a scheduled job.
@@ -7,10 +10,12 @@ the tick as a scheduled job.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+import datetime as dt
+from collections.abc import Iterable
+from typing import Annotated, Final, Literal
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from rheo_finance import db
 from rheo_finance.clock import as_utc
@@ -19,6 +24,8 @@ from rheo_finance.contracts import Role, SafetyClass, Tiered
 from rheo_finance.jobs.registry import JOBS, TICK_JOB
 from rheo_finance.jobs.store import PostgresJobRepository
 from rheo_finance.operations import OperationSpec, dispatch, register
+from rheo_finance.sinks.current import CURRENT_CODES
+from rheo_finance.storage.schema import sink_ticket
 from rheo_finance.tier import Tier
 
 HealthCode = Literal[
@@ -38,12 +45,45 @@ class HealthIn(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
+REMINDER_ERRORS_SHOWN: Final = 20
+
+
+class ReminderError(BaseModel):
+    """A reminder key whose last sync refused it (ADR-0027): its key, its fixed code
+    (``other`` for a stored code outside ``CURRENT_CODES``) and when it last synced."""
+
+    model_config = ConfigDict(frozen=True)
+    key: Annotated[str, Tiered(Tier.PUBLIC)]
+    code: Annotated[str, Tiered(Tier.PUBLIC)]
+    last_success_at: Annotated[dt.datetime | None, Tiered(Tier.PUBLIC)] = None
+
+
 class HealthOut(BaseModel):
     model_config = ConfigDict(frozen=True)
     code: Annotated[HealthCode, Tiered(Tier.PUBLIC)]
     failed: Annotated[int, Tiered(Tier.PUBLIC)] = 0
     pending: Annotated[int, Tiered(Tier.PUBLIC)] = 0
     skipped_off: Annotated[int, Tiered(Tier.PUBLIC)] = 0
+    # The set-aside reminder keys, by key, at most ``REMINDER_ERRORS_SHOWN``; ``more``
+    # counts the rest.
+    reminder_errors: Annotated[list[ReminderError], Tiered(Tier.PUBLIC)] = []
+    more: Annotated[int, Tiered(Tier.PUBLIC)] = 0
+
+
+def reminder_errors(
+    rows: Iterable[tuple[str, str, dt.datetime | None]],
+) -> tuple[list[ReminderError], int]:
+    """The first ``REMINDER_ERRORS_SHOWN`` of ``rows`` (key, stored code, last
+    success), each code normalised to a fixed one, and how many more there are."""
+    found = [
+        ReminderError(
+            key=key,
+            code=code if code in CURRENT_CODES else "other",
+            last_success_at=last_success_at,
+        )
+        for key, code, last_success_at in rows
+    ]
+    return found[:REMINDER_ERRORS_SHOWN], max(0, len(found) - REMINDER_ERRORS_SHOWN)
 
 
 def _health(ctx: FinanceContext, uow: UnitOfWork, _data: HealthIn) -> HealthOut:
@@ -86,7 +126,19 @@ def _health(ctx: FinanceContext, uow: UnitOfWork, _data: HealthIn) -> HealthOut:
         code = "failed_due_job"
     else:
         code = "healthy"
-    return HealthOut(code=code, **counts)
+    errors, more = reminder_errors(
+        (row.source_ref, row.last_error_code, row.last_success_at)
+        for row in uow.execute(
+            select(
+                sink_ticket.c.source_ref,
+                sink_ticket.c.last_error_code,
+                sink_ticket.c.last_success_at,
+            )
+            .where(sink_ticket.c.last_error_code.is_not(None))
+            .order_by(sink_ticket.c.source_ref)
+        )
+    )
+    return HealthOut(code=code, **counts, reminder_errors=errors, more=more)
 
 
 register(

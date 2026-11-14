@@ -612,6 +612,7 @@ def test_every_derive_empties_the_manual_entry_errors_whole_before_stage_2(
     ctx = SimpleNamespace(
         settings=parse_settings(f'[finance.paths]\narchive = "{tmp_path}"\n'),
         paths=SimpleNamespace(data=tmp_path),
+        progress=lambda: None,
     )
 
     with pytest.raises(StopAtStage2):

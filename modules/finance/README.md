@@ -9,13 +9,17 @@ so; what the ledger does not compute is listed in the design's open questions.
 
 ## Status
 
-Wired, not loaded on the flagship. This directory holds the code, tests and decision
-records of the standalone project it started as (Float), copied in without its Git
-history. The distribution is `rheo-finance`, the package `rheo_finance`, the module id
-`finance`, with a `rheo.modules` entry point and a `finance` console script.
+Loaded on the flagship, not installed in any workspace. This directory holds the code,
+tests and decision records of the standalone project it started as (Float), copied in
+without its Git history. The distribution is `rheo-finance`, the package
+`rheo_finance`, the module id `finance`, with a `rheo.modules` entry point and a
+`finance` console script.
 
-Discovery is not loading: core loads only the ids in `modules.installed`, and the
-flagship's list does not name `finance`. Adding it there is the owner's later step.
+Discovery is not loading: core loads only the ids in `modules.installed`. The
+flagship's list names `finance`, which registers its manifest in core, the worker and
+the CLI and does nothing more: no workspace has the module until an owner installs and
+enables it there, and its tick stays off until that workspace sets
+`finance.jobs.enabled` to true.
 How the module runs on core is ADR-0024; how its reminders reach Current there is
 ADR-0025.
 
@@ -62,8 +66,52 @@ parsers.
 
 The `tick` schedule (`finance.tick`, every 15 minutes) is written at enable but
 enqueues only once the workspace itself sets `finance.jobs.enabled` to true with
-`core.settings.set`. The module registers no core operations or tools, so no token,
-package set or agent reaches it, and core's workspace export carries none of its rows.
+`core.settings.set`. The tick renews its job's lease inside its long steps, per file,
+document, stage, series and reminder key (ADR-0027). Core's workspace export carries
+none of the module's rows.
+
+### Agent reads
+
+The module registers eight read operations in core, each with its tool, for the
+workspace owner alone (ADR-0028):
+
+| Tool | Operation | What it shows |
+| --- | --- | --- |
+| `finance_status` | `finance.status.get` | the status lines |
+| `finance_coverage` | `finance.coverage.get` | statement coverage by account and month |
+| `finance_documents` | `finance.document.list` | documents with their kind, status and period |
+| `finance_sinks` | `finance.sink.state` | each sink's setting and approval state |
+| `finance_lines` | `finance.txn.list` | ledger lines, filtered by account, dates and state |
+| `finance_open_items` | `finance.openitem.list` | open items and counts per kind |
+| `finance_owed` | `finance.owed.list` | obligations with dates, status and flags, credits and bill gaps |
+| `finance_trace` | `finance.owed.trace` | each obligation with its payments and evidence |
+
+No restricted field reaches a model: every field finance tiers restricted (amounts,
+totals, the owed headline) is left out of what these operations return. An agent sees
+the fields finance tiers public or internal (structure, dates, states, counts, labels
+and the status lines' text), as finance tiers them. Labels (payees, accounts,
+document paths) are public under finance's own tiers and do reach it.
+
+The reads are opt-in. No routine token, named package set or connector grant reaches
+them, and the module's other operations are not registered in core at all. The one
+way in is a token issued for them, by the operator, inside the core container:
+
+```sh
+rheo token issue --account <account id> --workspace <workspace id> --set module_read:finance --kind mcp
+```
+
+The token holds the eight reads and nothing else, and lasts as long as core's
+`identity.token_max_days.mcp` allows (30 days by default). Each read runs
+as `finance_reader` and needs the workspace's data layout mounted where it runs; a
+missing layout refuses with `finance_layout_invalid`.
+
+A failed read refuses with one fixed code as both state and detail, and nothing else:
+the code the tick's table gives its class (`finance_layout_invalid`,
+`finance_settings_invalid`, `finance_schema_behind`, `finance_schema_unknown`,
+`finance_operation_refused`, `finance_storage_failed`), `finance_output_invalid` when
+a handler answers another type, or `finance_read_failed` for any other failure, a
+view that cannot be built included. Core's own refusals (a module that is not ready,
+an unavailable workspace) come back as core gives them.
 
 ### A non-superuser application role
 
@@ -160,10 +208,19 @@ Under core, reminders go to Current in process (ADR-0025), and the
 `current_base_url`, `current_credential_file` and `current_token_var` keys are
 ignored. Current must be enabled in the workspace, with its `bills` area (Current's
 first migration seeds it). Approve the sink with `finance sink approve current` under
-core: an approval given over HTTPS does not carry over. A sync is one transaction: a
-refusal leaves Current and the sink's rows as they were, and the next tick tries
-again. One Current item deleted by hand, or a refusal that repeats (a retired `bills`
-area), stops every sync until it is handled.
+core: an approval given over HTTPS does not carry over. A sync is one transaction
+with a savepoint per key (ADR-0027). A key Current refuses for itself is set aside
+with its code on its row and the other keys sync; a condition of the whole sync (the
+sink off, Current unavailable) leaves Current and the sink's rows as they were. A
+set-aside key is tried again at every sync with its period's latest fields. A new key
+refused before its item existed is not filed while its period stays settled or out of
+the desired set, and is filed if the period reopens. That holds in process only: over
+HTTPS such a claim is still created and then closed. A Current item deleted by hand
+is filed again for an open period the next time its period changes. `finance jobs
+health` lists the first twenty set-aside keys with their codes, then a count of the
+rest; the others appear there as the keys before them clear when they sync. Status
+line 6's queued retries count every one of them, and its "not synced since" is the
+last time every key synced. Over HTTPS a refusal still stops the keys after it.
 
 Current's preview lists exact pending changes, including priority becoming overdue
 at local midnight. Its confirmation code can change at that boundary; refresh the
