@@ -8,7 +8,9 @@ institution, in names, docstrings and comments. The later ones took dates, figur
 account history out of comments and docstrings, and route the layout wording and
 shapes that would identify an issuer through ``identities.real`` and
 ``identities.layout``, so each pattern matches the owner's own wording at run time while
-these files hold only invented stand-ins and defaults. With the owner's identities file
+these files hold only invented stand-ins and defaults. The latest builds those patterns
+when a document is read (``identities.per_identities``), never at import, so they
+read the data directory bound at that moment. With the owner's identities file
 the rules read what upstream's read. The patches, with the upstream paths and blob ids,
 are kept with the owner's private records. The files arrive under this
 repository's AGPL-3.0 license.

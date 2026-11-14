@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
-from rheo_finance.identities import layout
+from rheo_finance.identities import layout, per_identities
 from rheo_finance.identities import real as _real
 from rheo_finance.identities import real_re as _real_re
 from rheo_finance.parsers.base import (
@@ -74,12 +74,18 @@ INSTITUTION: Final = "Alder"
 CARD_PAYMENT: Final = "card_payment"
 
 _MONTHS: Final = "|".join(MONTH_ABBREVIATIONS)
-_PERIOD: Final = re.compile(
-    _real_re(
-        r"Neem cycle:[ \t]+([A-Z][a-z]+) (\d{1,2})(?:, (\d{4}))? to"
-        r" ([A-Z][a-z]+) (\d{1,2}), (\d{4})"
+
+
+@per_identities
+def _period_re() -> re.Pattern[str]:
+    return re.compile(
+        _real_re(
+            r"Neem cycle:[ \t]+([A-Z][a-z]+) (\d{1,2})(?:, (\d{4}))? to"
+            r" ([A-Z][a-z]+) (\d{1,2}), (\d{4})"
+        )
     )
-)
+
+
 # A signed balance: -$1.00, $1.00 or $1.00 CR are all printed somewhere by card issuers.
 # Every label and its value sit on one line: [ \t] never crosses a line end.
 _BALANCE: Final = rf"[ \t]+(-[ \t]*)?\$({AMOUNT_TEXT})([ \t]?CR\b)?"
@@ -125,7 +131,7 @@ def _signed_balance(match: re.Match[str], first: int) -> Decimal:
 
 
 def _period(text: str) -> tuple[dt.date, dt.date]:
-    found = [match.groups() for match in _PERIOD.finditer(text)]
+    found = [match.groups() for match in _period_re().finditer(text)]
     if not found:
         raise NotRecognised("not an Alder Neem statement")
     first_month, first_day, first_year, last_month, last_day, year = one_value(found)

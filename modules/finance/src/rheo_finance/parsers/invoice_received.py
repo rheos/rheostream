@@ -42,6 +42,7 @@ import re
 from decimal import Decimal
 from typing import Final
 
+from rheo_finance.identities import per_identities
 from rheo_finance.identities import real as _real
 from rheo_finance.identities import real_re as _real_re
 from rheo_finance.parsers.base import (
@@ -58,15 +59,27 @@ from rheo_finance.text import normalize_description
 
 ISSUER: Final = "invoices-received"
 CURRENCY: Final = "CAD"
+
+
 # The labels, read through ``identities.real``.
-_INVOICE: Final = re.compile(
-    _real_re(r"\s*Inv number\s+(?P<number>[A-Za-z0-9][A-Za-z0-9-]*)\s*")
-)
+@per_identities
+def _invoice_re() -> re.Pattern[str]:
+    return re.compile(
+        _real_re(r"\s*Inv number\s+(?P<number>[A-Za-z0-9][A-Za-z0-9-]*)\s*")
+    )
+
+
 ISSUED: Final = "Inv issued"
 DUE: Final = "Inv due"
-_DATE: Final = re.compile(
-    _real_re(r"\s*(?P<label>Inv issued|Inv due):\s+(?P<date>\S.*?)\s*")
-)
+
+
+@per_identities
+def _date_re() -> re.Pattern[str]:
+    return re.compile(
+        _real_re(r"\s*(?P<label>Inv issued|Inv due):\s+(?P<date>\S.*?)\s*")
+    )
+
+
 _HEADER: Final = "InvItemInvCountInvRateInvSum"
 FROM_BLOCK: Final = "INV FROM"
 TO_BLOCK: Final = "INV TO"
@@ -91,7 +104,7 @@ def _date(text: str) -> dt.date:
 def _dates(lines: list[str]) -> dict[str, dt.date]:
     found: dict[str, dt.date] = {}
     for line in lines:
-        match = _DATE.fullmatch(line)
+        match = _date_re().fullmatch(line)
         if match is not None:
             label = {_real(ISSUED): ISSUED, _real(DUE): DUE}[match["label"]]
             if label in found:
@@ -113,7 +126,7 @@ def _payee(lines: list[str]) -> str:
     for line in lines[starts[0] + 1 :]:
         if line.strip() == _real(TO_BLOCK):
             break
-        if line.strip() and _DATE.fullmatch(line) is None:
+        if line.strip() and _date_re().fullmatch(line) is None:
             return " ".join(line.split())
     raise NotRecognised("an invoice without its issuer")
 
@@ -151,7 +164,7 @@ def _items_and_summary(lines: list[str]) -> tuple[list[Decimal], dict[str, Decim
 def _read(text: str) -> tuple[str, dt.date, list[Decimal], dict[str, Decimal], str]:
     lines = text.splitlines()
     filled = [line for line in lines if line.strip()]
-    first = _INVOICE.fullmatch(filled[0]) if filled else None
+    first = _invoice_re().fullmatch(filled[0]) if filled else None
     if first is None:
         raise NotRecognised("not an invoice")
     issued = _dates(lines)[ISSUED]

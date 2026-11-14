@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
-from rheo_finance.identities import layout
+from rheo_finance.identities import layout, per_identities
 from rheo_finance.identities import real_re as _real_re
 from rheo_finance.parsers.base import (
     AccountLookup,
@@ -61,16 +61,27 @@ from rheo_finance.parsers.registry import Parser, register_parser
 ISSUER: Final = "alder-neem"
 INSTITUTION: Final = "Alder"
 
-_TITLE: Final = re.compile(_real_re(r"^\s*Neem activity for .+ card\s*$"), re.MULTILINE)
+
+@per_identities
+def _title_re() -> re.Pattern[str]:
+    return re.compile(_real_re(r"^\s*Neem activity for .+ card\s*$"), re.MULTILINE)
+
+
 _SHORT_DATE: Final = r"[A-Z][a-z]{2} \d{1,2}, \d{4}"
 _RANGE: Final = re.compile(rf"^\s*({_SHORT_DATE}) to ({_SHORT_DATE})\s*$", re.MULTILINE)
-_HEADER: Final = re.compile(
-    _real_re(
-        r"^\s*Neem When\s+Neem Posted On\s+Neem What\s+Neem Unit"
-        r"\s+Neem Out\s+Neem In\s*$"
-    ),
-    re.MULTILINE,
-)
+
+
+@per_identities
+def _header_re() -> re.Pattern[str]:
+    return re.compile(
+        _real_re(
+            r"^\s*Neem When\s+Neem Posted On\s+Neem What\s+Neem Unit"
+            r"\s+Neem Out\s+Neem In\s*$"
+        ),
+        re.MULTILINE,
+    )
+
+
 _CARD_SHAPE: Final = r"\bXXXX-(\d{4})\b"
 
 
@@ -94,7 +105,7 @@ class _Row:
 
 
 def _range(text: str) -> tuple[dt.date, dt.date]:
-    if _TITLE.search(text) is None or _HEADER.search(text) is None:
+    if _title_re().search(text) is None or _header_re().search(text) is None:
         raise NotRecognised("not an Alder Neem transaction download")
     first, last = one_value([match.groups() for match in _RANGE.finditer(text)])
     start = written_date(first, "%b %d, %Y")

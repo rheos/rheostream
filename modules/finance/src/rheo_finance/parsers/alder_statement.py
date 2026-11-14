@@ -30,6 +30,7 @@ import re
 from decimal import Decimal
 from typing import Final
 
+from rheo_finance.identities import per_identities
 from rheo_finance.identities import real_re as _real_re
 from rheo_finance.parsers.base import (
     AccountLookup,
@@ -56,18 +57,24 @@ CURRENCY: Final = "CAD"
 # holds deposit accounts only and every built-in pattern scopes chequing and savings
 # together; pass the registered kind once a pattern tells the two apart.
 ACCOUNT_KIND: Final = "chequing"
+
+
 # A bill payment or a automatic payment with its payee in brackets, the words read
 # through ``identities.real``: the payee runs to the last closing bracket (a payee may
 # hold its own).
-_PAYEE: Final = re.compile(
-    _real_re(r"(?:SETTLE TO\S*|AUTOPULL OUT)\s*\((?P<payee>.+)\)\s*"), re.IGNORECASE
-)
+@per_identities
+def _payee_re() -> re.Pattern[str]:
+    return re.compile(
+        _real_re(r"(?:SETTLE TO\S*|AUTOPULL OUT)\s*\((?P<payee>.+)\)\s*"), re.IGNORECASE
+    )
+
+
 _REFERENCE: Final = re.compile(r"\s*#\s*\d+$")
 
 
 def payee(description: str) -> str | None:
     """The payee a bill or automatic payment prints, without its reference."""
-    match = _PAYEE.fullmatch(" ".join(description.split()))
+    match = _payee_re().fullmatch(" ".join(description.split()))
     if match is None:
         return None
     return _REFERENCE.sub("", match["payee"]).strip() or None

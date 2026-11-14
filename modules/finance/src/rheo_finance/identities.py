@@ -25,14 +25,22 @@ Keys are matched whole (never inside a longer word), longest first, case as writ
 Without the file every form stands for itself. The tests' synthetic documents are
 written in the codenames, so they parse either way; an owner document is recognised only
 where the owner's file names its wording.
+
+The file is the one of the data directory in force when a function here is called: the
+bound workspace layout's, else ``$FINANCE_DATA_DIR``. So nothing calls these functions
+at import (``tests/guards/test_identities_at_call.py``): a module imported before the
+layout is bound would keep the stand-ins for the life of the process. A pattern built
+from the file is a function wrapped in ``per_identities``, built once per file.
+``digest`` names the file's bytes for the parse inputs (``derive.stage1``).
 """
 
 from __future__ import annotations
 
 import functools
+import hashlib
 import re
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final
@@ -40,6 +48,8 @@ from typing import Final
 from rheo_finance.db import data_dir
 
 FILE_NAME: Final = "identities.toml"
+# How many identities files ``per_identities`` keeps a value for before it starts again.
+_KEPT: Final = 8
 
 
 class IdentitiesError(Exception):
@@ -73,6 +83,50 @@ def _load(
         + r")(?![A-Za-z0-9])"
     )
     return forms, pattern
+
+
+def _version() -> tuple[str, int | None]:
+    """The identities file in force, as its path and modification time (None when
+    there is no file)."""
+    path = identities_path()
+    try:
+        return str(path), path.stat().st_mtime_ns
+    except FileNotFoundError:
+        return str(path), None
+
+
+def per_identities[T](build: Callable[[], T]) -> Callable[[], T]:
+    """``build`` as a function whose value is built from the identities file in force
+    when it is called, and kept for that file (its path and modification time): a
+    pattern made with ``real``, ``real_re`` or ``layout`` reads the data directory
+    bound at that moment, and each workspace's data directory gets its own."""
+    built: dict[tuple[str, int | None], T] = {}
+
+    @functools.wraps(build)
+    def current() -> T:
+        key = _version()
+        if key in built:
+            return built[key]
+        value = build()
+        if len(built) >= _KEPT:
+            built.clear()
+        built[key] = value
+        return value
+
+    return current
+
+
+def digest() -> str | None:
+    """sha256 of the identities file in force, or None when there is none. A parse
+    depends on its wording, so the parse inputs carry it; only the hash leaves here."""
+    path = identities_path()
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise IdentitiesError(f"{FILE_NAME} cannot be read") from None
+    return hashlib.sha256(data).hexdigest()
 
 
 def forms() -> Mapping[str, str]:

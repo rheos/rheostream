@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
-from rheo_finance.identities import layout
+from rheo_finance.identities import layout, per_identities
 from rheo_finance.identities import real as _real
 from rheo_finance.identities import real_re as _real_re
 from rheo_finance.parsers.base import (
@@ -70,13 +70,21 @@ ISSUER: Final = "sumac"
 INSTITUTION: Final = "Sumac"
 
 _SLASHED: Final = r"\d\d/\d\d/\d\d"
+
+
 # Every label and its value sit on one line: [ \t] never crosses a line end.
-_PERIOD: Final = re.compile(
-    _real_re(rf"Sumac Cycle:[ \t]+({_SLASHED}) to ({_SLASHED})")
-)
-_CLOSING: Final = re.compile(
-    _real_re(r"Sumac Cycle Close Date[ \t]+([A-Z][a-z]+ \d{1,2}, \d{4})")
-)
+@per_identities
+def _period_re() -> re.Pattern[str]:
+    return re.compile(_real_re(rf"Sumac Cycle:[ \t]+({_SLASHED}) to ({_SLASHED})"))
+
+
+@per_identities
+def _closing_re() -> re.Pattern[str]:
+    return re.compile(
+        _real_re(r"Sumac Cycle Close Date[ \t]+([A-Z][a-z]+ \d{1,2}, \d{4})")
+    )
+
+
 _SIGNED: Final = rf"(-)?\$({AMOUNT_TEXT})\b"
 # The reference is a column of its own: two or more spaces before it. A store number
 # the description carries after a single space stays in the description.
@@ -84,9 +92,21 @@ _ROW: Final = re.compile(
     rf"^\s*({_SLASHED})\s+({_SLASHED})\s+(.*?)(?: {{2,}}\d{{4}})?\s+(-)?\$"
     rf"({AMOUNT_TEXT})\s*$"
 )
-_TOTAL: Final = re.compile(_real_re(rf"^[ \t]*Sumac Sum[ \t]+{_SIGNED}[ \t]*$"))
+
+
+@per_identities
+def _total_re() -> re.Pattern[str]:
+    return re.compile(_real_re(rf"^[ \t]*Sumac Sum[ \t]+{_SIGNED}[ \t]*$"))
+
+
 _HEADING: Final = re.compile(r"^[ \t]*([A-Z][A-Z &/-]*[A-Z])[ \t]*$")
-_TABLE_START: Final = _real("Sumac prior cycle balance")
+
+
+@per_identities
+def _table_start() -> str:
+    return _real("Sumac prior cycle balance")
+
+
 # Read through ``identities.real``.
 PAYMENTS_SECTION: Final = "SUMAC CREDITS"
 PAYMENTS_LABEL: Final = "Sumac Paid In"
@@ -127,13 +147,14 @@ def _labelled(text: str, label: str, *, optional: bool = False) -> Decimal | Non
 
 
 def _period(text: str) -> tuple[dt.date, dt.date]:
-    found = [match.groups() for match in _PERIOD.finditer(text)]
+    found = [match.groups() for match in _period_re().finditer(text)]
     if not found:
         raise NotRecognised("not a Sumac statement")
     first, last = one_value(found)
     start, end = _slashed(first), _slashed(last)
     closing = [
-        written_date(match.group(1), "%B %d, %Y") for match in _CLOSING.finditer(text)
+        written_date(match.group(1), "%B %d, %Y")
+        for match in _closing_re().finditer(text)
     ]
     if start > end or one_value(closing) != end:
         raise NotRecognised("not a Sumac statement")
@@ -181,7 +202,7 @@ def _sections_tie(text: str, lines: list[ParsedLine], payments: Decimal) -> bool
             # As printed: a charge positive, a credit negative.
             section.append(-(next(rows).amount or Decimal(0)))
             continue
-        total = _TOTAL.match(row)
+        total = _total_re().match(row)
         if total is not None:
             if sum(section, Decimal(0)) != _signed(total):
                 return False
@@ -189,7 +210,7 @@ def _sections_tie(text: str, lines: list[ParsedLine], payments: Decimal) -> bool
                 paid -= sum(section, Decimal(0))
             section, heading = [], None
             continue
-        if _TABLE_START in row:
+        if _table_start() in row:
             section, heading = [], None
             continue
         named = _HEADING.match(row)

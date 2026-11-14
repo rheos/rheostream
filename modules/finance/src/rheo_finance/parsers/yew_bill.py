@@ -32,6 +32,7 @@ from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any, Final
 
+from rheo_finance.identities import per_identities
 from rheo_finance.identities import real_re as _real_re
 from rheo_finance.manual.accounts import last_four
 from rheo_finance.parsers.base import (
@@ -47,15 +48,21 @@ from rheo_finance.parsers.registry import Parser, register_parser
 
 INSTITUTION: Final = "Yew"
 CURRENCY: Final = "CAD"
+
+
 # The account-number line; its label is read through ``identities.real``.
-_ACCOUNT_NUMBER: Final = re.compile(
-    _real_re(r"^[ \t]*Yew holder key[ \t]+(\d[\d -]*\d)[ \t]*$"), re.M
-)
+@per_identities
+def _account_number_re() -> re.Pattern[str]:
+    return re.compile(
+        _real_re(r"^[ \t]*Yew holder key[ \t]+(\d[\d -]*\d)[ \t]*$"), re.M
+    )
 
 
-_ARREARS: Final = re.compile(
-    _real_re(rf"^[ \t]*Yew lagging[ \t]+\$(?P<amount>{AMOUNT_TEXT})[ \t]*$"), re.M
-)
+@per_identities
+def _arrears_re() -> re.Pattern[str]:
+    return re.compile(
+        _real_re(rf"^[ \t]*Yew lagging[ \t]+\$(?P<amount>{AMOUNT_TEXT})[ \t]*$"), re.M
+    )
 
 
 def _date(value: object) -> dt.date:
@@ -70,7 +77,7 @@ def _bill_month(bill_date: dt.date) -> tuple[dt.date, dt.date]:
 def _account(
     text: str, accounts: AccountLookup, period: tuple[dt.date, dt.date]
 ) -> RegisteredAccount:
-    match = _ACCOUNT_NUMBER.search(text)
+    match = _account_number_re().search(text)
     four = last_four(match.group(1)) if match else None
     if four is None:
         raise Rejected("unknown_account", period)
@@ -99,7 +106,7 @@ def _tied_out(
 
 
 def _arrears(text: str) -> Decimal | None:
-    match = _ARREARS.search(text)
+    match = _arrears_re().search(text)
     return None if match is None else amount(match["amount"])
 
 

@@ -23,9 +23,11 @@ UPSTREAM_COMMIT = "0ad7253f6586eea62cabc32d7d69823e3987e67b"
 
 # file name -> (Git blob id, sha256 of the bytes, how it relates to upstream)
 PINS: dict[str, tuple[str, str, str]] = {
+    # alder.py and schema.py: a further recorded patch builds every value read through
+    # ``identities`` when it is read (``identities.per_identities``), not at import.
     "alder.py": (
-        "df7e437cc29fe9a8eaa3e065d74a815793df1bb3",
-        "bfbf441ca1852d2c46f1280a644365f1579217437a494e9c8ff56b3bf8567737",
+        "68e9635076eaf025bff84d396ee12381fc342ea9",
+        "d65e76c5415cc0062fb46ae9e8fc519bf1bcfd93950d75e7e482651bd022a5ca",
         "recorded patches",
     ),
     "reference.py": (
@@ -39,8 +41,8 @@ PINS: dict[str, tuple[str, str, str]] = {
         "upstream bytes",
     ),
     "schema.py": (
-        "e2c776ca2ab51ab36a2de5891b4ac4a2dd1c7609",
-        "38b54e7d3cad4c59d3d05013db6b2fab4dee419af0da6e6c4971468f2e278ad4",
+        "108bf8f63b5414b0206e559fe87eb8ac1cad8741",
+        "864d0076c04f028ab5de661ae0d2abf71623775fc83003be63fb040d3544bdb8",
         "recorded patches",
     ),
 }

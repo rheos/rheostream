@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
+from rheo_finance.identities import per_identities
 from rheo_finance.identities import real as _real
 from rheo_finance.identities import real_re as _real_re
 from rheo_finance.parsers.base import (
@@ -55,30 +56,48 @@ from rheo_finance.text import normalize_description
 
 ISSUER: Final = "receipts"
 CURRENCY: Final = "CAD"
-_TITLE: Final = re.compile(_real_re(r"\s*(?P<payee>\S.*?)\s{2,}Visit Slip\s*"))
-_PRINT_DATE: Final = re.compile(
-    _real_re(r".*\s{2,}Slip printed:\s+(?P<date>\d\d-[A-Z][a-z]{2}-\d{4})\s*")
-)
+
+
+@per_identities
+def _title_re() -> re.Pattern[str]:
+    return re.compile(_real_re(r"\s*(?P<payee>\S.*?)\s{2,}Visit Slip\s*"))
+
+
+@per_identities
+def _print_date_re() -> re.Pattern[str]:
+    return re.compile(
+        _real_re(r".*\s{2,}Slip printed:\s+(?P<date>\d\d-[A-Z][a-z]{2}-\d{4})\s*")
+    )
+
+
 _HEADER: Final = "SlipOnSlipKindSlipDetailSlipSum"
 _DAY: Final = re.compile(r"\d\d-[A-Z][a-z]{2}-\d\d")
 _MONEY: Final = re.compile(rf"(?P<minus>-)?\$(?P<amount>{AMOUNT_TEXT})")
-_TOTAL: Final = re.compile(
-    _real_re(rf"\s*Slip paid total\s{{2,}}\$(?P<amount>{AMOUNT_TEXT})\s*")
-)
+
+
+@per_identities
+def _total_re() -> re.Pattern[str]:
+    return re.compile(
+        _real_re(rf"\s*Slip paid total\s{{2,}}\$(?P<amount>{AMOUNT_TEXT})\s*")
+    )
+
+
 # A payment's own number in its description: ``Payment #<number>``.
 _REFERENCE: Final = re.compile(r"#\s*(?P<ref>[A-Za-z0-9]+)")
 
 
 def _first_line(lines: list[str]) -> str:
     filled = [line for line in lines if line.strip()]
-    title = _TITLE.fullmatch(filled[0]) if filled else None
+    title = _title_re().fullmatch(filled[0]) if filled else None
     if title is None:
         raise NotRecognised("not a patient receipt")
     return " ".join(title["payee"].split())
 
 
 def _print_date(lines: list[str]) -> dt.date:
-    found = {match["date"] for line in lines if (match := _PRINT_DATE.fullmatch(line))}
+    found = {
+        match["date"] for line in lines if (match := _print_date_re().fullmatch(line))
+    }
     if len(found) != 1:
         raise NotRecognised("a patient receipt without one print date")
     return written_date(found.pop(), "%d-%b-%Y")
@@ -123,7 +142,7 @@ def _payments(lines: list[str]) -> tuple[list[_Payment], Decimal]:
     for line in lines[headers[0] + 1 :]:
         if not line.strip():
             continue
-        total = _TOTAL.fullmatch(line)
+        total = _total_re().fullmatch(line)
         if total is not None:
             if not payments:
                 raise NotRecognised("a patient receipt without a payment")

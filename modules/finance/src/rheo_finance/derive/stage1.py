@@ -10,9 +10,10 @@ hashes the last two for one document: its issuer and format, the id and version 
 every parser registered for them, for a PDF the installed ``doc-extraction-api``
 (``docextract_adapter.docextract_version``: it extracts the text and holds the rules),
 when one of those parsers sets hints the issuer wording it reads
-(``reference.patterns.patterns_digest``), and the account registry (``account``
-joined to its identifiers, as the parsers see it). Each parse stores that hash on the
-document.
+(``reference.patterns.patterns_digest``), the owner's identities file, whose wording
+and layouts the parsers match (``identities.digest``), and the account registry
+(``account`` joined to its identifiers, as the parsers see it). Each parse stores that
+hash on the document.
 Without ``reparse`` (``finance.ledger.derive``), a document is parsed again only when
 it was never parsed, its stored hash differs from the current one, its file is not at
 its path with its own sha256 (the file left the archive, was withheld or now holds
@@ -43,6 +44,7 @@ from typing import Final
 
 from sqlalchemy import select, update
 
+from rheo_finance import identities
 from rheo_finance.context import UnitOfWork, no_progress
 from rheo_finance.derive.precedence import supersede
 from rheo_finance.documents.registry import WITHHELD_PATH
@@ -91,18 +93,34 @@ PDF: Final = "pdf"
 
 
 def parse_inputs(
-    issuer: str, fmt: str, registry: str, docextract: str, hint_patterns: str
+    issuer: str,
+    fmt: str,
+    registry: str,
+    docextract: str,
+    hint_patterns: str,
+    identities_digest: str | None,
 ) -> str:
     """sha256 of what one document's parse depends on besides its bytes.
     ``docextract`` is the installed ``doc-extraction-api``; only a PDF reads it.
     ``hint_patterns`` is ``patterns.json``'s digest; only a document one of whose
-    parsers sets hints reads it."""
+    parsers sets hints reads it. ``identities_digest`` is the identities file's
+    (``identities.digest``, None without one): any parser may match its wording or
+    layouts, so every document reads it."""
     candidates = parsers_for(issuer, fmt)
     parsers = [[each.parser_id, each.version] for each in candidates]
     extractor = docextract if fmt == PDF else None
     hints = hint_patterns if any(each.sets_hints for each in candidates) else None
     body = json.dumps(
-        [issuer, fmt, parsers, registry, extractor, hints, PARSE_CACHE_VERSION]
+        [
+            issuer,
+            fmt,
+            parsers,
+            registry,
+            extractor,
+            hints,
+            identities_digest,
+            PARSE_CACHE_VERSION,
+        ]
     )
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
@@ -132,6 +150,7 @@ def parse_all(
     registry = registry_digest(uow)
     docextract = docextract_adapter.docextract_version()
     hint_patterns = patterns.patterns_digest()
+    wording = identities.digest()
     uow.execute(
         update(document)
         .where(document.c.status == "superseded")
@@ -154,7 +173,7 @@ def parse_all(
     for row in rows:
         progress()
         inputs = parse_inputs(
-            row.issuer, row.format, registry, docextract, hint_patterns
+            row.issuer, row.format, registry, docextract, hint_patterns, wording
         )
         if (
             not reparse

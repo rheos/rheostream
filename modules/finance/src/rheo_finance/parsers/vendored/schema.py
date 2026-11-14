@@ -7,7 +7,7 @@ from datetime import date
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, field_validator
-from rheo_finance.identities import real as _real, real_re as _real_re
+from rheo_finance.identities import per_identities, real as _real, real_re as _real_re
 
 DOCUMENT_TYPE = "yew_bill"
 
@@ -48,20 +48,30 @@ class YewBill(BaseModel):
     _money = field_validator(*MONEY_FIELDS, mode="before")(to_money)
 
 
-FIELD_GUIDE = {
-    "bill_date": _real("The bill date ('Yew dated')."),
-    "due_date": _real("The date the total due is payable by ('Yew settle by')."),
-    "total_due": _real("The total due ('Yew due sum'): the unpaid balance plus the current charges."),
-    "unpaid_balance": _real("The unpaid balance from earlier bills ('Yew prior left')."),
-    "current_charges": _real("This bill's current charges ('Yew fresh sum Yew with levies')."),
-    "late_payment_charge": _real("A charge for paying late ('Yew slow fee'). 0 if there is none."),
-    "device_payment": _real("A device instalment ('Yew handset part'). 0 if there is none."),
-    "adjustments": _real("Account adjustments ('Yew fixups'), as a negative number. 0 if there are none. "
-                   "Recurring credits ('Yew offsets') are not adjustments."),
-    "usage_charges": _real("Each usage line ('Yew use list') with a non-zero amount, as {description, amount}. "
-                           "Empty list if every usage line is 0.00."),
-    "data_used_mb": _real("Data used in the period, in MB ('Yew bytes sum')."),
-}
+FIELDS = (
+    "bill_date", "due_date", "total_due", "unpaid_balance", "current_charges",
+    "late_payment_charge", "device_payment", "adjustments", "usage_charges", "data_used_mb",
+)
+
+
+@per_identities
+def field_guide():
+    """What each field means, in the owner's wording: built from the identities file in force
+    when it is read (identities.per_identities), never at import."""
+    return {
+        "bill_date": _real("The bill date ('Yew dated')."),
+        "due_date": _real("The date the total due is payable by ('Yew settle by')."),
+        "total_due": _real("The total due ('Yew due sum'): the unpaid balance plus the current charges."),
+        "unpaid_balance": _real("The unpaid balance from earlier bills ('Yew prior left')."),
+        "current_charges": _real("This bill's current charges ('Yew fresh sum Yew with levies')."),
+        "late_payment_charge": _real("A charge for paying late ('Yew slow fee'). 0 if there is none."),
+        "device_payment": _real("A device instalment ('Yew handset part'). 0 if there is none."),
+        "adjustments": _real("Account adjustments ('Yew fixups'), as a negative number. 0 if there are none. "
+                       "Recurring credits ('Yew offsets') are not adjustments."),
+        "usage_charges": _real("Each usage line ('Yew use list') with a non-zero amount, as {description, amount}. "
+                               "Empty list if every usage line is 0.00."),
+        "data_used_mb": _real("Data used in the period, in MB ('Yew bytes sum')."),
+    }
 
 _NUM = {"type": ["number", "null"]}
 _DATE = {"type": ["string", "null"], "format": "date"}
@@ -83,6 +93,6 @@ JSON_SCHEMA = {
         },
         "data_used_mb": _NUM,
     },
-    "required": list(FIELD_GUIDE),
+    "required": list(FIELDS),
     "additionalProperties": False,
 }
