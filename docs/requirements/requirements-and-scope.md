@@ -21,7 +21,8 @@ The idea document establishes the product thesis and deliberately leaves decisio
 This document closes the decisions that release one cannot start without, records their
 reasoning, states what release one must do, and draws an explicit line around what it will
 not do. It does not contain schemas, API shapes, event contracts, or tool signatures. Those
-belong to the architecture specification, which is the next document.
+belong to the [architecture specification](../architecture/README.md), written after this
+document.
 
 Where this document changes a direction the idea document had settled, the change is
 recorded with its reason, in the two places the idea document requires: here, under
@@ -81,9 +82,9 @@ facts about superseded private systems, not descriptions of rheoStream.
   plus React/Vite, running on MySQL in production. Its migration is a MySQL-to-Postgres move
   regardless of any other decision here.
 - The work-in-motion predecessor (M.O.T.) is Next.js with Drizzle over `better-sqlite3`.
-- The memory layer (Recallatron) currently lives inside that work-in-motion predecessor and
-  uses `sqlite-vec` for embeddings and FTS5 for search. It does not use pgvector. This is the
-  reason for D9.
+- The memory layer (Recallatron) lived inside that work-in-motion predecessor and used
+  `sqlite-vec` for embeddings and FTS5 for search, not pgvector. This is the reason for D9.
+  Its data moved into Recallatron in a one-time transfer that finished on 2026-09-30.
 
 ## Recorded changes of direction
 
@@ -609,6 +610,10 @@ These three are appended after FR 50 so that the numbering above stays stable.
 
 ### Out of scope for release one
 
+This list bounds release one, not the project. The work-in-motion module and the job-search
+workflow were built after release one, as phases five and four; the build plan's
+[build status](build-plan.md#build-status) says what each phase delivered.
+
 - The work-in-motion module. Opportunities reach a terminal disposition without creating work.
 - The optional job-search workflow: no job boards, no candidate profile, no application
   preparation, no scoring rubric for employment fit.
@@ -644,6 +649,11 @@ stack facts, at the granularity the idea document's legacy-to-new map already us
 | Work queue, board, and work-item detail | Work-in-motion predecessor (M.O.T.) | Next.js with Drizzle over `better-sqlite3` | Current | Deferred to phase five. Out of release one. |
 | Memory browse, search, and entity views | Memory layer inside the work-in-motion predecessor | Next.js, `sqlite-vec` embeddings, FTS5 search | Recallatron | Port in phase two. The interface carries over; the retrieval layer beneath it does not (D9). |
 | Application shell, navigation, theme | Both, divergently | React/Vite and Next.js | Core | The shell itself is not a port. Phase one builds it new on Next.js as part of the repository bootstrap, carrying only a login, a workspace switcher, and the routing configuration every link goes through. Phase two unifies navigation and theme on top of it: one token set, one theme, one navigation contract that modules contribute to. *Amended 2026-09-24, issue #40:* one token set and one navigation contract stand, but "one theme" is replaced by a themable contract: the token set is the versioned [theme token contract](../architecture/theme-contract.md), a theme is a data file of values for it, and phase two ships one seed built-in theme on it that a later UI phase replaces or extends. This is the only part of the interface work that is deliberately a rewrite rather than a port. |
+
+The two deferred rows have since landed. Proposal drafting, the answer library and
+milestone pricing are tabs on the Leads job page (phase four). Current's queue, work-item
+detail and project screens are in `modules/current/web` (phase five); Current has no board
+screen.
 
 What the renaming sweep touches, in every ported file, per FR 49 and guardrail 1:
 

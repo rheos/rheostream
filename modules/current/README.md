@@ -161,8 +161,10 @@ revision.
 
 Deleting an item removes its comments, seen fingerprints and dependency edges. Deleting
 a project detaches its items, bumping each item's revision, and deletes none of them.
-Either deletion updates a source link instead of removing it. Nothing outside Current
-refers to its records yet, so it registers no deletion participants.
+Either deletion updates a source link instead of removing it. Current registers no
+deletion participants. Leads keeps Current project refs on its handoffs and follows an item
+or project deletion through the source link's event and its repair job, not through a
+participant.
 
 Item events carry a reference and revision only: `current.item.created`,
 `current.item.completed` and `current.item.reopened`.
@@ -206,7 +208,8 @@ and a token id in the audit trail then maps to exactly one writer.
 
 A `read_only` `cli` token reads Current over the same route: its set holds every read
 operation, including `current.item.list` and `current.item.get`, and a route test checks
-both. It also reads every other module, because `read_only` is not limited to Current.
+both. It also reads every other module, because `read_only` is not limited to Current,
+except an `explicit_only` module such as Finance, whose reads it never carries.
 
 Residual exposure: a leaked writer token can open items in any area and close any
 source-keyed item of any `source_kind`, including an email thread whose id it guesses,
@@ -250,7 +253,7 @@ and adds one main-nav entry, Current. Routes are exact paths; a record travels a
 | Path | Screen |
 | --- | --- |
 | `/` | Queue: a find box, Projects and `+`; chips for status, area and priority; overdue and blocked counters only when above zero; a folding Woke up section with Wake all; then active items by priority and last update, with paging. A row shows the area's icon and colour, title, priority, type tag, signals and due date or age. Swipe left for Project and Done, right for Watch and Snooze; a long swipe runs Done or Watch. The tray buttons are reachable by keyboard and screen reader, and show as hover icons with a mouse. |
-| `/item?ref=` | Item: details, notes, status controls, snooze picker, comments, blocked-by and blocking links, and origin. |
+| `/item?ref=` | Item: details, notes, status controls, snooze picker, comments, blocked-by and blocking links, and origin. A folder icon beside the Project fact opens a modal of projects (the queue row's Project action opens the same one); a pick saves through `current.item.update` and closes it, and "No project" takes the item out. |
 | `/new` | New item. `?project=` preselects a project. |
 | `/projects`, `/project?ref=` | Projects with item counts by status; one project's items, with create and edit. |
 | `/areas` | Areas, owner only: add, rename, retire and restore. |
