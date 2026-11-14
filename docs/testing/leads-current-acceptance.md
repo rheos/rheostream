@@ -72,6 +72,9 @@ tests/harness/prompt14.sh reset /ABSOLUTE/PRIVATE/stack.env /ABSOLUTE/PROOF_DIR
   `reset` deletes the database that held the review browser's session, so the old
   window is signed out, and every URL and id in `urls` is new.
 - `reset` removes this project's containers, volumes and network only.
+- Two helpers need no stack: `static-check` confirms the override's internal and public
+  Core URLs and that it never publishes 8100, and `config ENV PROOF_DIR` only saves and
+  checks the resolved Compose configuration.
 
 Two scripted steps reach states that only exist while something is down:
 
