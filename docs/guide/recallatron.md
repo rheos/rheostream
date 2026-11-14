@@ -129,7 +129,10 @@ pending evidence and drained by a job. An extraction step keeps only explicit st
 A turn with nothing explicit settles as `noop` and creates nothing. Each piece of evidence
 creates at most one memory, keyed by a content-free receipt, so a model change or a
 re-chunking cannot turn consumed evidence into new memories. An automatic memory carries
-exactly its producer's verified purpose and audience.
+exactly its producer's verified purpose and audience. A failed extraction backs off and,
+on its fifth attempt, settles its evidence as a gap. A model login at its usage limit is
+not a failure: the batch waits 15 minutes without spending an attempt, so a limit that
+lasts days never turns pending evidence into gaps.
 
 ### Possible duplicates are only proposals
 

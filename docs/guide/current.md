@@ -20,12 +20,16 @@ It holds five kinds of record:
 ## What you can do with it
 
 - Capture work from anywhere: the queue screen, an agent through the `current_*` tools,
-  an alert or an email source, or a handoff from Leads.
+  an alert or an email source, a handoff from Leads, or another module's own job.
+- Let a health check or other service open an alert item and close it again when the
+  problem clears, with a token that can do only those two things.
 - Move items between `open`, `waiting` and `snoozed`, mark them `done`, and reopen them.
   The screens call `waiting` Watching: a watched item leaves the queue and stays under
   the Watching filter until someone moves it. A repeat signal groups into it without
   bringing it back.
 - Snooze an item until a time; when the time passes it shows up again, flagged as woke.
+  The quick picks (in an hour, this evening, tomorrow morning, Saturday, Monday) are
+  worked out in your browser's time zone at the moment you pick.
 - Group items into projects and see each project's items by status.
 - Mark what blocks what, and see both directions on an item.
 - Work the queue on a phone the way the earlier ticket desk worked: a find box and a
@@ -49,6 +53,23 @@ already seen (the latest message id, say) changes only the item's update time. A
 repeat raises the item's event count, adds a system comment, and raises its priority if
 the new signal's is higher, never lower. A done item is reopened, a snoozed one wakes,
 anything else is grouped. A repeat never changes the title, body, area or project you set.
+
+### Alerts close by their source
+
+A writer that keeps no item reference can close what it filed.
+`current.item.close_by_source` takes the source kind and reference, moves an open, waiting or snoozed item to `done`
+with one system comment, and is a quiet no-op when no item holds the pair or it is
+already done. It never answers `not_found`. Closing also clears the item's seen
+fingerprints, so the next alert with the same pair reopens it. A person's own move to
+`done` keeps them, so an email thread closed by hand stays closed when it is read again
+with the same newest message.
+
+An external service holds an `alert_writer` token: a named set of exactly
+`current.item.create` and `current.item.close_by_source`, which never grows when an
+operation is added. Its results carry an action, or `closed`, and at most a reference,
+never an item's content. A module job can also file and move its own items in process,
+through a service context that names only the operations it may call; that is how a
+module's reminders become Current items.
 
 ### Snooze needs no job
 
@@ -169,8 +190,10 @@ regulatory dossier while a dossier module owns the evidence and the submission.
   [source link](../../modules/current/src/rheo_current/links.py),
   [projects](../../modules/current/src/rheo_current/projects.py),
   [areas](../../modules/current/src/rheo_current/areas.py),
+  [the alert writer set](../../packages/core/src/rheo_core/tokens/sets.py),
   [screens](../../modules/current/web)
 - Tests: [Current module](../../tests/postgres/test_current_module.py),
   [approved external items](../../tests/postgres/test_current_external.py),
   [source link](../../tests/postgres/test_current_source_link.py),
+  [token sets](../../tests/postgres/test_tokens.py),
   [module tests](../../modules/current/tests)

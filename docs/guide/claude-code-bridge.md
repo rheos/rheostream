@@ -94,8 +94,8 @@ design says so rather than claiming every turn arrives.
 
 Revoking an enrollment, or its token, or letting the token expire, makes every
 still-pending row settle as unverified at its next claim. Rotating the token keeps pending
-rows valid. `rheo doctor` flags a bridge token that is revoked, expired or within 7 days
-of expiry.
+rows valid. `rheo doctor` fails on a bridge token that is revoked, expired or within 7
+days of expiry, and warns within 14.
 
 ## How recall works
 
