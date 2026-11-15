@@ -213,7 +213,7 @@ this is the inventory.
 | `workspace_composition`, `module_state`, `module_schema_version` | this document, [composition](#composition-and-schema-versions-fr-9) |
 | `workspace_setting`, `member_setting`, `member_credential` | this document, [configuration](#a5-configuration-precedence-and-the-policy-floor-fr-12) |
 | `outbox_event`, `event_delivery`, `consumer_processed`, `job`, `schedule`, `operation`, `audit_record` | [intake and events](intake-and-events.md) |
-| `approval`, `approval_payload`, `standing_grant`, `standing_grant_operation`, `external_action` (not built yet) | [confirmation and safety](confirmation-and-safety.md) |
+| `approval`, `approval_payload`, `standing_grant`, `standing_grant_operation`, `idempotency_result`, `external_action` | [confirmation and safety](confirmation-and-safety.md), [idempotency](intake-and-events.md#idempotency) |
 | `runtime_request`, `runtime_request_context`, `runtime_session`, `runtime_transcript` | [runtime and MCP](runtime-and-mcp.md) |
 | `tool_telemetry` | [runtime and MCP](runtime-and-mcp.md#the-mcp-facade) |
 | `evidence_unit` | [runtime and MCP](runtime-and-mcp.md) |

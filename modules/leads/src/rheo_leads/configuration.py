@@ -87,6 +87,24 @@ JOBFEED_SETTINGS: Final = (
 # many jobs one sweep scores before a follow-up sweep takes over.
 SCORING_SETTINGS: Final = (
     KeySpec(
+        key="leads.scoring.prefilter_enabled",
+        type=ValueType.BOOL,
+        scope=Scope.WORKSPACE,
+        floor=None,
+        explicit_per_workspace=False,
+        default=False,
+    ),
+    KeySpec(
+        key="leads.scoring.prefilter_threshold",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=None,
+        explicit_per_workspace=False,
+        default=50,
+        minimum=1,
+        maximum=100,
+    ),
+    KeySpec(
         key="leads.scoring.model_id",
         type=ValueType.STR,
         scope=Scope.DEPLOYMENT,

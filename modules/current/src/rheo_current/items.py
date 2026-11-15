@@ -1,5 +1,6 @@
 """Work items: create with source dedup, edit, status, comments and dependencies."""
 
+import re
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -23,6 +24,7 @@ from sqlalchemy import (
 
 from rheo_current import common as h
 from rheo_current import contracts as c
+from rheo_current import links
 from rheo_current.references import ref
 from rheo_current.storage import tables as t
 
@@ -52,15 +54,30 @@ def unfinished_blocker(item_id: ColumnElement[Any]) -> ColumnElement[bool]:
 
 
 def active(moment: datetime) -> ColumnElement[bool]:
-    """Open and waiting items, and snoozed items whose time has come."""
+    """Open items, and snoozed items whose time has come.
+
+    A waiting item is one being watched: it stays out of the active queue until a
+    person moves it, and a repeat signal only groups into it.
+    """
     return or_(
-        t.item.c.status.in_(("open", "waiting")),
+        t.item.c.status == "open",
         and_(t.item.c.status == "snoozed", t.item.c.snoozed_until <= moment),
     )
 
 
 def summary_query() -> Select[Any]:
     return select(t.item, unfinished_blocker(t.item.c.id).label("blocked"))
+
+
+TAG_LINE = re.compile(r"Type:[ \t]*([^\r\n]{1,60})", re.IGNORECASE)
+
+
+def tag(row: Any) -> str | None:
+    """A short label for a row: the body's leading ``Type:`` line, which email
+    intake writes first, else the item's source kind."""
+    found = TAG_LINE.match(row["body"] or "")
+    label = found.group(1).strip() if found else ""
+    return label or row["source_kind"]
 
 
 def summary(row: Any, moment: datetime) -> c.ItemSummary:
@@ -78,6 +95,7 @@ def summary(row: Any, moment: datetime) -> c.ItemSummary:
         and row["due_on"] is not None
         and row["due_on"] < moment.date(),
         blocked=bool(row["blocked"]),
+        tag=tag(row),
         event_count=row["event_count"],
         revision=row["revision"],
         updated_at=row["updated_at"],
@@ -411,6 +429,16 @@ def edit(ctx: WorkspaceContext, uow: UnitOfWork, data: c.ItemUpdate) -> c.ItemDe
         changes["project_id" if name == "project_ref" else name] = None
     if changes:
         h.write(uow, t.item, record, **changes)
+    if "project_id" in changes:
+        # This is the one path that assigns, moves or clears a project, so an item
+        # with a source link keeps that link in step here, in the same transaction.
+        project = changes["project_id"]
+        links.item_project_set(
+            ctx,
+            uow,
+            ref("item", record["id"]),
+            None if project is None else ref("project", project),
+        )
     return detail(uow, data.ref.id)
 
 

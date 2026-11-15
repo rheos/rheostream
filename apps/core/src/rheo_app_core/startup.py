@@ -40,8 +40,10 @@ from rheo_core.migrations.orchestrator import (
     migrate_control,
 )
 from rheo_core.modules import load_modules, register_module_settings
+from rheo_core.modules.production import assert_production_external_composition
 from rheo_core.operations import REGISTRY, register_core_operations
 from rheo_core.operations.audit_paths import check_audit_paths
+from rheo_core.operations.idempotency import check_keyed_replay_compatibility
 from rheo_core.routing import SCHEME_KEY
 from rheo_core.runtime import AdapterRegistry
 from rheo_core.runtime.extraction import register_claude_cli_extraction
@@ -146,6 +148,8 @@ def run_startup() -> StartupReport:
     # own delete alone: a memory would be erased and every memory derived from it
     # would survive, which is not a narrower cascade but a wrong one.
     modules = load_modules(consumers=CONSUMERS, deletions=OWNED_DELETIONS)
+    assert_production_external_composition()
+    check_keyed_replay_compatibility(backend, REGISTRY)
     # Criterion 14's wiring layer, and the reason it is here and not one line up: a
     # module supplies its sink through its manifest, so this is the first point at
     # which "every registered operation above the read class has somewhere to write

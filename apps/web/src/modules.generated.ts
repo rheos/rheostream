@@ -19,6 +19,10 @@ export const MODULES = [
       { id: "project", path: "/project", screen: currentWeb.screens.project },
       { id: "areas", path: "/areas", screen: currentWeb.screens.areas },
     ],
+    recordRoutes: [
+      { recordType: "item", routeId: "item", refQuery: "ref" },
+      { recordType: "project", routeId: "project", refQuery: "ref" },
+    ],
     recordViews: [],
     forms: [
       { operation: "current.item.create", component: currentWeb.components.ActionForm },
@@ -36,6 +40,7 @@ export const MODULES = [
     readOperations: [
       "current.area.list",
       "current.item.get",
+      "current.item.link_state",
       "current.item.list",
       "current.project.get",
       "current.project.list",
@@ -71,6 +76,7 @@ export const MODULES = [
       { id: "receipt", path: "/receipt", screen: leadsWeb.screens.receipt },
       { id: "connections", path: "/connections", screen: leadsWeb.screens.connections },
     ],
+    recordRoutes: [],
     recordViews: [],
     forms: [
       { operation: "leads.intake.capture", component: leadsWeb.components.ActionForm },
@@ -84,6 +90,8 @@ export const MODULES = [
       { operation: "leads.followup.draft", component: leadsWeb.components.ActionForm },
       { operation: "leads.followup.schedule", component: leadsWeb.components.ActionForm },
       { operation: "leads.followup.resolve", component: leadsWeb.components.ActionForm },
+      { operation: "leads.handoff.request", component: leadsWeb.components.ActionForm },
+      { operation: "leads.handoff.restage", component: leadsWeb.components.ActionForm },
       { operation: "leads.jobfeed.connect", component: leadsWeb.components.ActionForm },
       { operation: "leads.jobfeed.reconnect", component: leadsWeb.components.ActionForm },
       { operation: "leads.jobfeed.complete_pasted", component: leadsWeb.components.ActionForm },
@@ -107,7 +115,9 @@ export const MODULES = [
       "leads.answerlibrary.match",
       "leads.connection.health",
       "leads.contact_permission.check",
+      "leads.handoff.current_view",
       "leads.handoff.get",
+      "leads.handoff.list",
       "leads.intake.receipt",
       "leads.jobprofile.get",
       "leads.jobproposal.get",
@@ -128,6 +138,8 @@ export const MODULES = [
       "leads.followup.draft",
       "leads.followup.resolve",
       "leads.followup.schedule",
+      "leads.handoff.request",
+      "leads.handoff.restage",
       "leads.intake.capture",
       "leads.jobfeed.complete_pasted",
       "leads.jobfeed.connect",
@@ -166,6 +178,7 @@ export const MODULES = [
       { id: "history-item", path: "/history/item", screen: recallatronWeb.screens.historyItem },
       { id: "duplicates", path: "/duplicates", screen: recallatronWeb.screens.duplicates },
     ],
+    recordRoutes: [],
     recordViews: [],
     forms: [],
     searchProviders: [

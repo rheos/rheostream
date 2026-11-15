@@ -36,6 +36,26 @@ export function homeHref(config: RoutingConfig): string {
   return urlFor(config, SHELL, "/");
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A canonical UUID accepted by the one bounded approval route, or null. */
+export function approvalId(value: string | undefined): string | null {
+  return value !== undefined && UUID.test(value) ? value.toLowerCase() : null;
+}
+
+/**
+ * The one shell-owned approval detail URL. The caller supplies only a UUID, never
+ * a path or host, so topology remains entirely routing configuration's decision.
+ */
+export function approvalHref(config: RoutingConfig, value: string): string | null {
+  const id = approvalId(value);
+  if (id === null) {
+    return null;
+  }
+  const query = new URLSearchParams({ approval_id: id });
+  return `${urlFor(config, SHELL, "/approvals/detail")}?${query.toString()}`;
+}
+
 /**
  * The sign-in entry point: `/auth/login` on the identity surface, carrying the
  * shell root as its `return`. The host of that `return` is validated against
@@ -62,6 +82,16 @@ export function switcherAction(config: RoutingConfig): string {
 /** The logout form's action: same host, `POST /auth/logout`. */
 export function logoutAction(config: RoutingConfig): string {
   return identityPath(config, "/logout");
+}
+
+/**
+ * The signed-out panel's sign-in link (#528): same host, `GET /auth/restart`, which
+ * clears this host's dead cookie and returns to `returnTarget`. It stays on the
+ * current host for the same reason logout does: that cookie is host-only.
+ */
+export function restartSignInHref(config: RoutingConfig, returnTarget: string): string {
+  const query = new URLSearchParams({ return: returnTarget });
+  return `${identityPath(config, "/restart")}?${query.toString()}`;
 }
 
 /**

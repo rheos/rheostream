@@ -5,11 +5,14 @@ import { describe, expect, it } from "vitest";
 
 import type { RoutingConfig } from "@/lib/routing/config";
 import {
+  approvalHref,
+  approvalId,
   callbackUrl,
   continueHref,
   loginHref,
   logoutAction,
   postLoginReturn,
+  restartSignInHref,
   switcherAction,
 } from "@/lib/routing/links";
 
@@ -100,6 +103,15 @@ describe(`links in ${MODE} mode`, () => {
     }
   });
 
+  it("keeps the sign-in restart on the current host, carrying the page (#528)", () => {
+    // Bare path for the same reason as logout: the dead cookie it clears is
+    // host-only, so an absolute URL on the identity host could never reach it.
+    const target = "https://leads.example.test/jobs?stage=review";
+    const href = restartSignInHref(CONFIG, target);
+    expect(href.startsWith("/auth/restart?")).toBe(true);
+    expect(new URLSearchParams(href.split("?")[1]).get("return")).toBe(target);
+  });
+
   it("builds an absolute continue hop on the identity host", () => {
     const href = continueHref(CONFIG, {
       returnTarget: "https://circuit.example.test/reports",
@@ -116,6 +128,40 @@ describe(`links in ${MODE} mode`, () => {
 });
 
 describe("links across both modes", () => {
+  const APPROVAL_ID = "123e4567-e89b-12d3-a456-426614174000";
+
+  it("builds only the bounded approval detail URL from a UUID", () => {
+    for (const mode of MODES) {
+      const href = approvalHref(CONFIGS[mode], APPROVAL_ID);
+      expect(href).not.toBeNull();
+      const url = new URL(href!);
+      expect(url.searchParams.get("approval_id")).toBe(APPROVAL_ID);
+      expect([...url.searchParams.keys()]).toEqual(["approval_id"]);
+      expect(url.pathname.endsWith("/approvals/detail")).toBe(true);
+    }
+    expect(new URL(approvalHref(CONFIGS.path, APPROVAL_ID)!).host).toBe("example.test");
+    expect(new URL(approvalHref(CONFIGS.subdomain, APPROVAL_ID)!).host).toBe(
+      "circuit.example.test",
+    );
+    const prefixed = {
+      ...CONFIGS.path,
+      surfaces: {
+        ...CONFIGS.path.surfaces,
+        shell: { ...CONFIGS.path.surfaces.shell, path: "/operate" },
+      },
+    };
+    expect(new URL(approvalHref(prefixed, APPROVAL_ID)!).pathname).toBe(
+      "/operate/approvals/detail",
+    );
+  });
+
+  it("rejects every non-UUID instead of accepting caller route authority", () => {
+    for (const value of ["", "not-an-id", "/approvals/detail", "https://evil.test/x"]) {
+      expect(approvalId(value)).toBeNull();
+      expect(approvalHref(CONFIGS.path, value)).toBeNull();
+    }
+  });
+
   it("puts the sign-in link on a different host than the shell in subdomain mode", () => {
     // The whole point of the absolute form: in subdomain mode the browser has to
     // leave the shell host to reach the identity host.

@@ -1,5 +1,5 @@
 """Every read and write against ``core.approval`` and ``core.approval_payload``: the
-mint, the three state transitions this chunk can reach, and the two reads.
+mint, the state transitions the approval path can reach, and the reads.
 
 Shaped after ``operations/records.py``, deliberately and in every respect that
 matters: each function takes the caller's ``Connection`` and runs inside the caller's
@@ -10,12 +10,14 @@ transaction by ``approvals/gate.py``, and a commit in here would end that transa
 underneath it.
 
 **Every transition is predicated on the state it may leave**, and each returns whether
-it applied — :func:`mark_approved` on ``pending``, :func:`mark_refused` on ``pending``,
-:func:`mark_executed` on ``approved``. That is ``operations/records.py``'s rule with a
-different predicate for the same reason: a conditional write that reports whether it
-matched leaves the decision about a zero rowcount to the call site, which is the only
-place that knows what one means. Here it means a second approver got there first, and
-the call site turns it into a refusal rather than executing twice.
+it applied — :func:`mark_approved` on ``pending`` (or, reopening its window, on a
+restored ``requires_reapproval``), :func:`mark_refused` on ``pending`` or
+``requires_reapproval``, :func:`mark_executed` on ``approved``. That is
+``operations/records.py``'s rule with a different predicate for the same reason: a
+conditional write that reports whether it matched leaves the decision about a zero
+rowcount to the call site, which is the only place that knows what one means. Here
+it means a second approver got there first, and the call site turns it into a refusal
+rather than executing twice.
 
 **Who refused is not a column here.** The ratified column list gives the row
 ``approved_by_kind``, ``approved_by_id``, ``approved_at`` and ``approved_entry`` and
@@ -215,22 +217,44 @@ def mark_approved(
     approved_by_id: UUID | None,
     approved_entry: str,
     now: datetime,
+    reopened_until: datetime | None = None,
 ) -> bool:
-    """Approve a new or restored approval, recording who and through which entry."""
+    """Approve a new or restored approval, recording who and through which entry.
+    Reports whether it applied.
+
+    Without ``reopened_until``: ``pending`` to ``approved``, the window untouched.
+
+    With it: a restored ``requires_reapproval`` row to ``approved``, its window
+    reopened to ``[now, reopened_until]`` in the same predicated write. Restore keeps
+    the source workspace's window, which has passed by the time anyone restores an
+    export, so a re-approval is a fresh decision with a fresh window of the
+    workspace's own length; the stored payload, digest, destination, subject and
+    purpose are untouched, and execution and every guard judge the reopened window.
+    Each predicate names exactly one source state, so a pending row can never have
+    its window rewritten and a restored row can never be approved inside its stale
+    window.
+    """
+    if reopened_until is None:
+        where = _in_state(approval_id, t.PENDING)
+        window: dict[str, object] = {}
+    else:
+        where = _in_state(approval_id, t.REQUIRES_REAPPROVAL)
+        window = {"window_start": now, "window_end": reopened_until}
     return _apply(
         conn,
-        (t.approval.c.id == approval_id)
-        & t.approval.c.state.in_((t.PENDING, t.REQUIRES_REAPPROVAL)),
+        where,
         state=t.APPROVED,
         approved_by_kind=approved_by_kind,
         approved_by_id=approved_by_id,
         approved_entry=approved_entry,
         approved_at=now,
+        **window,
     )
 
 
 def mark_refused(conn: Connection, *, approval_id: UUID) -> bool:
-    """Move a ``pending`` approval to ``refused``. Reports whether it applied.
+    """Move a ``pending`` or restored ``requires_reapproval`` approval to ``refused``.
+    Reports whether it applied.
 
     No instant and no actor: see the module docstring — the row has no columns for
     either on this path, and the audit row for ``core.approval.refuse`` carries both.
@@ -282,6 +306,20 @@ def get(conn: Connection, *, approval_id: UUID) -> ApprovalRow | None:
     """One approval by id, or ``None`` when there is no such row."""
     row = conn.execute(
         select(*_COLUMNS).where(t.approval.c.id == approval_id)
+    ).one_or_none()
+    return None if row is None else _row(row)
+
+
+def get_for_update(conn: Connection, *, approval_id: UUID) -> ApprovalRow | None:
+    """One approval by id with its row lock held, or ``None``. Does not commit.
+
+    The lock a decision takes first, so every check it then makes — the state, the
+    viewer's eligibility, the verified snapshot and the digest the person was shown —
+    is judged against a row no concurrent decision can move until this transaction
+    ends. A second approver blocks here and then reads the state the first one left.
+    """
+    row = conn.execute(
+        select(*_COLUMNS).where(t.approval.c.id == approval_id).with_for_update()
     ).one_or_none()
     return None if row is None else _row(row)
 

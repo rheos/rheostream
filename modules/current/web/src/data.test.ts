@@ -1,15 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
+  age,
   allowedTargets,
+  areaLook,
   areaKey,
   customSnooze,
   day,
   itemDetail,
+  itemSummary,
   refusalText,
   snoozeAt,
   TRANSITIONS,
 } from "./data";
-import { formInput, type Field } from "./forms";
+import {
+  formInput,
+  pickableProjects,
+  projectInput,
+  type Field,
+} from "./forms";
 import { queueFilters } from "./screens";
 
 // Local wall-clock dates, so every case reads the same in any time zone.
@@ -121,6 +129,32 @@ describe("update forms", () => {
   });
 });
 
+describe("moving an item between projects", () => {
+  const ITEM = "current.item:sample";
+  const A = "current.project:a";
+  const B = "current.project:b";
+  it("puts the item in the picked project at the revision it was read at", () => {
+    expect(projectInput(ITEM, 5, null, A)).toEqual({ ref: ITEM, revision: 5, project_ref: A });
+    expect(projectInput(ITEM, 5, A, B)).toEqual({ ref: ITEM, revision: 5, project_ref: B });
+  });
+  it("takes it out through clear, since a null project_ref means leave it", () => {
+    expect(projectInput(ITEM, 5, A, null)).toEqual({ ref: ITEM, revision: 5, clear: ["project_ref"] });
+  });
+  it("sends nothing when the pick is the project it already has", () => {
+    expect(projectInput(ITEM, 5, A, A)).toBeNull();
+    expect(projectInput(ITEM, 5, null, null)).toBeNull();
+  });
+  it("offers live and paused projects, and a done one only when already held", () => {
+    const projects = [
+      { ref: A, title: "Studio move", status: "active" },
+      { ref: B, title: "Tax season", status: "paused" },
+      { ref: "current.project:c", title: "Old launch", status: "done" },
+    ];
+    expect(pickableProjects(projects, null).map((p) => p.ref)).toEqual([A, B]);
+    expect(pickableProjects(projects, "current.project:c")).toHaveLength(3);
+  });
+});
+
 describe("helpers", () => {
   it("makes area keys in the service's grammar", () => {
     expect(areaKey("Foreign affairs")).toBe("foreign_affairs");
@@ -197,5 +231,34 @@ describe("snooze picks in the shell's zone (#465)", () => {
     expect(customSnooze("2026-11-01T01:30", early, LA)?.toISOString()).toBe(
       "2026-11-01T08:30:00.000Z",
     );
+  });
+});
+
+describe("desk helpers", () => {
+  it("writes ages the compact way", () => {
+    const now = new Date("2026-11-12T12:00:00Z");
+    const ago = (ms: number) => age(new Date(now.valueOf() - ms).toISOString(), now);
+    expect(ago(20_000)).toBe("just now");
+    expect(ago(5 * 60_000)).toBe("5m ago");
+    expect(ago(3 * 3600_000)).toBe("3h ago");
+    expect(ago(26 * 86400_000)).toBe("26d ago");
+    expect(ago(95 * 86400_000)).toBe("3mo ago");
+    expect(ago(800 * 86400_000)).toBe("2y ago");
+    expect(age("", now)).toBe("");
+  });
+  it("gives default areas their own look and others a stable one", () => {
+    expect(areaLook("bills")).toEqual({ icon: "piggy", tone: "green" });
+    expect(areaLook("dev")).toEqual({ icon: "waves", tone: "violet" });
+    expect(areaLook(null)).toEqual({ icon: "tag", tone: "slate" });
+    const garden = areaLook("garden");
+    expect(garden.icon).toBe("tag");
+    expect(areaLook("garden")).toEqual(garden);
+    for (const inherited of ["constructor", "toString", "__proto__"]) {
+      expect(areaLook(inherited).icon).toBe("tag");
+    }
+  });
+  it("reads the row tag from a summary", () => {
+    expect(itemSummary({ tag: "bill-due" }).tag).toBe("bill-due");
+    expect(itemSummary({}).tag).toBeNull();
   });
 });

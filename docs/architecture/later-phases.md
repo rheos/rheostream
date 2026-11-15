@@ -38,10 +38,15 @@ SQLite file to the `current` schema of the workspace database.
 optional. The handoff operation from phase three
 ([handoffs](confirmation-and-safety.md#the-handoff-operation-fr-45-criterion-64)) gains its first
 registered destination: `leads.handoff.request` writes the record `pending` instead of
-`unavailable` and calls `current.work.create_from_handoff(handoff_ref, snapshot)`, the
-`EXTERNAL`-class execution with its own approval, `DestinationGuard`, and `external_action`
-record. That operation is the first in the system that must return a *created* reference on a
-retry whose natural key does not already carry the answer, so **keyed idempotency arrives
+`unavailable` and stages `current.item.create_external`, the `EXTERNAL`-class execution with
+its own approval, `DestinationGuard`, and `external_action` record. Current keeps the lasting
+source-to-item-to-project relation itself: one `current.source_item_link` row per approved
+source that survives item deletion as a tombstone, updated only by `current.item.update` and
+approved item or project deletion, read by `current.item.link_state` and announced by one
+`current.source_item_link.changed` event per change
+([ADR-0001](../adr/0001-leads-current-project-link.md),
+[Current](../../modules/current/README.md)). The external create is the first operation in the
+system that must return a *created* reference on a retry whose natural key does not already carry the answer, so **keyed idempotency arrives
 here**: the `Idempotency` enum gains `KEYED(field)` (additive within contract version 1), the
 core gains `core.idempotency_result(operation_name, key, output, recorded_at, retained_until)`
 with its retention setting in a core migration, and the dispatcher stores and returns the output

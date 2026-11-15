@@ -14,6 +14,7 @@ a defect in the test.
 
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 import pydantic
 import pytest
@@ -21,19 +22,28 @@ import rheo_contracts
 from packaging.requirements import Requirement
 from rheo_contracts import (
     AuditSpec,
+    ExternalSpec,
     Idempotency,
+    KeyedSpec,
     OperationDeclaration,
     Role,
     SafetyClass,
+    ToolDeclaration,
 )
 from rheo_contracts.refs import RESERVED_MODULE_SEGMENT
 from rheo_core.audit import CORE_AUDIT_SINK
 from rheo_core.modules.manifest import (
     Dependency,
+    DestinationMode,
+    DestinationRegistration,
     ExportDeclaration,
     FormDeclaration,
+    GuardRegistration,
+    KeyedAdapterKind,
+    KeyedCompatibilityRegistration,
     ModuleManifest,
     NavigationEntry,
+    RecordRoute,
     RecordType,
     RecordView,
     Schedule,
@@ -44,6 +54,7 @@ from rheo_core.modules.manifest import (
     WebRoute,
     WebSurface,
 )
+from rheo_core.operations.idempotency import KeyedCompatibilityRegistry
 from rheo_core.settings.schema import KeySpec, Scope, ValueType
 
 MODULE_ID = "manifest_probe"
@@ -77,7 +88,16 @@ RATIFIED_FIELDS = (
 ratifies, in its own order."""
 
 OPTIONAL_FIELDS = frozenset(
-    {"web", "agent_guidance", "audit_sink", "authorization_completion"}
+    {
+        "web",
+        "agent_guidance",
+        "audit_sink",
+        "authorization_completion",
+        "execution_guards",
+        "destinations",
+        "keyed_compatibility",
+        "package_sets",
+    }
 )
 
 DEFERRED_COLLECTIONS = (
@@ -194,18 +214,20 @@ def test_an_omitted_field_is_refused_by_name(omitted: str) -> None:
 # --- FR 3: twenty-four fields, and exactly three of them optional ---------------------
 
 
-def test_the_model_carries_the_ratified_fields_plus_audit_sink() -> None:
-    """Plus ``authorization_completion``, the optional connector-callback field."""
+def test_the_model_carries_ratified_and_external_execution_fields() -> None:
     assert set(ModuleManifest.model_fields) == {
         *RATIFIED_FIELDS,
         "audit_sink",
         "authorization_completion",
+        "execution_guards",
+        "destinations",
+        "keyed_compatibility",
+        "package_sets",
     }
-    assert len(ModuleManifest.model_fields) == 25
+    assert len(ModuleManifest.model_fields) == 29
 
 
-def test_only_web_agent_guidance_and_audit_sink_are_optional() -> None:
-    """Every other field is required, including the eight nothing reads yet."""
+def test_only_explicit_optional_and_default_empty_fields_are_optional() -> None:
     optional = {
         name
         for name, field in ModuleManifest.model_fields.items()
@@ -520,6 +542,7 @@ def test_the_web_contribution_carries_the_ratified_fields_plus_surface() -> None
         "package_name",
         "navigation",
         "routes",
+        "record_routes",
         "record_views",
         "forms",
         "search_providers",
@@ -528,6 +551,8 @@ def test_the_web_contribution_carries_the_ratified_fields_plus_surface() -> None
     assert fields["surface"].annotation is WebSurface
     assert fields["navigation"].annotation == tuple[NavigationEntry, ...]
     assert fields["routes"].annotation == tuple[WebRoute, ...]
+    assert fields["record_routes"].annotation == tuple[RecordRoute, ...]
+    assert fields["record_routes"].default == ()
     assert fields["record_views"].annotation == tuple[RecordView, ...]
     assert fields["forms"].annotation == tuple[FormDeclaration, ...]
     assert fields["search_providers"].annotation == tuple[SearchProvider, ...]
@@ -536,6 +561,7 @@ def test_the_web_contribution_carries_the_ratified_fields_plus_surface() -> None
 def test_the_entry_types_carry_their_declared_fields() -> None:
     assert set(NavigationEntry.model_fields) == {"id", "label", "path", "roles"}
     assert set(WebRoute.model_fields) == {"id", "path", "screen"}
+    assert set(RecordRoute.model_fields) == {"record_type", "route_id", "ref_query"}
     assert set(RecordView.model_fields) == {"record_type", "component"}
     assert set(FormDeclaration.model_fields) == {"operation", "component"}
     assert set(SearchProvider.model_fields) == {"id", "operation"}
@@ -549,6 +575,7 @@ def test_the_entry_types_carry_their_declared_fields() -> None:
     [
         NavigationEntry,
         WebRoute,
+        RecordRoute,
         RecordView,
         FormDeclaration,
         SearchProvider,
@@ -905,6 +932,50 @@ def _completion_manifest(
     )
 
 
+def test_package_sets_defaults_to_default_and_takes_only_the_two_values() -> None:
+    """``explicit_only`` keeps every named package set off the module (see
+    ``rheo_core.tokens.sets``); nothing else is a value."""
+    assert ModuleManifest(**_fields()).package_sets == "default"
+    opt_in = ModuleManifest(**_fields(package_sets="explicit_only"))
+    assert opt_in.package_sets == "explicit_only"
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        ModuleManifest(**_fields(package_sets="read_only"))
+    assert "package_sets" in _locations(excinfo.value)
+
+
+@pytest.mark.parametrize("package_sets", ["default", "explicit_only"])
+def test_only_an_explicit_only_module_refuses_a_tool_naming_a_core_operation(
+    package_sets: Literal["default", "explicit_only"],
+) -> None:
+    """A module tool may name a core operation (the deletion tools do), and the
+    facade offers it to any token holding that operation, which would carry an
+    opt-in module's tool past the opt-in."""
+    own = f"{MODULE_ID}.entry.add"
+    fields = _fields(
+        package_sets=package_sets,
+        operations=((_owned_operation(own, frozenset({Role.OWNER})), _probe_handler),),
+        tools=(
+            ToolDeclaration(
+                name=f"{MODULE_ID}_add",
+                safety_class=SafetyClass.MUTATE,
+                operation=own,
+                input_model=_ProbeInput,
+            ),
+            ToolDeclaration(
+                name=f"{MODULE_ID}_delete",
+                safety_class=SafetyClass.DESTRUCTIVE,
+                operation="core.record.delete",
+                input_model=_ProbeInput,
+            ),
+        ),
+    )
+    if package_sets == "default":
+        assert len(ModuleManifest(**fields).tools) == 2
+        return
+    with pytest.raises(pydantic.ValidationError, match="must name its own operations"):
+        ModuleManifest(**fields)
+
+
 def test_no_authorization_completion_is_allowed() -> None:
     assert ModuleManifest(**_fields()).authorization_completion is None
 
@@ -946,3 +1017,196 @@ def test_each_authorization_completion_rule_refuses_with_its_fixed_message(
     with pytest.raises(pydantic.ValidationError) as excinfo:
         _completion_manifest(completion, roles)
     assert message in str(excinfo.value)
+
+
+# --- external execution registrations: ownership, names and adapter graphs -----------
+
+EXTERNAL_OPERATION = f"{MODULE_ID}.item.send"
+
+
+class _ExternalInput(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+    request_key: str
+    destination_ref: Literal["synthetic"] = "synthetic"
+
+
+class _ExternalOutput(pydantic.BaseModel):
+    item_ref: str
+
+
+def _external_operation(
+    *, guards: tuple[str, ...] = (), request_version: int = 3, result_version: int = 1
+) -> OperationDeclaration:
+    return OperationDeclaration(
+        name=EXTERNAL_OPERATION,
+        safety_class=SafetyClass.EXTERNAL,
+        roles=frozenset({Role.OWNER}),
+        input_model=_ExternalInput,
+        output=_ExternalOutput,
+        idempotency=Idempotency.KEYED,
+        keyed=KeyedSpec(
+            key_field="request_key",
+            request_schema_version=request_version,
+            result_schema_version=result_version,
+        ),
+        guards=guards,
+        external=ExternalSpec(
+            destination_field="destination_ref",
+            destination_ref="synthetic",
+            result_ref_field="item_ref",
+        ),
+        audit=AuditSpec(subject_field=None),
+    )
+
+
+class _NamedGuard:
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def check(self, *args: object, **kwargs: object) -> str | None:
+        return None
+
+
+def _destination(
+    *, destination_ref: str = "synthetic", operation_name: str = EXTERNAL_OPERATION
+) -> DestinationRegistration:
+    return DestinationRegistration(
+        destination_ref=destination_ref,
+        operation_name=operation_name,
+        mode=DestinationMode.IN_PROCESS,
+        is_installed=lambda: True,
+        is_enabled=lambda ctx: True,
+        is_ready=lambda ctx, uow: True,
+        execute=lambda ctx, uow, model: _ExternalOutput(item_ref="synthetic:item"),
+    )
+
+
+def _adapter(
+    from_version: int,
+    to_version: int,
+    *,
+    operation_name: str = EXTERNAL_OPERATION,
+    kind: KeyedAdapterKind = KeyedAdapterKind.REQUEST,
+) -> KeyedCompatibilityRegistration:
+    return KeyedCompatibilityRegistration(
+        operation_name=operation_name,
+        kind=kind,
+        from_version=from_version,
+        to_version=to_version,
+        adapter=lambda value: dict(value),
+    )
+
+
+def _external_manifest(
+    *, guards: tuple[str, ...] = (), **overrides: object
+) -> ModuleManifest:
+    return ModuleManifest(
+        **_fields(
+            operations=((_external_operation(guards=guards), _probe_handler),),
+            **overrides,
+        )
+    )
+
+
+def test_external_registrations_owned_by_the_module_are_accepted() -> None:
+    guard_name = f"{MODULE_ID}.contact"
+    manifest = _external_manifest(
+        guards=(guard_name,),
+        execution_guards=(
+            GuardRegistration(name=guard_name, guard=_NamedGuard(guard_name)),
+        ),
+        destinations=(_destination(),),
+        keyed_compatibility=(_adapter(2, 3), _adapter(1, 2)),
+    )
+    assert [g.name for g in manifest.execution_guards] == [guard_name]
+    assert len(manifest.keyed_compatibility) == 2
+
+
+EXTERNAL_REGISTRATION_REFUSALS: dict[str, tuple[dict[str, object], str]] = {
+    "guard owned elsewhere": (
+        {
+            "guards": ("elsewhere.contact",),
+            "execution_guards": (
+                GuardRegistration(
+                    name="elsewhere.contact", guard=_NamedGuard("elsewhere.contact")
+                ),
+            ),
+        },
+        "is not owned by module",
+    ),
+    "guard implementation name differs": (
+        {
+            "execution_guards": (
+                GuardRegistration(
+                    name=f"{MODULE_ID}.contact", guard=_NamedGuard(f"{MODULE_ID}.other")
+                ),
+            ),
+        },
+        "disagrees with its implementation name",
+    ),
+    "operation names an undeclared guard": (
+        {"guards": (f"{MODULE_ID}.missing",)},
+        "names undeclared execution guard",
+    ),
+    "destination operation owned elsewhere": (
+        {"destinations": (_destination(operation_name="elsewhere.item.send"),)},
+        "is not owned by module",
+    ),
+    "destination disagrees with the ExternalSpec": (
+        {"destinations": (_destination(destination_ref="other"),)},
+        "disagrees with",
+    ),
+    "adapter operation owned elsewhere": (
+        {"keyed_compatibility": (_adapter(2, 3, operation_name="elsewhere.x.y"),)},
+        "is not owned by module",
+    ),
+    "adapter ends before the current version": (
+        {"keyed_compatibility": (_adapter(1, 2),)},
+        "ends at version 2, not declared current version 3",
+    ),
+    "adapter overshoots the current version": (
+        {"keyed_compatibility": (_adapter(3, 4),)},
+        "ends at version 4, not declared current version 3",
+    ),
+    "result adapter checked against the result version": (
+        {"keyed_compatibility": (_adapter(1, 3, kind=KeyedAdapterKind.RESULT),)},
+        "ends at version 3, not declared current version 1",
+    ),
+    "adapter graph is a cycle": (
+        {"keyed_compatibility": (_adapter(1, 2), _adapter(2, 1))},
+        "form a cycle",
+    ),
+    "ambiguous adapter source": (
+        {"keyed_compatibility": (_adapter(1, 3), _adapter(1, 2), _adapter(2, 3))},
+        "from version 1 is declared twice",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(EXTERNAL_REGISTRATION_REFUSALS))
+def test_each_external_registration_rule_refuses_by_name(case: str) -> None:
+    declared, message = EXTERNAL_REGISTRATION_REFUSALS[case]
+    overrides = dict(declared)
+    guards = overrides.pop("guards", ())
+    assert isinstance(guards, tuple)
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        _external_manifest(guards=guards, **overrides)
+    assert message in str(excinfo.value)
+
+
+def test_a_two_hop_adapter_chain_to_the_current_version_loads() -> None:
+    adapters = KeyedCompatibilityRegistry()
+    manifest = _external_manifest(keyed_compatibility=(_adapter(1, 2), _adapter(2, 3)))
+    for adapter in manifest.keyed_compatibility:
+        adapters.register_request(
+            adapter.operation_name,
+            adapter.from_version,
+            adapter.to_version,
+            adapter.adapter,
+        )
+    assert adapters.adapt_request(EXTERNAL_OPERATION, {"k": 1}, 1, 3) == {"k": 1}

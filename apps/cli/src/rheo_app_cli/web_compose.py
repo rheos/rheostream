@@ -250,6 +250,16 @@ def _module(
         )
         for route in web.routes
     ]
+    record_routes = [
+        _object(
+            (
+                ("recordType", _literal(route.record_type)),
+                ("routeId", _literal(route.route_id)),
+                ("refQuery", _literal(route.ref_query)),
+            )
+        )
+        for route in web.record_routes
+    ]
     record_views = [
         _object(
             (
@@ -283,6 +293,7 @@ def _module(
         f"{pad}surface: {_literal(web.surface.surface)},",
         *_array("navigation", navigation, 2),
         *_array("routes", routes, 2),
+        *_array("recordRoutes", record_routes, 2),
         *_array("recordViews", record_views, 2),
         *_array("forms", forms, 2),
         *_array("searchProviders", search_providers, 2),

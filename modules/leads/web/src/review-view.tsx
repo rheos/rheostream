@@ -208,7 +208,7 @@ export function ReviewQueue(props: ReviewProps) {
         </span>
       </div>
       <p className={styles.reviewIntro}>
-        Jobs the client filters held back before scoring.{" "}
+        Jobs held by the client filters or the Jev pre-filter before full scoring.{" "}
         {props.canPromote
           ? "Promote one to have it scored and drafted like any other job; the clauses that held it stay on its assessment as things to check."
           : "A workspace owner can promote one to have it scored like any other job."}

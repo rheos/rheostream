@@ -22,6 +22,7 @@ import pytest
 from conftest import ClusterSession
 from harness.modules import (
     chain_head,
+    core_chain_head,
     create_required_extensions,
     loaded_probe_modules,
 )
@@ -51,11 +52,12 @@ pytestmark = pytest.mark.postgres
 
 MODULE_ID = MANIFEST.module_id
 MODULE_VERSION_TABLE = f"alembic_version_{MODULE_ID}"
-CORE_HEAD = "0013_outbox_retention"
+CORE_HEAD = core_chain_head()
 # The `core` chain's revisions, oldest first. Spelled out because this file uses them
-# as the chain whose length is fixed and known: the module chain grows a revision
-# whenever a run adds one, and a literal list of its revisions here would be a second
-# place to remember. `module_revisions()` below reads the module's own instead.
+# as the chain whose length is known: the module chain grows a revision whenever a run
+# adds one, and a literal list of its revisions here would be a second place to
+# remember. `module_revisions()` below reads the module's own instead. The head is read
+# off the scripts, so a new core revision reds only the walk below that pins this list.
 CORE_REVISIONS = (
     "0001_core_schema",
     "0002_durable_work",
@@ -70,6 +72,8 @@ CORE_REVISIONS = (
     "0011_local_evidence",
     "0012_evidence_retention_index",
     "0013_outbox_retention",
+    "0014_external_actions",
+    "0015_terminal_action_history",
 )
 
 

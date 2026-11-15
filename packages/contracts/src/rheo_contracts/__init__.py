@@ -27,7 +27,9 @@ from rheo_contracts.event_envelope import EventEnvelope
 from rheo_contracts.manifest import (
     RESERVED_INPUT_FIELDS,
     AuditSpec,
+    ExternalSpec,
     Idempotency,
+    KeyedSpec,
     OperationDeclaration,
     ToolDeclaration,
 )
@@ -101,11 +103,13 @@ __all__ = [
     "ContextTier",
     "Entry",
     "EventEnvelope",
+    "ExternalSpec",
     "FailureEvent",
     "FailureKind",
     "FinalOutputEvent",
     "Idempotency",
     "Isolation",
+    "KeyedSpec",
     "OperationDeclaration",
     "ProgressEvent",
     "RecordRef",

@@ -27,6 +27,8 @@ from postgres.test_module_upgrade import upgrade
 
 pytestmark = pytest.mark.postgres
 REVISION = "0018_invited_jobs"
+# The package head the upgrade moves to; 0020 follows this file's revision.
+HEAD = "0020_current_handoff"
 PREVIOUS = "0017_proposal_separate_answers"
 FIELD = "ext.jobsearch.invited"
 PRESET = h.JOBSEARCH_PRESET_ID
@@ -110,7 +112,7 @@ def test_a_populated_0017_moves_to_preset_v2_and_mapping_v2(intake: Intake) -> N
     pasted = job_mapping(intake, "job_paste", "manual")
     with open_unit_of_work(intake.ctx) as uow:
         undone = rewind_leads(uow.connection, PREVIOUS)
-        assert undone == (REVISION,)
+        assert undone == (HEAD, REVISION)
         uow.connection.execute(
             delete(module_schema_version).where(
                 module_schema_version.c.module_id == "leads",
@@ -133,7 +135,7 @@ def test_a_populated_0017_moves_to_preset_v2_and_mapping_v2(intake: Intake) -> N
         uow.commit()
     assert connections_before[feed][1] == connections_before[pasted][1] == 1
 
-    result = upgrade(intake, target_schema=REVISION)
+    result = upgrade(intake, target_schema=HEAD)
     assert result.ok and result.result.changed, result
 
     with open_unit_of_work(intake.ctx) as uow:
@@ -212,7 +214,7 @@ def test_a_migrated_feed_connection_delivers_an_invited_job(intake: Intake) -> N
             )
         )
         uow.commit()
-    assert upgrade(intake, target_schema=REVISION).ok
+    assert upgrade(intake, target_schema=HEAD).ok
     ok(
         intake,
         "connection.set_routing",

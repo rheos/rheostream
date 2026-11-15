@@ -36,7 +36,7 @@ STATUS_PATH = f"/api/v1/operations/{WORKSPACE_STATUS}"
 
 
 @pytest.fixture(autouse=True)
-def registrations() -> None:
+def registrations(fresh_startup_composition: None) -> None:
     register_core_operations()
 
 

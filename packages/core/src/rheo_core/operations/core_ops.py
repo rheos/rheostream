@@ -145,6 +145,12 @@ from rheo_core.exports.operations import (
     export_handler,
     restore_handler,
 )
+from rheo_core.operations.external_actions import (
+    EXTERNAL_ACTION_GET_DECLARATION,
+)
+from rheo_core.operations.external_actions import (
+    get_handler as external_action_get_handler,
+)
 from rheo_core.operations.operation_ops import (
     OPERATION_GET,
     OPERATION_LIST,
@@ -662,6 +668,7 @@ CORE_OPERATIONS: Final[tuple[tuple[OperationDeclaration, Handler], ...]] = (
     (OPERATION_GET_DECLARATION, get_handler),
     (OPERATION_LIST_DECLARATION, list_handler),
     (OPERATION_RESOLVE_DECLARATION, resolve_handler),
+    (EXTERNAL_ACTION_GET_DECLARATION, external_action_get_handler),
     (AUDIT_LIST_DECLARATION, audit_list_handler),
     (WORKSPACE_EXPORT_DECLARATION, export_handler),
     (WORKSPACE_DIGEST_DECLARATION, digest_handler),

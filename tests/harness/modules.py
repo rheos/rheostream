@@ -49,8 +49,9 @@ from pydantic import BaseModel
 from rheo_contracts import WorkspaceContext
 from rheo_core.deletion import OwnedDeletionRegistry
 from rheo_core.events import ConsumerRegistry
-from rheo_core.migrations.orchestrator import build_config
+from rheo_core.migrations.orchestrator import CORE_CHAIN, build_config
 from rheo_core.modules import (
+    DESTINATIONS,
     ENTRY_POINT_GROUP,
     Dependency,
     EventDeclaration,
@@ -590,6 +591,11 @@ def loaded_probe_modules(
     reset_surfaces()
     try:
         monkeypatch.setattr(loader_module, "SETTINGS_REGISTRY", SettingsRegistry())
+        # The loader writes a manifest's destinations into the process registry that
+        # the continuation resolves against. A copy keeps them for this body only.
+        monkeypatch.setattr(
+            DESTINATIONS, "_destinations", dict(DESTINATIONS._destinations)
+        )
         publish(monkeypatch, *_entry_points_for(module_ids))
         install(monkeypatch, *module_ids)
         surfaces = LoadedSurfaces(
@@ -685,6 +691,17 @@ def chain_head(manifest: ModuleManifest) -> str:
         build_config(manifest.module_id)
     ).get_current_head()
     assert head is not None, f"{manifest.module_id} has no head revision"
+    return head
+
+
+def core_chain_head() -> str:
+    """The ``core`` chain's head revision, read off its scripts for the same reason.
+
+    The tests that upgrade core to its head and then read the recorded revision used
+    to pin a literal, which went stale silently the next time core gained a revision.
+    """
+    head = ScriptDirectory.from_config(build_config(CORE_CHAIN)).get_current_head()
+    assert head is not None, "the core chain has no head revision"
     return head
 
 
