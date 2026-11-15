@@ -160,9 +160,10 @@ The overlay is `deploy/compose.flagship.yaml`; every variable it interpolates is
 documented in `deploy/.env.flagship.example` (not re-listed here). The reference
 instance at `rheo.stream` runs this overlay under Coolify, with GitHub sign-in on.
 
-It routes seven hosts, each on `${RHEO_BASE_HOST}`: `circuit`, `auth`, `recall`
-(Recallatron's screens), `leads` and `current` (the Current work queue) reach `web`
-for everything except `/auth/*`, which core serves on all five of those hosts;
+It routes eight hosts, each on `${RHEO_BASE_HOST}`: `circuit`, `auth`, `recall`
+(Recallatron's screens), `leads`, `current` (the Current work queue) and `finance`
+(the owner's ledger screens) reach `web` for everything except `/auth/*`, which core
+serves on all six of those hosts;
 `api` and `mcp` each reach `core` directly, over token auth. The apex host is not
 routed by this overlay.
 

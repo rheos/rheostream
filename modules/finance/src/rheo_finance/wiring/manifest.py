@@ -1,12 +1,16 @@
 """Finance's ``ModuleManifest``: one job, one gated schedule, its core settings keys,
-an install check, eight READ operations with their tools, and no exportable record
-type.
+an install check, eight READ operations with their tools, owner-only web screens over
+them, and no exportable record type.
 
 - The eight reader reads (``wiring.reads``, ADR-0028) are owner-only and
   ``package_sets="explicit_only"``: no named package set, connector grant or routine
   token reaches them, only a ``module_read:finance`` token. Their registered outputs
   leave out every restricted field. ``audit_sink`` is ``None`` because nothing above
   READ exists on core's side.
+- ``web`` is three read-only screens (Owed, Needs attention, Coverage) on
+  ``finance.<base host>``, for the owner alone. A browser session reaches the reads
+  by its role, so the screens add no token set, tool or MCP exposure, and like the
+  reads they never see an amount.
 - ``export`` is required, but core exports only modules with an exportable record
   type, and finance declares none: ledger state never enters a workspace export. The
   two callables refuse loudly if that ever changes; state moves with
@@ -24,13 +28,17 @@ from collections.abc import Callable, Mapping, Sequence
 from importlib.metadata import version
 from typing import TYPE_CHECKING, Final
 
-from rheo_contracts import CONTRACT_VERSION
+from rheo_contracts import CONTRACT_VERSION, Role
 from rheo_core.modules.manifest import (
     ExportDeclaration,
     JobKind,
     ModuleManifest,
+    NavigationEntry,
     Schedule,
     StorageDeclaration,
+    WebContribution,
+    WebRoute,
+    WebSurface,
 )
 from rheo_core.settings import KeySpec, Scope, ValueType
 from sqlalchemy import text
@@ -151,7 +159,27 @@ MANIFEST = ModuleManifest(
         exporter=refuse_export,
         importer=refuse_import,
     ),
-    web=None,
+    # Read-only screens over the reads above, for the owner alone: the navigation
+    # entry names only the owner, and every screen renders the owner-only state for
+    # anyone else before it reads. No forms and no record routes, so the shell's
+    # allowlist for this module is exactly its READ operations.
+    web=WebContribution(
+        surface=WebSurface(surface="finance", host="finance", path="/finance"),
+        package_name="@rheo-stream/finance-web",
+        navigation=(
+            NavigationEntry(
+                id="finance", label="Finance", path="/", roles=frozenset({Role.OWNER})
+            ),
+        ),
+        routes=(
+            WebRoute(id="owed", path="/", screen="owed"),
+            WebRoute(id="attention", path="/attention", screen="attention"),
+            WebRoute(id="coverage", path="/coverage", screen="coverage"),
+        ),
+        record_views=(),
+        search_providers=(),
+        forms=(),
+    ),
     agent_guidance=None,
     secret_scopes=(),
     connector_bindings=(),

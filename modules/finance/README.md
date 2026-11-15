@@ -113,6 +113,29 @@ a handler answers another type, or `finance_read_failed` for any other failure, 
 view that cannot be built included. Core's own refusals (a module that is not ready,
 an unavailable workspace) come back as core gives them.
 
+### Web screens
+
+The module's web package, `@rheo-stream/finance-web`, adds three read-only screens at
+`finance.<base host>`, shown in the navigation to the workspace owner alone:
+
+- **Owed**: open, part-paid, presumed-paid and disputed obligations, overdue first,
+  then by due date, each with its days to go, whether it has a Current reminder and
+  whether it falls before the reminders floor. A row's info button holds its source,
+  dates and the payments applied to it (`finance.owed.list`, `finance.owed.trace`).
+- **Needs attention**: counts first, the rows behind each: the confirm queue's
+  counts, documents needing manual entry, rejected or unparsed, bill gaps, unapplied
+  credits, missing account-months and the other open items, then the status data
+  checks (`finance.document.list`, `finance.coverage.get`, `finance.openitem.list`).
+- **Coverage**: statement coverage by account and month for one year
+  (`finance.coverage.get`).
+
+Every screen carries a status strip (last tick, last sync to Current, which sinks
+send) with the full status lines behind it (`finance.status.get`,
+`finance.sink.state`). The screens call only the reads above, through the owner's
+browser session, which reaches them by role: no token set, tool or MCP exposure is
+added. Like every read, they never receive an amount. A member who opens the host
+sees an owner-only notice and nothing is read.
+
 ### A non-superuser application role
 
 `env.py` creates the roles only when the application connects as a superuser. Under
