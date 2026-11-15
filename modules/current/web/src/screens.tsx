@@ -67,17 +67,7 @@ function Frame({
 }) {
   return (
     <section className={styles.surface}>
-      <header className={styles.header}>
-        <div className={styles.headerText}>
-          <h1 className={styles.heading}>{title}</h1>
-          {description ? <p className={styles.intro}>{description}</p> : null}
-        </div>
-        {action && shell.submit ? (
-          <a className={styles.primary} href={shell.href("new")}>
-            New item
-          </a>
-        ) : null}
-      </header>
+      {/* Section tabs first (#589), so the header flows straight into its content. */}
       <nav className={styles.nav} aria-label="Current">
         {NAV.filter(([id]) => id !== "areas" || shell.role === "owner").map(
           ([id, text]) => (
@@ -91,6 +81,17 @@ function Frame({
           ),
         )}
       </nav>
+      <header className={styles.header}>
+        <div className={styles.headerText}>
+          <h1 className={styles.heading}>{title}</h1>
+          {description ? <p className={styles.intro}>{description}</p> : null}
+        </div>
+        {action && shell.submit ? (
+          <a className={styles.primary} href={shell.href("new")}>
+            New item
+          </a>
+        ) : null}
+      </header>
       {children}
     </section>
   );

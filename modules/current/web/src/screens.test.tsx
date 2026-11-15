@@ -343,6 +343,16 @@ describe("item detail", () => {
     expect(html).toContain("<code>00000001</code>");
   });
 
+  it("puts the section tabs above the title (#589)", async () => {
+    const api = detailShell(detail());
+    const html = renderToStaticMarkup(
+      await screens.item({ shell: api, query: { ref: ITEM } }),
+    );
+    const tabs = html.indexOf('aria-label="Current"');
+    expect(tabs).toBeGreaterThan(-1);
+    expect(tabs).toBeLessThan(html.indexOf("<h1"));
+  });
+
   it("falls back to the full ref from a service without short IDs", async () => {
     const api = detailShell(detail());
     const html = renderToStaticMarkup(
