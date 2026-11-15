@@ -87,7 +87,59 @@ function createdRef(result: unknown): string {
   if (typeof result !== "object" || result === null) return "";
   const r = result as Record<string, unknown>;
   const item = r.item as Record<string, unknown> | undefined;
-  return str(item?.ref) || str(r.ref);
+  return str(item?.short_id) || str(item?.ref) || str(r.ref);
+}
+
+/** The item's short ID with a one-click copy (#587); a check shows for a moment. */
+export function CopyId({ id }: { id: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(id);
+      setCopied(true);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard refused (permissions or an insecure page): nothing to undo.
+    }
+  }
+  const label = copied ? "Copied" : `Copy item ID ${id}`;
+  return (
+    <button
+      type="button"
+      className={styles.copyId}
+      onClick={copy}
+      aria-label={label}
+      title={label}
+    >
+      <code>{id}</code>
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={copied ? 2.2 : 1.9}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        {copied ? (
+          <path d="M20 6 9 17l-5-5" />
+        ) : (
+          <>
+            <rect width="13" height="13" x="9" y="9" rx="2" ry="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </>
+        )}
+      </svg>
+    </button>
+  );
 }
 
 export interface FormProps {

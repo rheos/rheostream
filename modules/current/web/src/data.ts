@@ -14,6 +14,8 @@ export type Priority = "critical" | "high" | "normal" | "low";
 
 export interface ItemSummary {
   ref: string;
+  /** The UUID's tail (#587): the item's ID in links and for people to quote. */
+  shortId: string;
   title: string;
   status: Status;
   priority: Priority;
@@ -32,6 +34,7 @@ export interface ItemSummary {
 }
 export interface Neighbour {
   ref: string;
+  shortId: string;
   title: string;
   status: Status;
 }
@@ -129,6 +132,7 @@ export function itemSummary(value: unknown): ItemSummary {
   const r = row(value);
   return {
     ref: str(r.ref),
+    shortId: shortId(r),
     title: str(r.title),
     status: status(r.status),
     priority: priority(r.priority),
@@ -147,7 +151,17 @@ export function itemSummary(value: unknown): ItemSummary {
 }
 function neighbour(value: unknown): Neighbour {
   const r = row(value);
-  return { ref: str(r.ref), title: str(r.title), status: status(r.status) };
+  return {
+    ref: str(r.ref),
+    shortId: shortId(r),
+    title: str(r.title),
+    status: status(r.status),
+  };
+}
+/** The short ID, or the full ref from a service that does not send one yet. */
+function shortId(r: Record<string, unknown>): string {
+  const short = str(r.short_id);
+  return /^[0-9a-f]{8,32}$/.test(short) ? short : str(r.ref);
 }
 export function itemDetail(value: unknown): ItemDetail {
   const r = row(value);
