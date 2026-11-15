@@ -401,7 +401,11 @@ a.rowTitle:hover {
   gap: var(--rs-space-2);
 }
 /* The modal picker: one list, centred over a dimmed page. */
+/* pointer-events is inherited, and a row's dialog sits inside its hover tray,
+   which is pointer-events: none until hovered (#591). The top layer does not
+   reset it, so the dialog sets its own. */
 .modal {
+  pointer-events: auto;
   inline-size: min(calc(var(--rs-space-6) * 14), calc(100vw - var(--rs-space-6)));
   padding: var(--rs-space-5);
   border: var(--rs-size-hairline) solid var(--rs-color-hairline);
