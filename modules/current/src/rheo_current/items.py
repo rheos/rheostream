@@ -26,6 +26,7 @@ from rheo_current import common as h
 from rheo_current import contracts as c
 from rheo_current import links
 from rheo_current.references import ref
+from rheo_current.short_ids import item_short_ids
 from rheo_current.storage import tables as t
 
 PRIORITY_RANK = {"critical": 0, "high": 1, "normal": 2, "low": 3}
@@ -80,9 +81,10 @@ def tag(row: Any) -> str | None:
     return label or row["source_kind"]
 
 
-def summary(row: Any, moment: datetime) -> c.ItemSummary:
+def summary(row: Any, moment: datetime, short_id: str) -> c.ItemSummary:
     return c.ItemSummary(
         ref=ref("item", row["id"]),
+        short_id=short_id,
         title=row["title"],
         status=row["status"],
         priority=row["priority"],
@@ -109,9 +111,16 @@ def neighbours(uow: UnitOfWork, column: Any, other: Any, identifier: UUID) -> li
         .where(column == identifier, t.item.c.status != "done")
         .order_by(t.item.c.id)
     ).mappings()
+    found = list(rows)
+    shorts = item_short_ids(uow, [r["id"] for r in found])
     return [
-        c.Blocker(ref=ref("item", r["id"]), title=r["title"], status=r["status"])
-        for r in rows
+        c.Blocker(
+            ref=ref("item", r["id"]),
+            short_id=shorts[r["id"]],
+            title=r["title"],
+            status=r["status"],
+        )
+        for r in found
     ]
 
 
@@ -146,7 +155,9 @@ def detail(uow: UnitOfWork, identifier: UUID) -> c.ItemDetail:
         ).mappings()
     ]
     return c.ItemDetail(
-        **summary(found, moment).model_dump(),
+        **summary(
+            found, moment, item_short_ids(uow, [identifier])[identifier]
+        ).model_dump(),
         body=found["body"],
         provenance=found["provenance"],
         source_kind=found["source_kind"],
@@ -371,8 +382,10 @@ def listing(ctx: WorkspaceContext, uow: UnitOfWork, data: c.ItemList) -> c.ItemP
         ).mappings()
     )
     more = len(rows) > data.limit
+    shown = rows[: data.limit]
+    shorts = item_short_ids(uow, [r["id"] for r in shown])
     return c.ItemPage(
-        items=[summary(r, moment) for r in rows[: data.limit]],
+        items=[summary(r, moment, shorts[r["id"]]) for r in shown],
         next_offset=data.offset + data.limit if more else None,
     )
 

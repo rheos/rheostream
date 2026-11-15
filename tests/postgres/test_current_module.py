@@ -919,3 +919,34 @@ def test_a_service_context_writes_items_in_its_own_transaction(
     item = current.get(ref)
     assert (item.status, item.body) == ("waiting", "Pay it.")
     assert current.count(t.item) == 1
+
+
+def test_items_take_and_return_short_ids(current: Current) -> None:
+    """#587: an item link or input can name the item by its UUID tail."""
+    first = current.item("First synthetic task")
+    second = current.item("Second synthetic task")
+    identifier = UUID(first.ref.split(":", 1)[1])
+    assert first.short_id == identifier.hex[-8:]
+    # Full, bare, typed and the UUID's last dash group all name the same item.
+    last_group = str(identifier).rsplit("-", 1)[1]
+    for given in (
+        first.ref,
+        first.short_id,
+        f"current.item:{first.short_id}",
+        last_group,
+    ):
+        assert current.get(given).ref == first.ref, given
+    # Writes take it and keep the full reference.
+    done = current.status(first.short_id, "done")
+    assert done.ok and done.result.ref == first.ref, done
+    # Lists and blocker links carry it too.
+    listed = current.ok("item.list", status="all").items
+    assert {i.short_id for i in listed} >= {first.short_id, second.short_id}
+    linked = current.ok(
+        "dependency.add", item_ref=second.short_id, blocker_ref=first.short_id
+    )
+    assert linked.ref == second.ref
+    missing = current.call("item.get", ref="00000000")
+    assert missing.state == "input_invalid", missing
+    wrong_type = current.call("item.get", ref=f"current.project:{first.short_id}")
+    assert wrong_type.state == "input_invalid", wrong_type

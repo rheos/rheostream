@@ -320,6 +320,37 @@ describe("item detail", () => {
     expect(html).not.toContain("Garden (retired)");
     expect(api.submit).not.toHaveBeenCalled();
   });
+  it("links items by short ID and offers the ID with a one-click copy (#587)", async () => {
+    const api = detailShell(
+      detail({
+        short_id: "00000001",
+        blockers: [
+          {
+            ref: OTHER,
+            short_id: "00000002",
+            title: "Find the registrar login",
+            status: "open",
+          },
+        ],
+      }),
+    );
+    const html = renderToStaticMarkup(
+      await screens.item({ shell: api, query: { ref: "00000001" } }),
+    );
+    expect(api.call).toHaveBeenCalledWith("current.item.get", { ref: "00000001" });
+    expect(html).toContain('href="/current/item?ref=00000002"');
+    expect(html).toContain('aria-label="Copy item ID 00000001"');
+    expect(html).toContain("<code>00000001</code>");
+  });
+
+  it("falls back to the full ref from a service without short IDs", async () => {
+    const api = detailShell(detail());
+    const html = renderToStaticMarkup(
+      await screens.item({ shell: api, query: { ref: ITEM } }),
+    );
+    expect(html).toContain(`href="/current/item?ref=${encodeURIComponent(OTHER)}"`);
+  });
+
   it("changes the project from an icon beside it, outside the edit form", async () => {
     const html = renderToStaticMarkup(
       await screens.item({ shell: detailShell(detail()), query: { ref: ITEM } }),

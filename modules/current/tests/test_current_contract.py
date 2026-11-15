@@ -532,6 +532,7 @@ def test_the_alert_writer_set_names_currents_declared_create_and_close() -> None
 
 DETAIL: dict[str, Any] = {
     "ref": ITEM,
+    "short_id": "00000001",
     "title": "Synthetic task",
     "status": "open",
     "priority": "normal",

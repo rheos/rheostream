@@ -26,6 +26,7 @@ from rheo_current.links import CHANGED, CHANGED_SCHEMA_VERSION
 from rheo_current.operations import OPERATIONS, TOOLS
 from rheo_current.references import MODULE_ID
 from rheo_current.resolvers import resolve_record
+from rheo_current.short_ids import item_tails, project_tails
 
 MANIFEST = ModuleManifest(
     module_id=MODULE_ID,
@@ -43,6 +44,7 @@ MANIFEST = ModuleManifest(
                 audience_field=None,
                 authorize_delete=authorize_delete,
                 delete_owned=delete_owned,
+                tail_lookup=item_tails if name == "item" else project_tails,
             )
             for name in ("item", "project")
         ),
