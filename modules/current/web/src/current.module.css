@@ -365,6 +365,7 @@ a.rowTitle:hover {
   display: inline-flex;
   align-items: center;
   gap: var(--rs-space-1);
+  min-block-size: 0;
   padding: 0 var(--rs-space-2);
   border: var(--rs-size-hairline) solid var(--rs-color-control-border);
   border-radius: var(--rs-radius-sm);
@@ -375,11 +376,16 @@ a.rowTitle:hover {
 }
 .copyId code {
   font-family: var(--rs-font-mono);
-  font-size: 0.9em;
+  font-size: var(--rs-font-size-sm);
 }
 .copyId svg {
   inline-size: var(--rs-space-3);
   block-size: var(--rs-space-3);
+}
+@media (pointer: coarse) {
+  .copyId {
+    min-block-size: var(--rs-size-control);
+  }
 }
 .copyId:hover {
   color: var(--rs-color-accent-strong);
