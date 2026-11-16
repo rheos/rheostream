@@ -455,6 +455,7 @@ def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
                     applied=_applied(group),
                     invited=any(row.invited for row in group),
                     saved=_saved(group),
+                    saved_discovery=any(row.saved_discovery for row in group),
                     feed_id=preferred.feed_id
                     or next((row.feed_id for row in group if row.feed_id), None),
                     purpose=(
@@ -471,10 +472,11 @@ def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
 def _eligible(posting: NormalizedPosting) -> bool:
     """Whether a posting gets a detail read. An invited job always does: the
     client asked, so the discovery filters (applied, the proposal cap) do not
-    apply. A saved discovery posting does too: the owner saved it."""
+    apply. A saved job not delivered before does too: the owner saved it. One
+    already delivered follows the ordinary rules, so it is read once."""
     return (
         posting.invited
-        or (posting.saved is True and posting.purpose == "discover")
+        or posting.saved_discovery
         or (
             posting.purpose == "discover"
             and not posting.applied

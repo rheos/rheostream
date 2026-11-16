@@ -380,7 +380,7 @@ def _known_refresh_only(
         )
         short.commit()
     return [
-        replace(posting, purpose="refresh_only")
+        replace(posting, purpose="refresh_only", saved_discovery=False)
         if posting.posting_id in known
         else posting
         for posting in postings

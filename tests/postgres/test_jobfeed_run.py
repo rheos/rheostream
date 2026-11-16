@@ -113,6 +113,7 @@ from postgres.test_jobfeed_connect import (
     capability,
     file_of,
     member_context,
+    refused,
     run,
     secret_files,
 )
@@ -1027,7 +1028,11 @@ def test_a_tool_prefix_sends_the_prefixed_names_and_the_run_succeeds(
     names = tool_names(mcp)
     assert names[0] == "acme__list_accounts"
     assert names.count("acme__list_accounts") == 1
-    assert set(names[1:]) == {"acme__list_freelancer_proposals", "acme__find_jobs"}
+    assert set(names[1:]) == {
+        "acme__list_freelancer_proposals",
+        "acme__find_saved_jobs",
+        "acme__find_jobs",
+    }
     assert last_error(c) is None
     quietly_succeeded(c)
 
@@ -1762,7 +1767,9 @@ DEFAULT_SEARCHES = [
 ]
 """An empty feed: one page per default search, none claiming more."""
 INVITATIONS = "list_freelancer_proposals:invitations"
-COLLECTION = [INVITATIONS, *DEFAULT_SEARCHES]
+SAVED_LISTING = "find_saved_jobs:list"
+# The saved jobs, then the removed ones: one page each when none are saved.
+COLLECTION = [INVITATIONS, SAVED_LISTING, SAVED_LISTING, *DEFAULT_SEARCHES]
 """What a run collects with no invitations and an empty feed: the listing, then
 one page per default search."""
 
@@ -2220,6 +2227,7 @@ ALLOWED_CALLS = {
     ("notifications/initialized", None, None),
     ("tools/call", "list_accounts", None),
     ("tools/call", "list_freelancer_proposals", "invitations"),
+    ("tools/call", "find_saved_jobs", "list"),
     ("tools/call", "find_jobs", "smart_search"),
     ("tools/call", "find_jobs", "search"),
     ("tools/call", "find_jobs", "get"),
@@ -3202,7 +3210,7 @@ def test_a_refused_credential_on_the_listing_is_terminal(
 
 # --- saved jobs (#594) ---------------------------------------------------------------
 
-SAVED = "find_saved_jobs:list"
+SAVED = SAVED_LISTING
 COLLECT_NOW = "leads.jobfeed.collect_now"
 
 
@@ -3372,8 +3380,7 @@ def test_collect_now_makes_the_next_run_due_and_guards_a_recent_run(
     # Within ten minutes of the claim: refused, nothing changed.
     clock.advance(5 * 60)
     before = collect_schedule(c.owner)
-    refused = run(intake, owner_web(intake), COLLECT_NOW)
-    assert not refused.ok and refused.code == "run_recent", refused
+    refused(run(intake, owner_web(intake), COLLECT_NOW), "run_recent")
     assert collect_schedule(c.owner) == before
 
     # Later, but well inside the 60-minute claim window: due now, and it runs.
@@ -3395,8 +3402,8 @@ def test_collect_now_is_refused_off_connection_and_during_a_backoff(
 ) -> None:
     c = connected_collector(intake, served)
     set_connection(c.owner, not_before=clock.now() + timedelta(hours=1))
-    backing = run(intake, owner_web(intake), COLLECT_NOW)
-    assert not backing.ok and backing.code == "backing_off", backing
-    set_connection(c.owner, not_before=None, authorization_state="needs_reconnect")
-    off = run(intake, owner_web(intake), COLLECT_NOW)
-    assert not off.ok and off.code == "not_connected", off
+    refused(run(intake, owner_web(intake), COLLECT_NOW), "backing_off")
+    set_connection(
+        c.owner, not_before=None, authorization_state="authorization_required"
+    )
+    refused(run(intake, owner_web(intake), COLLECT_NOW), "not_connected")

@@ -210,6 +210,10 @@ class NormalizedPosting:
     # false from its list of jobs saved and then removed, ``None`` from every other
     # sighting, which says nothing either way and is left out of the body.
     saved: bool | None = None
+    # A saved job the collector has not delivered before: read and delivered
+    # whatever its competition. Never delivered, never compared. A saved job
+    # already delivered, or one that only appears in a search, is not one.
+    saved_discovery: bool = False
 
     def to_body(self) -> dict[str, str | int]:
         """The flat delivery body: unknown values are left out, never zero."""
@@ -439,6 +443,7 @@ def normalize_saved(
         posting,
         applied=applied if isinstance(applied, bool) else None,
         saved=saved,
+        saved_discovery=saved,
     )
 
 

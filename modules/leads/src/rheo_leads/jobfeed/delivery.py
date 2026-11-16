@@ -145,10 +145,7 @@ def _over_cap(posting: NormalizedPosting) -> bool:
 
 def _saved_discovery(sighting: Sighting) -> bool:
     """A saved job the collector has not delivered before, read in full."""
-    posting = sighting.posting
-    return (
-        posting.saved is True and posting.purpose == "discover" and sighting.detail_ok
-    )
+    return sighting.posting.saved_discovery and sighting.detail_ok
 
 
 def discovery_eligible(sighting: Sighting) -> bool:

@@ -17,10 +17,10 @@ from rheo_core.connectors.mcp_client import McpFailure
 from rheo_leads.jobfeed.collect import (
     MAX_DETAIL_READS,
     ROW_CAP,
+    SAVED_PAGES,
     CollectResult,
     DetailResult,
     Sighting,
-    SAVED_PAGES,
     collect_invitations,
     collect_presets,
     collect_saved,
@@ -1048,13 +1048,19 @@ def test_saved_merges_true_over_unknown_and_false_from_a_removal() -> None:
 def test_a_saved_discovery_posting_is_read_whatever_its_competition() -> None:
     r = run(details_answer())
     given = sightings(
-        replace(posting(3901, ordinal=0, at=0, applied=True), saved=True),
-        replace(posting(3902, ordinal=0, at=0, proposals_tier="50+"), saved=True),
-        # Already delivered once: refresh-only, never read again.
         replace(
-            posting(3903, ordinal=2, at=0, purpose="refresh_only", proposal_count=80),
+            posting(3901, ordinal=0, at=0, applied=True),
             saved=True,
+            saved_discovery=True,
         ),
+        replace(
+            posting(3902, ordinal=0, at=0, proposals_tier="50+"),
+            saved=True,
+            saved_discovery=True,
+        ),
+        # Already delivered once: saved, but never read again, even when a
+        # discovery search lists it over the cap.
+        replace(posting(3903, ordinal=0, at=0, proposal_count=80), saved=True),
     )
     result = r.details(given)
     assert [params["id"] for _, params in r.session.calls] == ["3901", "3902"]

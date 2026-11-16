@@ -1621,9 +1621,11 @@ def test_jobsearch_preset_is_refused_until_the_capability_is_on(
             .scalars()
             .all()
         )
-    # Version 1 (16 fields) and version 2 (the same plus ``invited``, from 0018).
-    assert "ext.jobsearch.posting_id" in fields and len(fields) == 16 + 17
-    assert fields.count("ext.jobsearch.invited") == 1
+    # Version 1 (16 fields), version 2 (the same plus ``invited``, from 0018) and
+    # version 3 (plus ``saved``, from 0021).
+    assert "ext.jobsearch.posting_id" in fields and len(fields) == 16 + 17 + 18
+    assert fields.count("ext.jobsearch.invited") == 2
+    assert fields.count("ext.jobsearch.saved") == 1
 
     ok(intake, "core.settings.set", key="leads.capabilities.jobsearch", value=False)
     again = intake.call("leads.pipeline.create", name="Another", preset="job_search")
