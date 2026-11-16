@@ -53,9 +53,14 @@ const READ_FAILURES: Record<string, string> = {
   endpoint_misconfigured: "wrong address",
 };
 const INVITATIONS = "invitations:";
+const SAVED = "saved:";
 export function readFailureLabel(code: string): string {
   if (code.startsWith(INVITATIONS)) {
     return `invitations not listed: ${readFailureLabel(code.slice(INVITATIONS.length))}`;
+  }
+  if (code === "saved:more") return "more saved jobs than one run reads";
+  if (code.startsWith(SAVED)) {
+    return `saved jobs not listed: ${readFailureLabel(code.slice(SAVED.length))}`;
   }
   const [kind, detail] = code.split(":", 2);
   const known = READ_FAILURES[kind ?? ""] ?? code.replaceAll("_", " ");

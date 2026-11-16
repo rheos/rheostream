@@ -56,6 +56,7 @@ CARD_FIELDS = (
     "client_reviews",
     "client_hire_rate",
     "invited",
+    "saved",
 )
 PREVIEW_CHARS = 240
 SUMMARY_CHARS = 800

@@ -1,5 +1,8 @@
-"""Version-fourteen intake, pipeline, handoff, job feed, job scoring, review, proposal
+"""Version-fifteen intake, pipeline, handoff, job feed, job scoring, review, proposal
 and pricing snapshot; restore preserves identities.
+
+Format 15 seeds the Job search preset's version 4 (0021 added ``saved``), so a
+fresh seed carries one more preset version than format 14 restored into.
 
 Format 14 adds each handoff's attempt count, its Current project projection and the
 qualification its request was made against. A workspace export carries no core
@@ -296,15 +299,16 @@ def import_records(
         intake_connection=1,
         connection_health=1,
         pipeline_preset=2,
-        # Job search has versions 1 and 2 (0018 added ``invited``); its stages,
-        # transitions, fields, rubric and template are seeded once per version.
-        preset_version=3,
-        preset_stage=23,
-        preset_transition=47,
+        # Job search has versions 1 to 3 (0018 added ``invited``, 0021 ``saved``);
+        # its stages, transitions, fields, rubric and template are seeded once per
+        # version.
+        preset_version=4,
+        preset_stage=30,
+        preset_transition=59,
         preset_requirement=0,
-        preset_field=33,
-        preset_rubric=3,
-        preset_template=3,
+        preset_field=51,
+        preset_rubric=4,
+        preset_template=4,
     )
     if counts != expected:
         raise OperationRefused(

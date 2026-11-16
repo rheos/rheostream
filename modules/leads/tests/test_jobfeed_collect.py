@@ -20,11 +20,14 @@ from rheo_leads.jobfeed.collect import (
     CollectResult,
     DetailResult,
     Sighting,
+    SAVED_PAGES,
     collect_invitations,
     collect_presets,
+    collect_saved,
     invitation_reason,
     merge_sightings,
     read_details,
+    saved_reason,
 )
 from rheo_leads.jobfeed.normalize import NormalizedPosting, normalize_row
 from rheo_leads.jobfeed.presets import DEFAULT_PRESETS, Preset, Purpose
@@ -95,12 +98,12 @@ class FakeSession:
         self, name: str, arguments: Mapping[str, object]
     ) -> dict[str, object]:
         # The invitations listing answers through ``search`` as action
-        # "invitations"; every other call is find_jobs.
-        assert name == (
-            "list_freelancer_proposals"
-            if arguments["action"] == "invitations"
-            else "find_jobs"
-        )
+        # "invitations", a saved-jobs page as action "list"; every other call is
+        # find_jobs.
+        assert name == {
+            "invitations": "list_freelancer_proposals",
+            "list": "find_saved_jobs",
+        }.get(str(arguments["action"]), "find_jobs")
         assert arguments["org_uid"] == ORG
         action = arguments["action"]
         params = arguments["params"]
@@ -877,3 +880,182 @@ def test_a_listing_with_more_pages_says_so() -> None:
     page_one = invitations_page(invite_row(2501), hasMore=True)
     assert invites(run(listing(page_one))).more
     assert not invites(run(listing(invitations_page(invite_row(2502))))).more
+
+
+# --- saved jobs ---------------------------------------------------------------------
+
+
+def saved_job(number: int, **changes: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "id": str(number),
+        "title": f"Synthetic saved build {number}",
+        "url": f"https://www.example.com/jobs/~02{number}",
+    }
+    row.update(changes)
+    return row
+
+
+def saved_listing(
+    pages: Sequence[object], *, followed: bool = True, rest: object = None
+) -> Search:
+    """Answers page ``offset // 10`` from ``pages``, checking the arguments."""
+
+    def search(action: str, params: dict[str, Any]) -> object:
+        assert action == "list"
+        assert params["limit"] == 10 and params["followed"] is followed
+        index = params["offset"] // 10
+        return pages[index] if index < len(pages) else rest
+
+    return search
+
+
+def saved_page(*rows: object, more: bool | None = None) -> dict[str, object]:
+    document: dict[str, object] = {"status": "ok", "data": {"saved_jobs": list(rows)}}
+    if more is not None:
+        document["hasMore"] = more
+    return document
+
+
+def saved(r: Run, **changes: Any) -> Any:
+    return collect_saved(r.upstream, ORG, HOSTS, clock=r.clock.wall, **changes)
+
+
+def test_each_saved_job_is_a_saved_discovery_posting() -> None:
+    r = run(saved_listing([saved_page(saved_job(3001), saved_job(3002))]))
+    result = saved(r)
+    assert r.session.actions() == ["list"]
+    assert [p.posting_id for p in result.rows] == ["~023001", "~023002"]
+    assert all(p.saved is True and p.purpose == "discover" for p in result.rows)
+    assert all(p.applied is None and not p.invited for p in result.rows)
+    assert [p.feed_id for p in result.rows] == ["3001", "3002"]
+    assert (result.invalid_rows, result.failure, result.cut, result.more) == (
+        0,
+        None,
+        False,
+        False,
+    )
+
+
+def test_a_removed_job_is_flagged_not_saved_and_only_refreshes() -> None:
+    r = run(saved_listing([saved_page(saved_job(3003))], followed=False))
+    (removed,) = saved(r, followed=False).rows
+    assert removed.saved is False and removed.purpose == "refresh_only"
+
+
+def test_saved_pages_follow_the_offset_until_a_short_page() -> None:
+    full = saved_page(*[saved_job(3100 + n) for n in range(10)])
+    r = run(saved_listing([full, saved_page(saved_job(3200))]))
+    result = saved(r)
+    assert [params["offset"] for _, params in r.session.calls] == [0, 10]
+    assert len(result.rows) == 11 and not result.more
+
+
+def test_saved_pages_stop_at_the_bound_and_say_more_remain() -> None:
+    pages = [
+        saved_page(*[saved_job(4000 + 10 * page + n) for n in range(10)], more=True)
+        for page in range(SAVED_PAGES + 1)
+    ]
+    r = run(saved_listing(pages))
+    result = saved(r)
+    assert len(r.session.calls) == SAVED_PAGES
+    assert len(result.rows) == 10 * SAVED_PAGES and result.more
+
+
+def test_has_more_false_ends_the_listing_even_on_a_full_page() -> None:
+    full = saved_page(*[saved_job(3300 + n) for n in range(10)], more=False)
+    r = run(saved_listing([full], rest=AssertionError("no second page")))
+    assert len(saved(r).rows) == 10 and len(r.session.calls) == 1
+
+
+def test_a_saved_row_nested_like_an_invitation_is_read() -> None:
+    nested = {
+        "savedAt": "2026-11-15T18:00:00Z",
+        "jobPosting": {
+            "id": "3401",
+            "content": {"title": "Synthetic nested build"},
+            "url": "https://www.example.com/jobs/~023401",
+        },
+    }
+    r = run(saved_listing([{"status": "ok", "jobs": [nested]}]))
+    (row,) = saved(r).rows
+    assert (row.posting_id, row.title, row.feed_id) == (
+        "~023401",
+        "Synthetic nested build",
+        "3401",
+    )
+
+
+def test_an_invalid_saved_row_is_counted_and_skipped() -> None:
+    bad = saved_job(3501, url="https://elsewhere.example.org/jobs/~023501")
+    r = run(saved_listing([saved_page(saved_job(3502), bad, "nope")]))
+    result = saved(r)
+    assert [p.posting_id for p in result.rows] == ["~023502"]
+    assert result.invalid_rows == 2
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"status": "error", "data": {"saved_jobs": []}},
+        {"status": "ok", "data": {"saved_jobs": "nope"}},
+        {"status": "ok"},
+        saved_page(*[saved_job(3600 + n) for n in range(11)]),
+    ],
+)
+def test_a_malformed_saved_page_is_a_protocol_failure(answer: object) -> None:
+    result = saved(run(saved_listing([answer])))
+    assert result.rows == ()
+    assert result.failure is not None
+    assert saved_reason(result.failure) == "saved:protocol"
+
+
+def test_a_failed_second_page_keeps_the_first_pages_rows() -> None:
+    full = saved_page(*[saved_job(3700 + n) for n in range(10)])
+    refused = McpFailure("tool_error", tool_code="PERMISSION")
+    result = saved(run(saved_listing([full], rest=refused)))
+    assert len(result.rows) == 10 and result.pages == 2
+    assert result.failure is not None
+    assert saved_reason(result.failure) == "saved:tool_error:PERMISSION"
+
+
+def test_a_refused_credential_on_the_saved_listing_is_raised() -> None:
+    with pytest.raises(UpstreamFailure) as caught:
+        saved(run(saved_listing([McpFailure("unauthorized")])))
+    assert caught.value.terminal
+
+
+def test_a_saved_listing_too_near_the_deadline_is_cut_not_sent() -> None:
+    r = run(saved_listing([saved_page()]), deadline=START + 1.0)
+    result = saved(r)
+    assert result.cut and r.session.calls == []
+
+
+def test_saved_merges_true_over_unknown_and_false_from_a_removal() -> None:
+    listed = saved(run(saved_listing([saved_page(saved_job(3801))]))).rows[0]
+    feed = posting(3801, ordinal=0, at=30, proposal_count=4)
+    (merged,) = merge_sightings([listed, feed])
+    assert merged.posting.saved is True and merged.posting.proposal_count == 4
+    removed = saved(
+        run(saved_listing([saved_page(saved_job(3802))], followed=False)),
+        followed=False,
+    ).rows[0]
+    (merged,) = merge_sightings([removed, posting(3802, ordinal=0, at=30)])
+    assert merged.posting.saved is False
+    (alone,) = merge_sightings([posting(3803, ordinal=0, at=30)])
+    assert alone.posting.saved is None
+
+
+def test_a_saved_discovery_posting_is_read_whatever_its_competition() -> None:
+    r = run(details_answer())
+    given = sightings(
+        replace(posting(3901, ordinal=0, at=0, applied=True), saved=True),
+        replace(posting(3902, ordinal=0, at=0, proposals_tier="50+"), saved=True),
+        # Already delivered once: refresh-only, never read again.
+        replace(
+            posting(3903, ordinal=2, at=0, purpose="refresh_only", proposal_count=80),
+            saved=True,
+        ),
+    )
+    result = r.details(given)
+    assert [params["id"] for _, params in r.session.calls] == ["3901", "3902"]
+    assert [s.detail_ok for s in result.sightings] == [True, True, False]

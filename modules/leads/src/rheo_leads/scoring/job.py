@@ -29,8 +29,8 @@ scoring failed. Setting the profile again puts failed and unscored jobs back in 
 (``job_promotion``) is not held by tier 1: it goes to the model like a job that
 passed, and the clauses that would have held it are kept on its assessment as
 conditions to check. The promotion is its own row, so it outlives every rescore.
-A job the client invited the owner to (``ext.jobsearch.invited``) is treated the
-same way, by tier 1 itself.
+A job the client invited the owner to (``ext.jobsearch.invited``) or the owner
+saved (``ext.jobsearch.saved``) is treated the same way, by tier 1 itself.
 
 **Content-free.** Log lines carry counts and fixed failure words, and a database
 error leaves as a fixed word. The profile text reaches the model's stdin, and a
@@ -164,6 +164,7 @@ READ_TARGETS: Final = (
             "client_reviews",
             "client_hire_rate",
             "invited",
+            "saved",
         )
     ),
 )
@@ -309,6 +310,10 @@ def input_digest(title: str, fields: Mapping[str, str], cap: int) -> str:
         # Only an invitation joins the fingerprint, so a job the client invited the
         # owner to is scored again, and no other job's fingerprint moves.
         facts["invited"] = True
+    if fields.get(EXTENSION + "saved") == "true":
+        # Likewise a job the owner saved: it is scored again past tier 1, and only
+        # saved jobs' fingerprints move.
+        facts["saved"] = True
     canonical = json.dumps(facts, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -540,7 +545,7 @@ def assess(
         )
     if job.description is None:
         return _undescribed(job)
-    if filter_config.enabled and not promoted and not job.invited:
+    if filter_config.enabled and not promoted and not job.invited and not job.saved:
         held = _prefilter(job, profile, filter_config, filter_runner, heartbeat, track)
         if held is not None:
             return held

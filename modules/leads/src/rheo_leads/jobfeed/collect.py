@@ -1,16 +1,19 @@
-"""Collection: the invitations, the search pages, the merge of overlapping sightings,
-the detail reads.
+"""Collection: the invitations, the saved jobs, the search pages, the merge of
+overlapping sightings, the detail reads.
 
 No database access. Every collaborator arrives as an argument: the run's
 :class:`~rheo_leads.jobfeed.upstream.Upstream`, the wall clock that stamps each page's
 rows, and the capability re-read the run handler performs between pages.
 
 :func:`collect_invitations` lists the account's pending invitations first, one page,
-best effort. :func:`collect_presets` is the one place the run's raw search row count
-is bounded (:data:`ROW_CAP`). Together they are the only producers of the rows that
-detail reads and delivery receive. A failed call or page stops its own search (or
-the listing) and counts one failure; the rest still run. A terminal upstream failure
-(a refused credential) is raised, because every later call would be refused too.
+best effort. :func:`collect_saved` pages through the jobs the owner saved (and,
+separately, the ones saved and then removed), best effort and bounded by
+:data:`SAVED_PAGES`. :func:`collect_presets` is the one place the run's raw search
+row count is bounded (:data:`ROW_CAP`). Together they are the only producers of
+the rows that detail reads and delivery receive. A failed call or page stops its
+own search (or listing) and counts one failure; the rest still run. A terminal
+upstream failure (a refused credential) is raised, because every later call would
+be refused too.
 """
 
 from collections import Counter
@@ -24,6 +27,7 @@ from rheo_leads.jobfeed.normalize import (
     apply_detail,
     normalize_invitation,
     normalize_row,
+    normalize_saved,
 )
 from rheo_leads.jobfeed.presets import DISCOVERY_CAP, MAX_LIMIT, Preset
 from rheo_leads.jobfeed.upstream import RunCut, Upstream, UpstreamFailure
@@ -36,6 +40,19 @@ INVITATIONS_FAILED: Final = "invitations"
 """The run-history reason prefix for a failed invitations listing."""
 INVITATIONS_MORE: Final = "invitations:more"
 """The run-history reason for a listing that had more than one page."""
+SAVED_LIMIT: Final = 10
+"""The saved-jobs page size: the provider's maximum."""
+SAVED_PAGES: Final = 5
+"""The most saved-jobs pages one run reads, so at most 50 saved jobs a run; the
+search row cap does not count them."""
+UNSAVED_PAGES: Final = 2
+"""The most pages of jobs saved and then removed one run reads."""
+SAVED_FAILED: Final = "saved"
+"""The run-history reason prefix for a failed saved-jobs listing."""
+SAVED_MORE: Final = "saved:more"
+"""The run-history reason for saved jobs left past :data:`SAVED_PAGES`."""
+SAVED_LIST_KEYS: Final = ("saved_jobs", "savedJobs", "jobs")
+"""Where a saved-jobs page may carry its rows, under ``data`` or at the top."""
 SEARCHES_FAILED: Final = "searches"
 """The run-history reason prefix for searches that all failed in a run that still
 delivered an invitation."""
@@ -284,6 +301,120 @@ def collect_invitations(
     )
 
 
+@dataclass(frozen=True)
+class SavedResult:
+    rows: tuple[NormalizedPosting, ...]
+    """The listed jobs, valid rows only, in the listing's order."""
+    invalid_rows: int
+    pages: int = 0
+    """Pages requested (a call was made, whatever its outcome)."""
+    failure: UpstreamFailure | None = None
+    """The failed call or page, when one failed; the rows before it are kept and
+    collection goes on."""
+    cut: bool = False
+    more: bool = False
+    """The provider had more rows past the last page this run may read."""
+
+
+def saved_reason(failure: UpstreamFailure) -> str:
+    """A failed saved-jobs listing as a run-history reason, content-free."""
+    return f"{SAVED_FAILED}:{read_failure_reason(failure)}"
+
+
+def _saved_rows(document: Mapping[str, object]) -> list[object] | None:
+    """A saved-jobs page's rows when it passes the checks, else ``None``."""
+    if document.get("status") != "ok":
+        return None
+    data = document.get("data")
+    places = [data, document] if isinstance(data, Mapping) else [document]
+    for place in places:
+        for key in SAVED_LIST_KEYS:
+            listed = place.get(key)
+            if isinstance(listed, list):
+                return listed if len(listed) <= SAVED_LIMIT else None
+    return None
+
+
+def _saved_more(document: Mapping[str, object], count: int) -> bool:
+    """Whether a page claims more: its ``hasMore`` when it gives one, else a full
+    page."""
+    data = document.get("data")
+    for place in (document, data if isinstance(data, Mapping) else {}):
+        flag = place.get("hasMore")
+        if isinstance(flag, bool):
+            return flag
+    return count >= SAVED_LIMIT
+
+
+def collect_saved(
+    upstream: Upstream,
+    org_uid: str,
+    job_hosts: Sequence[str],
+    *,
+    clock: Callable[[], datetime],
+    followed: bool = True,
+    pages: int = SAVED_PAGES,
+) -> SavedResult:
+    """The owner's saved jobs (``followed``) or the jobs saved and then removed
+    (not ``followed``), at most ``pages`` pages of :data:`SAVED_LIMIT` paged by
+    offset, best effort: a failed call or page ends the listing as a failure, the
+    rows already read kept, and the run carries on. A terminal failure (a refused
+    credential) is raised, because every later call would be refused too.
+
+    A saved job becomes a discovery posting flagged ``saved``, so one not yet
+    tracked is read in detail and delivered whatever its competition; a removed one
+    is flagged not saved and only refreshes a tracked posting
+    (:func:`~rheo_leads.jobfeed.normalize.normalize_saved`). Their
+    ``search_ordinal`` is -1, ahead of every search."""
+    rows: list[NormalizedPosting] = []
+    invalid = requested = 0
+    for page in range(pages):
+        params: dict[str, object] = {
+            "limit": SAVED_LIMIT,
+            "offset": page * SAVED_LIMIT,
+            "followed": followed,
+        }
+        try:
+            document = upstream.saved_jobs(org_uid, params)
+        except RunCut:
+            return SavedResult(tuple(rows), invalid, requested, cut=True)
+        except UpstreamFailure as failure:
+            if failure.terminal:
+                raise
+            return SavedResult(tuple(rows), invalid, requested + 1, failure=failure)
+        requested += 1
+        observed_at = clock()
+        listed = _saved_rows(document)
+        if listed is None:
+            return SavedResult(
+                tuple(rows), invalid, requested, failure=UpstreamFailure("protocol")
+            )
+        for entry in listed:
+            posting = normalize_saved(
+                entry,
+                job_hosts,
+                observed_at=observed_at,
+                search_ordinal=-1,
+                saved=followed,
+            )
+            if posting is None:
+                invalid += 1
+            else:
+                rows.append(posting)
+        if not listed or not _saved_more(document, len(listed)):
+            return SavedResult(tuple(rows), invalid, requested)
+    return SavedResult(tuple(rows), invalid, requested, more=True)
+
+
+def _saved(group: Sequence[NormalizedPosting]) -> bool | None:
+    """True if any row lists the job as saved, false if one lists it as removed,
+    else unknown."""
+    flags = [row.saved for row in group]
+    if any(flag is True for flag in flags):
+        return True
+    return False if any(flag is False for flag in flags) else None
+
+
 def _preference(posting: NormalizedPosting) -> tuple[datetime, int, int]:
     exactness = {True: 2, False: 1, None: 0}[posting.proposal_count_exact]
     return (posting.observed_at, exactness, -posting.search_ordinal)
@@ -303,8 +434,10 @@ def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
     The newest row (ties: an exact count over a band, then the earlier search, then
     the earlier row) supplies the competition fields, the observation time and every
     other feed field; ``applied`` and ``invited`` hold if any row says so (``applied``
-    stays unknown when only invitations were seen); the purpose is discovery if any
-    row came from a discovery search or an invitation.
+    stays unknown when only invitations or saved jobs were seen), ``saved`` holds if
+    any row lists the job as saved and is false if one lists it as removed; the
+    purpose is discovery if any row came from a discovery search, an invitation or
+    the saved-jobs listing of a job not yet tracked.
     """
     groups: dict[str, list[NormalizedPosting]] = {}
     for row in rows:
@@ -321,6 +454,7 @@ def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
                     preferred,
                     applied=_applied(group),
                     invited=any(row.invited for row in group),
+                    saved=_saved(group),
                     feed_id=preferred.feed_id
                     or next((row.feed_id for row in group if row.feed_id), None),
                     purpose=(
@@ -337,12 +471,19 @@ def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
 def _eligible(posting: NormalizedPosting) -> bool:
     """Whether a posting gets a detail read. An invited job always does: the
     client asked, so the discovery filters (applied, the proposal cap) do not
-    apply."""
-    return posting.invited or (
-        posting.purpose == "discover"
-        and not posting.applied
-        and posting.count_band_label != OVER_CAP_BAND
-        and (posting.proposal_count is None or posting.proposal_count <= DISCOVERY_CAP)
+    apply. A saved discovery posting does too: the owner saved it."""
+    return (
+        posting.invited
+        or (posting.saved is True and posting.purpose == "discover")
+        or (
+            posting.purpose == "discover"
+            and not posting.applied
+            and posting.count_band_label != OVER_CAP_BAND
+            and (
+                posting.proposal_count is None
+                or posting.proposal_count <= DISCOVERY_CAP
+            )
+        )
     )
 
 

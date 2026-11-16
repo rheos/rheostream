@@ -72,6 +72,7 @@ JOBSEARCH = (
     "client_hire_rate",
     "applied",
     "invited",
+    "saved",
 )
 INSTALLED = (
     t.funnel,
@@ -181,7 +182,7 @@ def test_install_writes_two_ordered_rules_and_refuses_a_second(
     assert row["priority"] == 100
     assert row["subject_authenticated"] is False and row["email_verified"] is False
     assert row["source_namespace"] == f"urn:rheo:connection:{connection}"
-    assert row["mapping_version"] == MAPPING_VERSION == 2
+    assert row["mapping_version"] == MAPPING_VERSION == 3
     assert row["campaign_id"] is None
     assert row["signing_secret_ref"] is None
     (funnel,) = rows(i, select(t.funnel).where(t.funnel.c.id == row["funnel_id"]))
@@ -578,6 +579,7 @@ def test_collected_posting_creates_no_party(collector: Collector) -> None:
         "client_hire_rate": "0.5",
         "applied": "false",
         "invited": "true",
+        "saved": "true",
     }
     parties = party_count(i)
     accepted = deliver(collector.poll, i, body, "posting-~021234")

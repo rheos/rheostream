@@ -143,17 +143,32 @@ def _over_cap(posting: NormalizedPosting) -> bool:
     return count is not None and count > DISCOVERY_CAP
 
 
+def _saved_discovery(sighting: Sighting) -> bool:
+    """A saved job the collector has not delivered before, read in full."""
+    posting = sighting.posting
+    return (
+        posting.saved is True and posting.purpose == "discover" and sighting.detail_ok
+    )
+
+
 def discovery_eligible(sighting: Sighting) -> bool:
     """At most 50 proposals, not applied, from a discovery search, detail read ok;
-    or invited. An invited job is delivered whatever its competition, and even when
-    its detail read failed: the client asked, and its title and link are known."""
+    or invited; or saved and read in full. An invited job is delivered whatever its
+    competition, and even when its detail read failed: the client asked, and its
+    title and link are known. A saved job is delivered whatever its competition
+    too, since the owner saved it, but only once its detail was read: until then
+    the next run tries again."""
     posting = sighting.posting
-    return posting.invited or (
-        sighting.detail_ok
-        and posting.purpose == "discover"
-        and not posting.applied
-        and posting.count_band_label != OVER_CAP_BAND
-        and not _over_cap(posting)
+    return (
+        posting.invited
+        or _saved_discovery(sighting)
+        or (
+            sighting.detail_ok
+            and posting.purpose == "discover"
+            and not posting.applied
+            and posting.count_band_label != OVER_CAP_BAND
+            and not _over_cap(posting)
+        )
     )
 
 
@@ -204,7 +219,8 @@ def deliver(
     planned: list[_Planned] = []
     for sighting in sightings:
         posting = delivered_posting(sighting)
-        if not posting.invited and (posting.applied or _over_cap(posting)):
+        exempt = posting.invited or posting.saved is True
+        if not exempt and (posting.applied or _over_cap(posting)):
             result.filtered += 1
         row = rows.get(posting.posting_id)
         stored = None if row is None else parse_digests(row.field_digests)

@@ -29,6 +29,7 @@ import {
   formatSpend,
   isInvited,
   isNewClient,
+  isSaved,
   MAX_PROPOSALS,
   overCap,
   partyName,
@@ -220,6 +221,9 @@ function Badges({ item, pipeline }: { item: Row; pipeline?: string }) {
       ) : null}
       {isInvited(fields) ? (
         <span className={`${styles.badge} ${styles.badgeAccent}`}>Invited</span>
+      ) : null}
+      {isSaved(fields) ? (
+        <span className={`${styles.badge} ${styles.badgeAccent}`}>Saved</span>
       ) : null}
       {isNewClient(fields) ? (
         <span className={`${styles.badge} ${styles.badgeInfo}`}>New client</span>

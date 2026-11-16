@@ -80,16 +80,17 @@ def _migration(name: str) -> ModuleType:
 
 def preset_kinds() -> dict[str, dict[str, Any]]:
     """The Job search preset's field kinds, read from its frozen migrations: the
-    seed, and the boolean ``invited`` that 0018 adds."""
+    seed, the boolean ``invited`` that 0018 adds and ``saved`` that 0021 adds."""
     kinds: dict[str, dict[str, Any]] = {
         name: {"type": kind, "enum_values": list(values)}
         for name, kind, values in _migration("0007_jobsearch_preset.py").FIELDS
     }
-    added = _migration("0018_invited_jobs.py").FIELD
-    kinds[added.removeprefix(JOBSEARCH_TARGET_PREFIX)] = {
-        "type": "boolean",
-        "enum_values": [],
-    }
+    for migration in ("0018_invited_jobs.py", "0021_saved_jobs.py"):
+        added = _migration(migration).FIELD
+        kinds[added.removeprefix(JOBSEARCH_TARGET_PREFIX)] = {
+            "type": "boolean",
+            "enum_values": [],
+        }
     return kinds
 
 
@@ -421,7 +422,8 @@ def test_parse_number(value: object, expected: Decimal | None) -> None:
 
 
 def full_posting(flag: bool) -> NormalizedPosting:
-    """Every field carried; ``invited`` is delivered only when true, so it is."""
+    """Every field carried; ``invited`` is delivered only when true, so it is, and
+    ``saved`` only when known, so it carries the flag."""
     base = posting(
         proposal_count=None if flag else 12,
         proposals_tier="10 to 15",
@@ -435,7 +437,7 @@ def full_posting(flag: bool) -> NormalizedPosting:
         },
     )
     described = apply_detail(base, detail(hire_rate_percent=40), HOSTS)
-    return replace(described, invited=True)
+    return replace(described, invited=True, saved=flag)
 
 
 @pytest.mark.parametrize("flag", [True, False])
@@ -498,6 +500,7 @@ def test_body_keys_are_exactly_what_the_installed_mapping_reads() -> None:
         "client_hire_rate",
         "applied",
         "invited",
+        "saved",
         "observed_at",
     }
     assert set(BODY_KEYS) <= read

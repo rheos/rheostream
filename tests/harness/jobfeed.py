@@ -922,6 +922,25 @@ def invitation_row(number: int, *, title: str | None = None) -> dict[str, object
 
 INVITATION_LETTER = "letter-marker: the client's own invitation text"
 
+SAVED_NAME = "find_saved_jobs:list"
+"""How :func:`script_name` names a saved-jobs page."""
+
+
+def saved_row(number: int, *, title: str | None = None) -> dict[str, object]:
+    """One saved job as the listing names it: posting id ``~02<number>``, feed id
+    ``<number>``, a ready-to-use URL."""
+    return {
+        "id": str(number),
+        "title": title or f"Saved build {number}",
+        "url": f"https://www.example.com/jobs/~02{number}",
+        "saved_at": "2026-11-15T18:00:00Z",
+    }
+
+
+def saved_page(rows: list[object], *, more: bool = False) -> dict[str, object]:
+    """A saved-jobs page answering ``rows``."""
+    return {"status": "ok", "data": {"saved_jobs": rows}, "hasMore": more}
+
 
 def invitations_page(*rows: object) -> dict[str, object]:
     """An invitations listing answering ``rows``, the last page."""
@@ -1002,6 +1021,10 @@ class FakeMcpServer:
     details: dict[str, object] = field(default_factory=dict)
     invitations: list[dict[str, object]] = field(default_factory=list)
     """The pending invitation rows the listing answers, in order (none by default)."""
+    saved: list[dict[str, object]] = field(default_factory=list)
+    """The saved-jobs rows the listing pages through, in order (none by default)."""
+    unsaved: list[dict[str, object]] = field(default_factory=list)
+    """The rows of jobs saved and then removed (``followed`` false)."""
     queued: dict[str, list[Responder]] = field(default_factory=dict)
     script: dict[str, Responder] = field(default_factory=dict)
     holds: dict[str, Hold] = field(default_factory=dict)
@@ -1050,6 +1073,16 @@ class FakeMcpServer:
         more = f"{search}-{index + 1}" if index + 1 < len(pages) else None
         return tool_result(feed_page(action, params, rows, cursor=more))(request)
 
+    def _saved_jobs(self, request: httpx.Request) -> httpx.Response:
+        params = arguments_of(request).get("params")
+        params = params if isinstance(params, dict) else {}
+        listed = self.saved if params.get("followed", True) else self.unsaved
+        offset = int(params.get("offset") or 0)
+        limit = int(params.get("limit") or 10)
+        rows: list[object] = list(listed[offset : offset + limit])
+        more = offset + limit < len(listed)
+        return tool_result(saved_page(rows, more=more))(request)
+
     def calls(self, name: str) -> int:
         """How many requests :func:`script_name` names ``name``."""
         return sum(n for key, n in self.counts.items() if script_name(key) == name)
@@ -1083,6 +1116,8 @@ class FakeMcpServer:
             return accounts_result(*self.accounts)
         if name == INVITATIONS_NAME:
             return tool_result(invitations_page(*self.invitations))
+        if name == SAVED_NAME:
+            return self._saved_jobs
         if name.startswith("find_jobs"):
             return self._find_jobs
         return rpc_result(None)

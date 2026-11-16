@@ -301,7 +301,7 @@ def test_current_links_consumer_job_and_schedule_are_declared() -> None:
 
 
 def test_handoff_export_format_moves_to_fourteen() -> None:
-    assert MANIFEST.export is not None and MANIFEST.export.format_version == 14
+    assert MANIFEST.export is not None and MANIFEST.export.format_version == 15
 
 
 def test_handoff_leads_never_imports_current() -> None:

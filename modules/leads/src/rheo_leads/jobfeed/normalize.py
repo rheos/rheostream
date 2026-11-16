@@ -68,6 +68,7 @@ BODY_KEYS: tuple[str, ...] = (
     "client_hire_rate",
     "applied",
     "invited",
+    "saved",
     "observed_at",
 )
 # The fields whose change makes a sighting worth delivering. Both observation times
@@ -89,6 +90,7 @@ COMPARABLE_FIELDS: tuple[str, ...] = (
     "client_hire_rate",
     "applied",
     "invited",
+    "saved",
 )
 
 
@@ -204,6 +206,10 @@ class NormalizedPosting:
     # The client invited the account to this job. Delivered only when true: a
     # sighting that is not an invitation says nothing either way.
     invited: bool = False
+    # The owner saved (bookmarked) this job: true from the saved-jobs listing,
+    # false from its list of jobs saved and then removed, ``None`` from every other
+    # sighting, which says nothing either way and is left out of the body.
+    saved: bool | None = None
 
     def to_body(self) -> dict[str, str | int]:
         """The flat delivery body: unknown values are left out, never zero."""
@@ -226,6 +232,7 @@ class NormalizedPosting:
             "client_hire_rate": _optional_decimal(self.client_hire_rate),
             "applied": _optional_flag(self.applied),
             "invited": _flag(True) if self.invited else None,
+            "saved": _optional_flag(self.saved),
             "observed_at": self.observed_at.isoformat(),
         }
         return {key: value for key, value in values.items() if value is not None}
@@ -386,6 +393,52 @@ def normalize_invitation(
         count_band_label=None,
         feed_id=_feed_id(job.get("id")),
         invited=True,
+    )
+
+
+def normalize_saved(
+    row: object,
+    job_hosts: Sequence[str],
+    *,
+    observed_at: datetime,
+    search_ordinal: int,
+    saved: bool,
+) -> NormalizedPosting | None:
+    """One saved-jobs row as a posting flagged ``saved``, or ``None`` when it fails
+    validation.
+
+    A row is read like a search row (its URL, title, id and whatever competition,
+    budget and client facts it carries), or, when it nests its job under
+    ``jobPosting`` or ``job``, like an invitation's job. ``applied`` stays unknown
+    unless the row says so, so a listing never clears it. A currently saved job is
+    a discovery posting; one saved and then removed (``saved`` false) only
+    refreshes a posting already tracked.
+    """
+    if isinstance(job_hosts, str):
+        raise TypeError("job_hosts must be a sequence of host names")
+    if observed_at.tzinfo is None:
+        raise ValueError("observed_at must carry a time zone")
+    entry = _mapping(row)
+    nested = _mapping(entry.get("jobPosting") or entry.get("job"))
+    source = nested if nested else entry
+    title = source.get("title")
+    if not isinstance(title, str):
+        title = _mapping(source.get("content")).get("title")
+    flat = {**source, "title": title}
+    posting = normalize_row(
+        flat,
+        job_hosts,
+        observed_at=observed_at,
+        purpose="discover" if saved else "refresh_only",
+        search_ordinal=search_ordinal,
+    )
+    if posting is None:
+        return None
+    applied = source.get("applied")
+    return replace(
+        posting,
+        applied=applied if isinstance(applied, bool) else None,
+        saved=saved,
     )
 
 
