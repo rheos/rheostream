@@ -5,12 +5,12 @@ them, and no exportable record type.
 - The eight reader reads (``wiring.reads``, ADR-0028) are owner-only and
   ``package_sets="explicit_only"``: no named package set, connector grant or routine
   token reaches them, only a ``module_read:finance`` token. Their registered outputs
-  leave out every restricted field. ``audit_sink`` is ``None`` because nothing above
-  READ exists on core's side.
+  leave every restricted field empty for any token. ``audit_sink`` is ``None``
+  because nothing above READ exists on core's side.
 - ``web`` is three read-only screens (Owed, Needs attention, Coverage) on
   ``finance.<base host>``, for the owner alone. A browser session reaches the reads
-  by its role, so the screens add no token set, tool or MCP exposure, and like the
-  reads they never see an amount.
+  by its role, so the screens add no token set, tool or MCP exposure. The reads fill
+  their restricted fields (amounts) for that session alone (ADR-0029).
 - ``export`` is required, but core exports only modules with an exportable record
   type, and finance declares none: ledger state never enters a workspace export. The
   two callables refuse loudly if that ever changes; state moves with

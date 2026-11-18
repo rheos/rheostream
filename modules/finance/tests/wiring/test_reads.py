@@ -13,6 +13,10 @@
   field and a model held in a ``dict`` refuse, a default is kept.
 - L6: every registered output, built with sentinel values in each restricted field,
   dumps through its view without either sentinel.
+- L8 (#584): the registered output is the owner view: core's own walk finds exactly
+  finance's restricted paths in it, each optional with no default but ``None``, so the
+  tool facade drops them; a caller that is not the owner's browser session gets
+  ``None`` in every one, and only that session gets the values.
 - L7: the adapter over a recording connection and a synthetic layout: the role is set
   and reset around the handler, the layout bound for it and released; every failure
   of the handler or of the view leaves as one fixed code (its class's, else
@@ -36,7 +40,15 @@ from typing import Annotated, Any, Literal
 
 import pytest
 from pydantic import BaseModel, ConfigDict
-from rheo_contracts import Idempotency, Role, SafetyClass
+from rheo_contracts import (
+    Actor,
+    ActorKind,
+    Audience,
+    AudienceKind,
+    Idempotency,
+    Role,
+    SafetyClass,
+)
 from rheo_core.modules.manifest import check_explicit_only_tools
 from rheo_core.modules.readiness import ModuleNotReady
 from rheo_core.operations.refusals import OperationRefused
@@ -214,8 +226,9 @@ def test_l3_core_finds_nothing_restricted_or_unrenderable_and_every_field_marked
     control = _finance_paths(lines.ListOut)
     assert control["rows.amount"] is R
     assert control["rows.cad_amount"] is R
+    specs = _specs()
     for declaration, _ in MANIFEST.operations:
-        view = declaration.output
+        view = reads.output_view(specs[declaration.name].output_model)
         assert restricted_fields(view) == (), declaration.name
         assert unrenderable_paths(view) == (), declaration.name
         paths = _view_paths(view)
@@ -240,7 +253,7 @@ def test_l4_every_kept_field_has_its_finance_tier_and_no_restricted_path_remains
     dropped_somewhere = False
     for declaration, _ in MANIFEST.operations:
         finance = _finance_paths(specs[declaration.name].output_model)
-        view = _view_paths(declaration.output)
+        view = _view_paths(reads.output_view(specs[declaration.name].output_model))
         restricted = {path for path, tier in finance.items() if tier is R}
         dropped_somewhere = dropped_somewhere or bool(restricted)
         assert not restricted & set(view), declaration.name
@@ -313,7 +326,7 @@ class _InDict(BaseModel):
 
 def test_l5_a_restricted_element_drops_its_field_and_defaults_are_kept() -> None:
     view = reads.output_view(_Planted)
-    assert view.__name__ == "test_reads__Planted"
+    assert view.__name__ == "test_reads__Planted_shared"
     assert set(view.model_fields) == {
         "kept",
         "internal",
@@ -329,6 +342,20 @@ def test_l5_a_restricted_element_drops_its_field_and_defaults_are_kept() -> None
     assert tiers["kept"] is SensitivityTier.PUBLIC
     assert "inner.secret" not in tiers and "inner.label" in tiers
     assert reads.output_view(_Planted) is view  # cached
+
+
+def test_l5_the_owner_view_keeps_restricted_fields_optional() -> None:
+    view = reads.owner_view(_Planted)
+    assert view.__name__ == "test_reads__Planted"
+    assert set(view.model_fields) == set(reads.output_view(_Planted).model_fields) | {
+        "hidden"
+    }
+    assert view.model_fields["hidden"].default is None
+    tiers = _view_paths(view)
+    assert tiers["hidden"] is SensitivityTier.RESTRICTED
+    assert tiers["inner.secret"] is SensitivityTier.RESTRICTED
+    assert tiers["kept"] is SensitivityTier.PUBLIC
+    assert reads.owner_view(_Planted) is view  # cached
 
 
 def test_l5_an_untiered_field_refuses() -> None:
@@ -415,6 +442,65 @@ def test_l6_the_owed_and_lines_outputs_named_by_the_design() -> None:
     )
 
 
+# --- L8: the owner view ------------------------------------------------------------
+
+
+def test_l8_each_registered_output_is_the_owner_view_and_core_sees_its_restricted() -> (
+    None
+):
+    specs = _specs()
+    held_somewhere = False
+    for declaration, _ in MANIFEST.operations:
+        model = specs[declaration.name].output_model
+        assert declaration.output is reads.owner_view(model), declaration.name
+        restricted = {path for path, tier in _finance_paths(model).items() if tier is R}
+        held_somewhere = held_somewhere or bool(restricted)
+        # Core's own walk stops at a restricted field, as finance's does.
+        assert set(restricted_fields(declaration.output)) == restricted, (
+            declaration.name
+        )
+        assert unrenderable_paths(declaration.output) == (), declaration.name
+        unmarked = [p for p, t in _view_paths(declaration.output).items() if t is None]
+        assert unmarked == [], (declaration.name, unmarked)
+    assert held_somewhere
+
+
+@pytest.mark.parametrize("name", [name for name, _ in EIGHT])
+def test_l8_only_a_full_answer_carries_restricted_values(name: str) -> None:
+    spec = _specs()[name]
+    out = _built(spec.output_model)
+    reduced = reads.as_answer(spec.output_model, out, full=False).model_dump_json()
+    assert "synthetic" in reduced
+    assert str(SENTINEL_AMOUNT) not in reduced and SENTINEL_TEXT not in reduced
+    full = reads.as_answer(spec.output_model, out, full=True).model_dump_json()
+    if name in {"finance.txn.list", "finance.owed.list", "finance.owed.trace"}:
+        assert str(SENTINEL_AMOUNT) in full
+
+
+def _ctx(actor: ActorKind, audience: AudienceKind | None, role: Role) -> Any:
+    return SimpleNamespace(
+        actor=Actor(kind=actor, id=uuid.UUID(int=1)),
+        audience=None
+        if audience is None
+        else Audience(kind=audience, id=uuid.UUID(int=1)),
+        role=role,
+    )
+
+
+def test_l8_only_the_owners_browser_session_is_an_owner_session() -> None:
+    assert reads.owner_session(
+        _ctx(ActorKind.ACCOUNT, AudienceKind.SESSION, Role.OWNER)
+    )
+    for ctx in (
+        _ctx(ActorKind.ACCOUNT, AudienceKind.SESSION, Role.MEMBER),
+        _ctx(ActorKind.TOKEN, AudienceKind.SESSION, Role.OWNER),
+        _ctx(ActorKind.TOKEN, None, Role.OWNER),
+        _ctx(ActorKind.ACCOUNT, None, Role.OWNER),
+        _ctx(ActorKind.OPERATOR, None, Role.OWNER),
+    ):
+        assert not reads.owner_session(ctx)
+
+
 # --- L7: the adapter ---------------------------------------------------------------
 
 
@@ -469,7 +555,7 @@ class _Rig:
             return self.returns
         return _Out(label="synthetic", amount=SENTINEL_AMOUNT)
 
-    def run(self) -> BaseModel:
+    def run(self, ctx: Any = None) -> BaseModel:
         spec = OperationSpec(
             name="finance.planted.read",
             input_model=_In,
@@ -482,7 +568,9 @@ class _Rig:
         )
         handle = reads.read_handler(spec)
         uow = SimpleNamespace(connection=self.connection)
-        return handle(object(), uow, _In())  # type: ignore[arg-type]
+        if ctx is None:
+            ctx = _ctx(ActorKind.TOKEN, None, Role.OWNER)
+        return handle(ctx, uow, _In())
 
 
 @pytest.fixture
@@ -503,8 +591,14 @@ def test_l7_the_role_is_set_and_reset_around_the_handler_under_the_layout(
     assert ctx.role is FinanceRole.OWNER
     assert ctx._databases is None
     assert ctx.paths.data == rig.layout.data
-    assert out.model_dump() == {"label": "synthetic"}
-    assert type(out) is reads.output_view(_Out)
+    assert out.model_dump() == {"label": "synthetic", "amount": None}
+    assert type(out) is reads.owner_view(_Out)
+
+
+def test_l7_the_owners_browser_session_gets_the_restricted_values(rig: _Rig) -> None:
+    rig.make()
+    out = rig.run(_ctx(ActorKind.ACCOUNT, AudienceKind.SESSION, Role.OWNER))
+    assert out.model_dump() == {"label": "synthetic", "amount": SENTINEL_AMOUNT}
 
 
 @pytest.mark.parametrize(

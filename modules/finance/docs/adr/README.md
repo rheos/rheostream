@@ -67,3 +67,10 @@ leaves as a fixed-code refusal (`finance_read_failed` when its class has no code
 its own). It replaces one bullet of
 ADR-0024 ("no operations or tools in core"), which stays accepted with a `Partly
 replaced by ADR-0028` line.
+
+ADR-0029 records that each read's registered output keeps the restricted fields,
+optional, and that the adapter fills them only for the workspace owner's own
+signed-in browser session; every token and every other caller gets `None` in each,
+and core's tool facade still drops them from any tool answer. It partly replaces
+ADR-0028's "no restricted field reaches a model" bullet, which stays true of every
+model and token.

@@ -87,10 +87,12 @@ workspace owner alone (ADR-0028):
 | `finance_trace` | `finance.owed.trace` | each obligation with its payments and evidence |
 
 No restricted field reaches a model: every field finance tiers restricted (amounts,
-totals, the owed headline) is left out of what these operations return. An agent sees
-the fields finance tiers public or internal (structure, dates, states, counts, labels
-and the status lines' text), as finance tiers them. Labels (payees, accounts,
-document paths) are public under finance's own tiers and do reach it.
+totals, the owed headline) is empty in what these operations return to a token, and
+core's tool facade drops it. An agent sees the fields finance tiers public or internal
+(structure, dates, states, counts, labels and the status lines' text), as finance
+tiers them. Labels (payees, accounts, document paths) are public under finance's own
+tiers and do reach it. The one caller that gets the restricted fields filled is the
+workspace owner's own signed-in browser session, for the web screens (ADR-0029).
 
 The reads are opt-in. No routine token, named package set or connector grant reaches
 them, and the module's other operations are not registered in core at all. The one
@@ -133,8 +135,9 @@ Every screen carries a status strip (last tick, last sync to Current, which sink
 send) with the full status lines behind it (`finance.status.get`,
 `finance.sink.state`). The screens call only the reads above, through the owner's
 browser session, which reaches them by role: no token set, tool or MCP exposure is
-added. Like every read, they never receive an amount. A member who opens the host
-sees an owner-only notice and nothing is read.
+added. They show amounts because the reads fill the restricted fields for the owner's
+own browser session alone (ADR-0029). A member who opens the host sees an owner-only
+notice and nothing is read.
 
 ### A non-superuser application role
 
