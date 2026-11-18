@@ -59,12 +59,27 @@ def capture(
         body = json.dumps(model_input.body, ensure_ascii=False, allow_nan=False)
     except (ValueError, TypeError, RecursionError):
         raise OperationRefused("input_invalid", "capture body must be JSON") from None
+    event_id = model_input.source_event_id
+    if event_id is not None:
+        # A caller-keyed repeat is the same event read again (an agent rescanning a
+        # mailbox writes a fresh body each time), so the first capture stands and the
+        # repeat records no conflict.
+        seen = uow.connection.execute(
+            select(t.delivery_receipt.c.id).where(
+                t.delivery_receipt.c.connection_id == connection_id,
+                t.delivery_receipt.c.source_event_id == event_id,
+            )
+        ).scalar_one_or_none()
+        if seen is not None:
+            return AcceptedDelivery(
+                receipt_ref=ref("delivery_receipt", seen), outcome="duplicate"
+            )
     return accept_delivery(
         ctx,
         uow,
         AcceptDeliveryInput(
             connection_ref=ref("intake_connection", connection_id),
-            source_event_id=str(uuid7()),
+            source_event_id=event_id or str(uuid7()),
             body=body,
             funnel_ref=model_input.funnel_ref,
             campaign_ref=model_input.campaign_ref,
