@@ -27,8 +27,11 @@ authorization, tool policy, domain data, audit and durable work state.
   most five tools that let a client browse and call the rest on demand
   (discover-then-call).
 - Start a model run with `core.runtime.run`, naming the tools it may use and the records
-  it may see. The run gets its own short-lived token and can never reach past the person
-  who started it.
+  it may see. The run gets its own short-lived token, holding only the named tools the
+  person or token that started it could call at that moment. That scope is fixed when
+  the run starts: it keeps those tools until it ends or reaches its deadline, even if the
+  starting token loses some of them in the meantime (for example when a module switches
+  to `explicit_only`).
 - Pick the runtime and model per workspace, from the lists the operator allows.
 
 ## How the MCP door works
