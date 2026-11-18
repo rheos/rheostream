@@ -66,7 +66,7 @@ CloudEvents-compatible in the attributes that matter and carries Rheo-specific e
 | `time` | source occurrence time from `occurred_at_path`, else receipt time | Both are stored; `time` is the source's. |
 | `subject` | the external subject id when the mapping yields one | Subject identity, separate from event identity. |
 | `datacontenttype` | `application/json` | |
-| `data.transport` | `webhook`, `import`, `manual` | Delivery transport (FR 36). |
+| `data.transport` | `webhook`, `import`, `manual`, `poll` | Delivery transport (FR 36). `poll` is the job feed collector's scheduled poll, below. |
 | `data.funnel_ref`, `data.campaign_ref` | resolved from the connection, or chosen at manual capture | Acquisition attribution, stored in columns distinct from transport (criterion 46). |
 | `data.facts` | list of `{ target, value_kind, value, source_path, transform }` | What the mapping produced. |
 | `data.completeness` | count of `value` facts | Used by field derivation. |
@@ -209,7 +209,7 @@ same operation:
 | Transport | Binding | Actor when `accept_delivery` runs |
 | --- | --- | --- |
 | `webhook` | Route `POST /api/v1/intake/webhook/<connection_id>` on the `api` surface, calling `leads.intake.accept_delivery` | A `connection` actor, role `service`, built after the signature verified |
-| `import` | No route. The `leads.import.run` job hands each row to the import connector, which calls `leads.intake.accept_delivery` | The job's `system` actor, role `service` |
+| `import` | No route. Designed: a `leads.import.run` job would hand each row to the import connector, which calls `leads.intake.accept_delivery`. No such job is registered yet; see CSV and JSON import below | The job's `system` actor, role `service` |
 | `manual` | No route. `leads.intake.capture` hands the form to the manual connector, which calls `leads.intake.accept_delivery` | The capturing account, in its own context |
 
 **Scheduled poll.** A fourth binding, `poll`, has no route. The job feed collector's

@@ -218,7 +218,7 @@ All in the `leads` schema.
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `pipeline_preset` | `id uuid`, `name`, `current_version integer`, `created_at` | A named preset. Release one ships one: inbound services. |
+| `pipeline_preset` | `id uuid`, `name`, `current_version integer`, `created_at` | A named preset. Two ship: inbound services (`0004_opportunities`) and Job search (`0007_jobsearch_preset`). |
 | `preset_version` | `preset_id`, `version integer`, `created_at`, `created_by_id`, `note text` | Primary key `(preset_id, version)`. Immutable once created. |
 | `preset_stage` | `preset_id`, `version`, `stage_id slug`, `label text`, `ordinal`, `kind text`, `outcome text null` | `kind` in `open`, `terminal`. Terminal stages map to `outcome` in `succeeded`, `lost`, `disqualified`. `stage_id` is stable across versions; `label` is free. |
 | `preset_transition` | `preset_id`, `version`, `from_stage_id`, `to_stage_id` | Allowed moves. |

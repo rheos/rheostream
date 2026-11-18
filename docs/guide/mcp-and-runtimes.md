@@ -57,8 +57,9 @@ a new token. Four named sets ship: `read_only` (every read operation), `agent_de
 token may hold, such as approving, issuing tokens and creating standing grants) and
 `alert_writer` (exactly `current.item.create` and `current.item.close_by_source`, for an
 outside service that opens and closes alert items in Current). A token never exceeds its
-account's role, rechecked on every presentation, and never exceeds the authority that
-issued it.
+account's role, rechecked on every presentation. It also never exceeds the authority that
+issued it, but that bound is checked at issuance only: a token issued as an explicit list, a
+run token among them, keeps its snapshot if the issuer later narrows.
 
 ### Some modules are opt-in only
 
@@ -68,8 +69,9 @@ module adds later. The only set that does is `module_read:<module_id>`, which ho
 module's read operations and nothing else, so reaching Finance from an agent takes a token
 issued for it on purpose (`--set module_read:finance`). The rule also holds for tokens
 issued before a module went opt-in: the stored scope is never rewritten, but every
-presentation of a token issued from a named set subtracts the current `explicit_only`
-modules' operations. Such a module's MCP tools may name only its own operations; the
+presentation of a token issued from any other named set subtracts the current
+`explicit_only` modules' operations. A `module_read:<module_id>` token keeps the reads it
+was issued. Such a module's MCP tools may name only its own operations; the
 loader checks that before anything registers.
 
 ### Listing grants nothing
