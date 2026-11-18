@@ -310,6 +310,10 @@
 .billWhen .icon {
   color: var(--rs-color-accent);
 }
+.amount {
+  color: var(--rs-color-ink);
+  font-weight: 600;
+}
 .late {
   color: var(--rs-color-danger);
   font-weight: 600;

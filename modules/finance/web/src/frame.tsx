@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { ShellApi } from "@rheo-stream/web-contract/screen";
 
 import { words } from "./data";
+import { sinkName, statusText } from "./names";
 import type { Loaded, Strip } from "./load";
 import styles from "./finance.module.css";
 
@@ -21,9 +22,16 @@ export const TABS = [
 ] as const;
 export type Tab = (typeof TABS)[number][0];
 
-/** A popover id from any key: the platform needs one per page, unique. */
+/** A popover id from any key: the platform needs one per page, unique. Each
+ * character outside [A-Za-z0-9] becomes `_` and its code point, so two keys never
+ * share an id. */
 export function popoverId(...parts: (string | number)[]): string {
-  return "fin-" + parts.join("-").replace(/[^A-Za-z0-9_-]+/g, "_");
+  return (
+    "fin-" +
+    parts
+      .join("-")
+      .replace(/[^A-Za-z0-9]/g, (c) => `_${c.codePointAt(0)?.toString(16) ?? ""}`)
+  );
 }
 
 export function InfoIcon() {
@@ -76,11 +84,12 @@ export function Footnote({
       <div
         id={id}
         popover="auto"
+        role="dialog"
+        aria-labelledby={`${id}-title`}
         className={`${styles.note}${wide ? ` ${styles.noteWide}` : ""}`}
-        aria-label={title}
       >
         <div className={styles.noteHead}>
-          <h3>{title}</h3>
+          <h3 id={`${id}-title`}>{title}</h3>
           <button
             type="button"
             className={styles.noteClose}
@@ -145,21 +154,17 @@ export function sinceStamp(stamp: string, today: string | undefined): string {
   return today && stamp.startsWith(today + " ") ? `at ${stamp.slice(today.length + 1)}` : stamp;
 }
 
-/** A sink code as a name: Current is a module, the rest read as words. */
-export function sinkName(sink: string): string {
-  return sink === "current" ? "Current" : words(sink);
-}
-
 /** Last tick, last sync to Current and the sinks, with every status line behind
  * the info button. */
 export function StatusStrip({ strip }: { strip: Loaded<Strip> }) {
   if (strip.state !== "ok")
     return (
-      <p className={styles.strip} role="status">
+      <p className={styles.strip}>
         <Chip tone="bad">Status unavailable</Chip>
       </p>
     );
   const { facts, lines, sinks } = strip.value;
+  const reminders = lines.find((l) => l.lineNo === 6)?.text ?? "";
   const today = facts.asOf?.match(/\d{4}-\d{2}-\d{2}/)?.[0];
   const tick: [Tone, string] = facts.noTickYet
     ? ["warn", "No tick yet"]
@@ -173,7 +178,11 @@ export function StatusStrip({ strip }: { strip: Loaded<Strip> }) {
     ? ["bad", `Current sync failing since ${facts.syncFailedSince}`]
     : facts.lastSync
       ? ["ok", `Synced to Current ${sinceStamp(facts.lastSync, today)}`]
-      : ["off", "Not syncing to Current"];
+      : reminders.endsWith("current off")
+        ? ["off", "Current sync off"]
+        : reminders.endsWith("current not configured")
+          ? ["warn", "Current not set up"]
+          : ["warn", "No completed sync yet"];
   const on = sinks?.filter((s) => s.enabled) ?? [];
   const stale = sinks?.filter((s) => s.approval === "stale") ?? [];
   const sinkText =
@@ -183,19 +192,24 @@ export function StatusStrip({ strip }: { strip: Loaded<Strip> }) {
         ? "All sinks off"
         : `Sending to ${on.map((s) => sinkName(s.sink)).join(", ")}`;
   return (
-    <div className={styles.strip} role="status">
+    <div className={styles.strip}>
+      {facts.asOf && !facts.databaseCurrent ? (
+        <Chip tone="bad">Database needs an upgrade</Chip>
+      ) : null}
       <Chip tone={tick[0]}>{tick[1]}</Chip>
       <Chip tone={sync[0]}>{sync[1]}</Chip>
       <Chip tone={sinks === null ? "warn" : stale.length ? "warn" : "ok"}>
         {sinkText}
-        {stale.length ? `, ${stale.length} approval stale` : ""}
+        {stale.length
+          ? `, ${stale.length} ${stale.length === 1 ? "approval" : "approvals"} stale`
+          : ""}
       </Chip>
       <Footnote id={popoverId("status")} label="All status lines" title="Status" wide>
         {facts.asOf ? <p className={styles.faint}>{facts.asOf}</p> : null}
         <ol className={styles.lines}>
           {lines.map((line) => (
             <li key={line.lineNo} value={line.lineNo}>
-              {line.text}
+              {statusText(line)}
             </li>
           ))}
         </ol>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  amount,
   bucket,
   coverage,
   obligation,
@@ -12,6 +13,7 @@ import {
   statusLines,
   traces,
 } from "./data";
+import { money, Names, ownLabel, statusText } from "./names";
 
 // Every value here is invented. The wording of the status lines is the module's
 // own fixed wording (`rheo_finance.reports.ops.status`).
@@ -104,10 +106,13 @@ describe("parsers", () => {
     expect(coverage({ months: [{ state: "odd" }] }).months[0]?.state).toBe("missing");
   });
 
-  it("never carry an amount, even when one is sent", () => {
-    const o = obligation({ obligation_ref: "finance.obligation:1", amount_due: "12.34", remaining: "5.00" });
-    expect(JSON.stringify(o)).not.toContain("12.34");
-    expect(JSON.stringify(o)).not.toContain("5.00");
+  it("read amounts as numbers, and a missing one as null", () => {
+    const o = obligation({ obligation_ref: "finance.obligation:1", amount_due: "12.34", remaining: 5 });
+    expect(o.amountDue).toBe(12.34);
+    expect(o.remaining).toBe(5);
+    expect(o.overdue).toBeNull();
+    expect(amount("not a number")).toBeNull();
+    expect(amount("")).toBeNull();
   });
 
   it("key traces by obligation ref", () => {
@@ -155,5 +160,39 @@ describe("dates", () => {
     expect(relativeDays(-1)).toBe("1 day overdue");
     expect(relativeDays(-4)).toBe("4 days overdue");
     expect(relativeDays(null)).toBe("no due date");
+  });
+});
+
+describe("names", () => {
+  it("treats a label that is its own slug as a codename", () => {
+    expect(ownLabel("zz-issuer", "zz-issuer")).toBeNull();
+    expect(ownLabel("power", "Power")).toBe("Power");
+    const names = new Names().add("zz-issuer", "zz-issuer").add("power", "Power");
+    expect(names.bySlug("zz-issuer", "Unnamed")).toBe("Unnamed");
+    expect(names.bySlug("power", "Unnamed")).toBe("Power");
+    expect(names.bySlug("other", "Unnamed", "")).toBe("");
+    expect(names.label("zz-issuer", "Unnamed account")).toBe("Unnamed account");
+    expect(names.unnamedCount).toBe(1);
+    // A label met later names it.
+    expect(names.add("zz-issuer", "Water").unnamedCount).toBe(0);
+  });
+
+  it("strips names from the status lines", () => {
+    expect(statusText({ lineNo: 2, text: "last import: zz-a 2026-01-04, zz-b 2026-01-09; tick 3 min ago" })).toBe(
+      "last import 2026-01-09; tick 3 min ago",
+    );
+    expect(statusText({ lineNo: 2, text: "last import: none; no tick yet" })).toBe("last import: none; no tick yet");
+    expect(statusText({ lineNo: 7, text: "sinks off: telegram zz-feed; approval stale: rates" })).toBe(
+      "sinks off: Telegram, Vendor connection; approval stale: Exchange rates",
+    );
+    expect(statusText({ lineNo: 7, text: "sinks: all enabled" })).toBe("sinks: all enabled");
+    expect(
+      statusText({ lineNo: 9, text: "2 duplicate bill months (zz-a 1, zz-b 1); 1 account with no data: zz-c" }),
+    ).toBe("2 duplicate bill months; 1 account with no data");
+  });
+
+  it("writes money in its currency", () => {
+    expect(money(1234.5, "USD")).toBe("$1,234.50");
+    expect(money(null, "USD")).toBeNull();
   });
 });

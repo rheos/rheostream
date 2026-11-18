@@ -4,14 +4,15 @@ import type { OperationOutcome, ShellApi } from "@rheo-stream/web-contract/scree
 
 import { screens } from "./index";
 
-// Every value here is invented: payees, accounts and paths are made up, and the
-// one amount field sent below is there to prove it never renders.
+// Every value here is invented: payees, accounts, paths and amounts are made up.
+// `zz-issuer` stands for a payee the owner never labelled, whose label is its own
+// key: it, and every path, must never render.
 const ok = (result: unknown): OperationOutcome => ({ state: "ok", result });
 
 const STATUS = ok({
   lines: [
     { line_no: 1, text: "as of 2026-01-05 09:30 UTC, database current" },
-    { line_no: 2, text: "last import: none; tick 4 min ago" },
+    { line_no: 2, text: "last import: zz-bank 2026-01-04, zz-card 2026-01-02; tick 4 min ago" },
     {
       line_no: 5,
       text:
@@ -20,7 +21,7 @@ const STATUS = ok({
         " credits not applied 1, orphaned decisions 0",
     },
     { line_no: 6, text: "reminders: 0 queued retries, pending total unavailable, last sync 2026-01-05 09:15 UTC" },
-    { line_no: 9, text: "1 source discrepancy" },
+    { line_no: 9, text: "1 source discrepancy; 1 duplicate bill month (zz-issuer 1); 1 account with no data: zz-savings" },
   ],
 });
 const SINKS = ok({
@@ -49,6 +50,15 @@ function row(overrides: Record<string, unknown>) {
     payments_unmatchable: false,
     statement_conflict: false,
     presumed_paid_basis: null,
+    amount_due: "120.00",
+    minimum_due: null,
+    threshold_due: "120.00",
+    paid: "0.00",
+    remaining: "120.00",
+    threshold_remaining: "120.00",
+    overdue: "0.00",
+    carried: "0.00",
+    due_in_window: "120.00",
     ...overrides,
   };
 }
@@ -57,7 +67,7 @@ const OWED = ok({
   as_of: "as of 2026-01-05 09:30 UTC",
   today: "2026-01-05",
   window_days: 14,
-  currency: "XXX",
+  currency: "USD",
   rows: [
     row({
       obligation_ref: "finance.obligation:00000000-0000-4000-8000-000000000002",
@@ -67,7 +77,11 @@ const OWED = ok({
       days_until_due: -4,
       before_floor: true,
       reminder_eligible: false,
-      amount_due: "987.65",
+      amount_due: "45.10",
+      remaining: "45.10",
+      threshold_remaining: "45.10",
+      overdue: "45.10",
+      due_in_window: "0.00",
     }),
     row({}),
     row({
@@ -79,11 +93,24 @@ const OWED = ok({
       due_date: "2026-01-03",
       reminder_eligible: false,
     }),
+    row({
+      obligation_ref: "finance.obligation:00000000-0000-4000-8000-000000000004",
+      payee_slug: "zz-issuer",
+      payee_label: "zz-issuer",
+      period_label: "2025-12",
+      due_date: "2026-02-04",
+      days_until_due: 30,
+      primary_source: "bills/zz-issuer/2025-12.pdf",
+    }),
   ],
   more: 2,
+  due_in_window: "120.00",
+  overdue: "45.10",
+  carried: "0.00",
+  headline: null,
   credits: {
     count: 1,
-    sums: [],
+    sums: [{ currency: "USD", amount: "15.00", cad_amount: null }],
     items: [
       {
         line_ref: "finance.txn:1",
@@ -92,7 +119,8 @@ const OWED = ok({
         occurred_on: "2025-12-02",
         account_label: "Test Chequing",
         direction: "in",
-        currency: "XXX",
+        currency: "USD",
+        amount: "-15.00",
         state: "open",
         reason: "no_bill_to_apply",
         payee_label: "Example Power",
@@ -104,7 +132,7 @@ const OWED = ok({
     ],
   },
   gaps: [
-    { path: "bills/sample-water/scan.jpg", issuer_label: "Sample Water", kind: "image", status: "unparsed", period_start: null, period_end: null },
+    { path: "bills/zz-issuer/2025-10.pdf", issuer_label: "zz-issuer", kind: "bill", status: "unparsed", period_start: "2025-10-01", period_end: "2025-10-31" },
   ],
   gap_count: 1,
 });
@@ -116,7 +144,7 @@ const TRACE = ok({
       presumed_basis_kind: null,
       presumed_at: null,
       applications: [
-        { application_ref: "a", payment_ref: "p", currency: "XXX", paid_on: "2025-12-28", source: "bank_line", state: "applied", basis_ref: null, auto: true, evidence: [] },
+        { application_ref: "a", payment_ref: "p", currency: "USD", paid_on: "2025-12-28", source: "bank_line", state: "applied", basis_ref: null, auto: true, applied_amount: "60.00", payment_amount: "60.00", evidence: [{ evidence_ref: "e", role: "statement", txn_ref: null, document_path: "statements/zz-bank/2025-12.pdf", line_no: 4, drop_ref: null }] },
       ],
     },
   ],
@@ -126,6 +154,7 @@ const DOCUMENTS = ok({
   documents: [
     { path: "statements/test-card/2025-11.pdf", kind: "statement", status: "rejected", period_start: "2025-11-01", period_end: "2025-11-30", official: true, extraction: "text" },
     { path: "bills/example-power/2025-10.pdf", kind: "bill", status: "parsed", period_start: null, period_end: null, official: true, extraction: "text" },
+    { path: "bills/zz-issuer/2025-10.pdf", kind: "bill", status: "unparsed", period_start: "2025-10-01", period_end: "2025-10-31", official: true, extraction: "none" },
   ],
 });
 const COVERAGE = ok({
@@ -138,7 +167,7 @@ const COVERAGE = ok({
 });
 const OPEN_ITEMS = ok({
   items: [
-    { line_ref: "finance.txn:9", tax_year: 2025, kind: "needs_source", occurred_on: "2025-12-12", account_label: "Test Card", direction: "out", currency: "XXX", state: "open", reason: "no_receipt", payee_label: null, payee_slug: null, candidate_count: 0, candidate_refs: [] },
+    { line_ref: "finance.txn:9", tax_year: 2025, kind: "needs_source", occurred_on: "2025-12-12", account_label: "Test Card", direction: "out", currency: "USD", amount: "-9.99", state: "open", reason: "no_receipt", payee_label: null, payee_slug: null, candidate_count: 0, candidate_refs: [] },
   ],
   summary: [
     { kind: "needs_source", count: 1, sums: [] },
@@ -209,6 +238,12 @@ describe.each(["owed", "attention", "coverage"] as const)("%s", (name) => {
     expect(html).toContain("Sending to Current");
   });
 
+  it("never shows a key, a path or a source ref", async () => {
+    const html = await render(name, fakeShell(), { year: "2025" });
+    expect(html).not.toMatch(/zz-/);
+    expect(html).not.toMatch(/bills\/|statements\/|finance\.obligation:|finance\.txn:/);
+  });
+
   it("says when the service does not answer", async () => {
     const html = await render(name, fakeShell("owner", {}));
     expect(html).toContain("Status unavailable");
@@ -219,27 +254,51 @@ describe.each(["owed", "attention", "coverage"] as const)("%s", (name) => {
 describe("owed", () => {
   it("leads with what is due and groups the rows", async () => {
     const html = await render("owed", fakeShell());
-    expect(html).toContain("1 bill overdue, 1 due in the next 14 days.");
+    expect(html).toContain("$45.10 overdue, $120.00 due in the next 14 days.");
     expect(html).toContain("Overdue");
     expect(html).toContain("Due in the next 14 days");
     expect(html).toContain("Presumed paid or disputed");
     expect(html).toContain("before floor");
     expect(html).toContain("4 days overdue");
     expect(html).toContain("in 5 days");
-    expect(html).toContain("Reminder in Current");
+    expect(html).toContain("Gets a reminder in Current");
+    expect(html).toContain("$120.00");
     expect(html).toContain("2 more bills past the list");
   });
 
-  it("puts the source and payments behind the row's info button", async () => {
+  it("puts the figures and payments behind the row's info button", async () => {
     const html = await render("owed", fakeShell());
     expect(html).toContain('popover="auto"');
-    expect(html).toContain("bills/example-power/2025-12.pdf");
-    expect(html).toContain("Dec 28, 2025 from bank line, applied, matched automatically");
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain("Left to pay");
+    expect(html).toContain("A parsed document");
+    expect(html).toContain("Dec 28, 2025, $60.00, applied, matched automatically");
   });
 
-  it("never renders an amount", async () => {
+  it("names an unlabelled payee as unnamed, never by its key", async () => {
     const html = await render("owed", fakeShell());
-    expect(html).not.toContain("987.65");
+    expect(html).toContain("Unnamed payee");
+  });
+
+  it("keeps a presumed-paid row out of the overdue wording", async () => {
+    const html = await render("owed", fakeShell());
+    expect(html).not.toContain("2 days overdue");
+  });
+
+  it("calls a past-due bill with its threshold paid past due, not overdue", async () => {
+    const shell = fakeShell("owner", {
+      ...RESULTS,
+      "finance.owed.list": ok({
+        ...(OWED as { result: Record<string, unknown> }).result,
+        rows: [row({ days_until_due: -3, due_date: "2026-01-02", kind: "card_statement", threshold_remaining: "0.00", overdue: "0.00", remaining: "300.00" })],
+        overdue: "0.00",
+        due_in_window: "0.00",
+      }),
+    });
+    const html = await render("owed", shell);
+    expect(html).toContain("Past due, minimum paid");
+    expect(html).not.toContain("Overdue");
+    expect(html).toContain("Nothing due in the next 14 days.");
   });
 });
 
@@ -249,14 +308,19 @@ describe("attention", () => {
     expect(html).toContain("Waiting for you to confirm");
     expect(html).toContain("presumed paid");
     expect(html).toContain("Rejected documents");
-    expect(html).toContain("statements/test-card/2025-11.pdf");
-    expect(html).toContain("Bill gaps");
+    expect(html).toContain("Unparsed documents");
+    expect(html).toContain("1 is a bill not on the owed list");
     expect(html).toContain("Credits not applied");
+    expect(html).toContain("$15.00");
+    expect(html).toContain("$9.99");
+    expect(html).toContain("Payees and accounts without a name");
     expect(html).toContain("Missing account-months");
     expect(html).toContain("Dec 2025");
     expect(html).toContain("Needs source");
-    expect(html).toContain("All clear: documents needing manual entry, unparsed documents.");
+    expect(html).toContain("All clear: documents needing manual entry.");
     expect(html).toContain("1 source discrepancy");
+    expect(html).toContain("1 duplicate bill month");
+    expect(html).toContain("1 account with no data");
     // Unapplied credits come from the owed read, not twice.
     expect(html.match(/Credits not applied/g)).toHaveLength(1);
   });

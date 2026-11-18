@@ -2,11 +2,11 @@
  * Wire shapes of finance's eight owner-only reads (`rheo_finance.wiring.reads`),
  * narrowed from the untyped `OperationOutcome.result`.
  *
- * The registered outputs leave out every field finance tiers restricted, so no
- * amount, total or headline ever reaches these parsers: a row says who, when and in
- * what state, never how much. Each parser tolerates a missing or mistyped field by
- * falling back to an empty value, so one odd row cannot take a screen down; the
- * module stays the authority on the real shape.
+ * Amounts are finance's restricted fields. The reads fill them only for the owner's
+ * own browser session (ADR-0029) and leave them null for anyone else, so every amount
+ * here is `number | null` and a screen shows a figure only when it has one. Each
+ * parser tolerates a missing or mistyped field by falling back to an empty value, so
+ * one odd row cannot take a screen down; the module stays the authority on the shape.
  */
 
 type Row = Record<string, unknown>;
@@ -33,6 +33,11 @@ function optionalInt(value: unknown): number | null {
 }
 function bool(value: unknown): boolean {
   return value === true;
+}
+/** A decimal as the wire carries it (a string, or a number), else null. */
+export function amount(value: unknown): number | null {
+  const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  return typeof n === "number" && Number.isFinite(n) ? n : null;
 }
 
 // --- finance.status.get -------------------------------------------------------------
@@ -163,13 +168,21 @@ export interface Obligation {
   daysUntilDue: number | null;
   /** open, partial, presumed_paid or disputed: the only states the owed view holds. */
   status: string;
-  primarySource: string;
-  manualSource: string | null;
+  /** True when the figures came from a manual entry, not a parsed document. */
+  manual: boolean;
   beforeFloor: boolean;
   reminderEligible: boolean;
   paymentsUnmatchable: boolean;
   statementConflict: boolean;
   presumedPaidBasis: string | null;
+  amountDue: number | null;
+  minimumDue: number | null;
+  paid: number | null;
+  remaining: number | null;
+  /** What still keeps the bill open: the minimum for a card, the whole for a bill. */
+  thresholdRemaining: number | null;
+  /** The module's own overdue figure: the threshold still open past the due date. */
+  overdue: number | null;
 }
 
 export function obligation(value: unknown): Obligation {
@@ -185,19 +198,26 @@ export function obligation(value: unknown): Obligation {
     dueDate: optional(r.due_date),
     daysUntilDue: optionalInt(r.days_until_due),
     status: str(r.status),
-    primarySource: str(r.primary_source),
-    manualSource: optional(r.manual_source),
+    manual: optional(r.manual_source) !== null,
     beforeFloor: bool(r.before_floor),
     reminderEligible: bool(r.reminder_eligible),
     paymentsUnmatchable: bool(r.payments_unmatchable),
     statementConflict: bool(r.statement_conflict),
     presumedPaidBasis: optional(r.presumed_paid_basis),
+    amountDue: amount(r.amount_due),
+    minimumDue: amount(r.minimum_due),
+    paid: amount(r.paid),
+    remaining: amount(r.remaining),
+    thresholdRemaining: amount(r.threshold_remaining),
+    overdue: amount(r.overdue),
   };
 }
 
 export interface Gap {
+  /** The document's key, used only as a React key: never shown. */
   path: string;
-  issuerLabel: string;
+  /** The issuer's directory key, which is a codename: never shown. */
+  issuer: string;
   kind: string;
   status: string;
   periodStart: string | null;
@@ -212,8 +232,10 @@ export interface OpenItem {
   accountLabel: string | null;
   direction: "in" | "out" | null;
   currency: string | null;
+  amount: number | null;
   state: string;
   reason: string;
+  payeeSlug: string | null;
   payeeLabel: string | null;
 }
 
@@ -227,9 +249,11 @@ function openItem(value: unknown): OpenItem {
     accountLabel: optional(r.account_label),
     direction: r.direction === "in" || r.direction === "out" ? r.direction : null,
     currency: optional(r.currency),
+    amount: amount(r.amount),
     state: str(r.state),
     reason: str(r.reason),
-    payeeLabel: optional(r.payee_label) ?? optional(r.payee_slug),
+    payeeSlug: optional(r.payee_slug),
+    payeeLabel: optional(r.payee_label),
   };
 }
 
@@ -240,9 +264,17 @@ export interface Owed {
   rows: Obligation[];
   /** Rows past the module's `finance.owed.max_rows` cap, not in `rows`. */
   more: number;
-  credits: { count: number; items: OpenItem[] };
+  credits: {
+    count: number;
+    items: OpenItem[];
+    sums: { currency: string; amount: number | null }[];
+  };
   gaps: Gap[];
   gapCount: number;
+  currency: string;
+  dueInWindow: number | null;
+  overdue: number | null;
+  carried: number | null;
 }
 
 export function owed(value: unknown): Owed {
@@ -254,30 +286,47 @@ export function owed(value: unknown): Owed {
     windowDays: int(r.window_days),
     rows: rows(r.rows).map(obligation),
     more: int(r.more),
-    credits: { count: int(credits.count), items: rows(credits.items).map(openItem) },
+    credits: {
+      count: int(credits.count),
+      items: rows(credits.items).map(openItem),
+      sums: rows(credits.sums).map((c) => ({
+        currency: str(c.currency),
+        amount: amount(c.amount),
+      })),
+    },
     gaps: rows(r.gaps).map((g) => ({
       path: str(g.path),
-      issuerLabel: str(g.issuer_label),
+      issuer: str(g.issuer_label),
       kind: str(g.kind),
       status: str(g.status),
       periodStart: optional(g.period_start),
       periodEnd: optional(g.period_end),
     })),
     gapCount: int(r.gap_count),
+    currency: str(r.currency),
+    dueInWindow: amount(r.due_in_window),
+    overdue: amount(r.overdue),
+    carried: amount(r.carried),
   };
 }
 
-export type Bucket = "overdue" | "soon" | "later" | "undated" | "parked";
+export type Bucket = "overdue" | "covered" | "soon" | "later" | "undated" | "parked";
 
 /** States the module counts as owing nothing (`reports.owed.figures`). */
 const PARKED = new Set(["presumed_paid", "disputed"]);
 
-/** Where a row sits on the Owed screen: presumed-paid and disputed rows apart,
- * the rest by days to the due date and the module's window. */
+/** Where a row sits on the Owed screen: presumed-paid and disputed rows apart; a row
+ * past its due date is overdue only while the module says so (its threshold, a card's
+ * minimum, still open), else it is past due with the minimum covered; the rest by
+ * days to the due date and the module's window. */
 export function bucket(o: Obligation, windowDays: number): Bucket {
   if (PARKED.has(o.status)) return "parked";
   if (o.daysUntilDue === null) return "undated";
-  if (o.daysUntilDue < 0) return "overdue";
+  if (o.daysUntilDue < 0) {
+    // Without the figure (not the owner's session), fall back to the date alone.
+    if (o.overdue === null) return "overdue";
+    return o.overdue > 0 ? "overdue" : "covered";
+  }
   return o.daysUntilDue <= windowDays ? "soon" : "later";
 }
 
@@ -288,7 +337,8 @@ export interface Payment {
   source: string;
   state: string;
   auto: boolean;
-  evidence: { role: string; documentPath: string | null; lineNo: number | null }[];
+  applied: number | null;
+  currency: string;
 }
 
 export interface Trace {
@@ -312,11 +362,8 @@ export function traces(value: unknown): Map<string, Trace> {
         source: str(a.source),
         state: str(a.state),
         auto: bool(a.auto),
-        evidence: rows(a.evidence).map((e) => ({
-          role: str(e.role),
-          documentPath: optional(e.document_path),
-          lineNo: optionalInt(e.line_no),
-        })),
+        applied: amount(a.applied_amount),
+        currency: str(a.currency),
       })),
     });
   }

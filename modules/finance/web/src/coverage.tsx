@@ -2,6 +2,7 @@ import type { ShellApi } from "@rheo-stream/web-contract/screen";
 
 import { COVERAGE_STATES, monthLabel, words, type CoverageMonth, type CoverageState } from "./data";
 import { Failure, Footnote, Frame, popoverId } from "./frame";
+import { ownLabel, UNNAMED_ACCOUNT } from "./names";
 import type { CoverageState as Loaded } from "./load";
 import styles from "./finance.module.css";
 
@@ -50,7 +51,7 @@ export function CoverageView({ shell, state }: { shell: ShellApi; state: Loaded 
               </li>
             ))}
           </ul>
-          <p>Hover or focus a month for its reason, when the module gives one.</p>
+          <p>Every month that is not on file is listed under the grid, with its reason.</p>
         </Footnote>
       </div>
       {coverage.state !== "ok" ? (
@@ -73,7 +74,10 @@ function Grid({
 }) {
   const accounts = new Map<string, { label: string; byMonth: Map<string, CoverageMonth> }>();
   for (const m of months) {
-    const entry = accounts.get(m.account) ?? { label: m.accountLabel, byMonth: new Map() };
+    const entry = accounts.get(m.account) ?? {
+      label: ownLabel(m.account, m.accountLabel) ?? UNNAMED_ACCOUNT,
+      byMonth: new Map(),
+    };
     entry.byMonth.set(m.month.slice(5, 7), m);
     accounts.set(m.account, entry);
   }
@@ -120,7 +124,6 @@ function Grid({
                         title={text}
                         role="img"
                         aria-label={`${monthLabel(`${year}-${n}-01`)}: ${text}`}
-                        tabIndex={m && m.state !== "have" ? 0 : undefined}
                       />
                     </td>
                   );
@@ -130,6 +133,38 @@ function Grid({
           </tbody>
         </table>
       </div>
+      <Problems accounts={accounts} />
     </>
+  );
+}
+
+/** The months that are not on file, by account, each with its state and reason. */
+function Problems({
+  accounts,
+}: {
+  accounts: Map<string, { label: string; byMonth: Map<string, CoverageMonth> }>;
+}) {
+  const rows = [...accounts.entries()].flatMap(([account, { label, byMonth }]) =>
+    [...byMonth.values()]
+      .filter((m) => m.state !== "have" && m.state !== "not_applicable")
+      .map((m) => (
+        <li key={`${account}-${m.month}`}>
+          <span>{label}</span>
+          <span>{monthLabel(m.month)}</span>
+          <span className={styles.faint}>
+            {STATE_TEXT[m.state]}
+            {m.reason ? `: ${words(m.reason)}` : ""}
+          </span>
+        </li>
+      )),
+  );
+  if (!rows.length) return null;
+  return (
+    <section className={styles.section} aria-labelledby="coverage-gaps">
+      <h2 id="coverage-gaps" className={styles.sectionHeading}>
+        Not on file <span className={styles.count}>{rows.length}</span>
+      </h2>
+      <ul className={styles.rows}>{rows}</ul>
+    </section>
   );
 }
