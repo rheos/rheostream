@@ -55,21 +55,41 @@ _SUFFIXED: Final = re.compile(
     + r"\s?(?:USD|dollars)\b",
     re.IGNORECASE,
 )
+# "25-40 USD": a range whose currency follows both numbers.
+_SUFFIXED_RANGE: Final = re.compile(
+    r"(?<![\w$.,])"
+    + _NUMBER.format(n="n", d="d")
+    + _THOUSANDS.format(k="k")
+    + r"\s*(?:-|–|—|to)\s*"
+    + _NUMBER.format(n="n2", d="d2")
+    + _THOUSANDS.format(k="k2")
+    + r"\s?(?:USD|dollars)\b",
+    re.IGNORECASE,
+)
 _RANGE_TAIL: Final = re.compile(
     r"\s*(?:-|–|—|to)\s*(?:US\$|\$|USD\s?)?\s?"
     + _NUMBER.format(n="n", d="d")
     + _THOUSANDS.format(k="k")
 )
 _LARGE: Final = re.compile(r"\s?(?:mm|bn|m|b|million|billion)\b", re.IGNORECASE)
+# Business size introduced before an amount ("raised $2M", "revenue of $500k")...
 _NOT_PAY: Final = re.compile(
-    r"\b(?:revenue|raised|raising|funding|valuation|valued|sales|turnover|profit|"
-    r"arr|mrr|gmv|ad\s?spend|spend on ads)\b",
+    r"\b(?:revenue|raised|raising|funding|valuation|valued|turnover|profit|"
+    r"sales of|annual sales|arr|mrr|gmv|ad\s?spend|spend on ads)\b",
+    re.IGNORECASE,
+)
+# ...or named straight after it ("$10k MRR", "$1,000,000 in sales"), so "$500
+# for a sales landing page" stays a budget.
+_NOT_PAY_AFTER: Final = re.compile(
+    r"\s*(?:(?:a|per)\s+(?:year|month)\s+)?(?:(?:in|of)\s+)?"
+    r"(?:revenue|sales|turnover|profit|arr|mrr|gmv|ad\s?spend)\b",
     re.IGNORECASE,
 )
 # A client's history on a pasted page ("$8.4K total spent", "$32.50 /hr avg hourly
 # rate paid") is not this job's pay.
 _HISTORY: Final = re.compile(
-    r"\b(?:spent|rate paid|avg|average|paid out|hires?|jobs posted)\b", re.IGNORECASE
+    r"\b(?:spent|rate paid|avg|average|paid out|hire rate|hires|jobs posted)\b",
+    re.IGNORECASE,
 )
 # Where a pasted page's client panel starts; nothing after it is read.
 _CLIENT_PANEL: Final = re.compile(r"\babout the client\b", re.IGNORECASE)
@@ -84,7 +104,12 @@ _SPAN: Final = re.compile(
 _ITEM: Final = re.compile(
     r"\s*(?:/\s*|per\s+|each\b|apiece\b)(?:[a-z][a-z-]*)?", re.IGNORECASE
 )
-# "Price per video $30": the unit named just before the amount.
+# "Price per video $30": the unit named just before the amount. Per hour and
+# per day, week, month or year before it are read as such, never as an item.
+_HOUR_BEFORE: Final = re.compile(r"\bper\s+(?:hour|hr)\s*:?\s*$", re.IGNORECASE)
+_SPAN_BEFORE: Final = re.compile(
+    r"\bper\s+(?:day|week|month|year|annum)\s*:?\s*$", re.IGNORECASE
+)
 _ITEM_BEFORE: Final = re.compile(r"\bper\s+[a-z][a-z-]*\s*:?\s*$", re.IGNORECASE)
 # Words that say an amount is the job's price; the strongest hint.
 _PRICE_WORDS: Final = re.compile(
@@ -152,9 +177,9 @@ def _following(text: str, end: int) -> str:
 
 def _unit(before: str, after: str) -> tuple[PriceUnit | None, bool]:
     """The unit, and whether the amount is per day, week, month or year."""
-    if _HOUR.match(after):
+    if _HOUR.match(after) or _HOUR_BEFORE.search(before):
         return "hour", False
-    if _SPAN.match(after):
+    if _SPAN.match(after) or _SPAN_BEFORE.search(before):
         return None, True
     if _ITEM.match(after) or _ITEM_BEFORE.search(before):
         return "item", False
@@ -186,18 +211,44 @@ def _range(
     return low, None, end
 
 
+def _suffixed_range(
+    match: re.Match[str], value: Decimal
+) -> tuple[Decimal, Decimal, int] | None:
+    """Both ends of "25-40 USD", with the thousands as ``_range`` places them."""
+    top = _value(match["n2"], match["d2"])
+    if top is None:
+        return None
+    low = value * 1000 if match["k"] else value
+    if match["k2"]:
+        top *= 1000
+    lows = [low * 1000, low] if match["k2"] and not match["k"] else [low]
+    for start in lows:
+        if top > start:
+            return start, top, match.end()
+    return None
+
+
 def _candidate(text: str, match: re.Match[str]) -> _Candidate | None:
     value = _value(match["n"], match["d"])
     if value is None or value <= 0:
         return None
     if text[match.end() : match.end() + 1] == "}":
         return None  # a shell or template variable ("{print $1}"), not money
-    low, high, end = _range(text, match, value)
+    high: Decimal | None
+    if match.groupdict().get("n2") is not None:
+        found = _suffixed_range(match, value)
+        if found is None:
+            return None
+        low, high, end = found
+    else:
+        low, high, end = _range(text, match, value)
     if _LARGE.match(text, end):
         return None
     before = _clause(text, match.start())
     after = _following(text, end)
     if any(p.search(before) or p.search(after) for p in (_NOT_PAY, _HISTORY)):
+        return None
+    if _NOT_PAY_AFTER.match(text, end):
         return None
     if (high or low) > _CEILING:
         return None
@@ -224,13 +275,13 @@ def stated_price(text: str | None) -> StatedPrice | None:
     panel = _CLIENT_PANEL.search(text)
     if panel is not None:
         text = text[: panel.start()]
-    seen: set[int] = set()
+    taken: list[tuple[int, int]] = []
     found: list[_Candidate] = []
-    for pattern in (_PREFIXED, _SUFFIXED):
+    for pattern in (_SUFFIXED_RANGE, _PREFIXED, _SUFFIXED):
         for match in pattern.finditer(text):
-            if match.start() in seen:
+            if any(start <= match.start() < end for start, end in taken):
                 continue
-            seen.add(match.start())
+            taken.append(match.span())
             candidate = _candidate(text, match)
             if candidate is not None:
                 found.append(candidate)

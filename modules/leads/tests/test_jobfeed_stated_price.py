@@ -81,6 +81,14 @@ def price(low: str, high: str | None = None, unit: str | None = None) -> StatedP
             f"$8.4K total spent\n$32.50 {HR} avg hourly rate paid",
             price("1500", unit="total"),
         ),
+        # From CodeRabbit on #609: a range with the currency after both ends,
+        # "sales" and "hire" as ordinary words, and units named before.
+        (f"Rate: 25-40 USD{HR}", price("25", "40", "hour")),
+        ("Pay 2-3k dollars total", price("2000", "3000", "total")),
+        ("Budget: $500 for a sales landing page.", price("500", unit="total")),
+        ("We will hire you for $500 fixed.", price("500", unit="total")),
+        (f"Rate {PER_HOUR} $40", price("40", unit="hour")),
+        ("Rate per month $500", price("500")),
         # The provider's wrapper around the text is no obstacle.
         (
             f"<untrusted_participant_content>Pay $40 {AN_HOUR}"
