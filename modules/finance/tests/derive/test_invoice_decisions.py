@@ -134,7 +134,7 @@ def outside(ledger: Ledger) -> list[dict[str, Any]]:
     return [row for row in ledger.txns() if row["account_id"] == PAID_OUTSIDE]
 
 
-def debts(ledger: Ledger) -> list[Row[Any]]:
+def debts(ledger: Ledger) -> list[Row[*tuple[Any, ...]]]:
     return list(ledger.conn.execute(select(obligation)).all())
 
 
