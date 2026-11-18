@@ -83,8 +83,9 @@ export async function loadStrip(shell: ShellApi): Promise<Loaded<Strip>> {
 export interface OwedState {
   strip: Loaded<Strip>;
   owed: Loaded<Owed>;
-  /** Payments and evidence per obligation ref; empty when the trace read fails. */
-  traces: Map<string, Trace>;
+  /** Payments and evidence per obligation ref; null when the trace read failed, so a
+   * bill never claims "no payments" it could not check. */
+  traces: Map<string, Trace> | null;
 }
 
 export async function loadOwed(shell: ShellApi): Promise<OwedState> {
@@ -96,7 +97,7 @@ export async function loadOwed(shell: ShellApi): Promise<OwedState> {
   return {
     strip,
     owed: list,
-    traces: trace.state === "ok" ? trace.value : new Map(),
+    traces: trace.state === "ok" ? trace.value : null,
   };
 }
 

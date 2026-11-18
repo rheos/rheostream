@@ -67,12 +67,14 @@ function lead(o: Obligation, currency: string): string | null {
 function Bill({
   o,
   trace,
+  traceUnavailable = false,
   year,
   windowDays,
   currency,
 }: {
   o: Obligation;
   trace?: Trace;
+  traceUnavailable?: boolean;
   year: number;
   windowDays: number;
   currency: string;
@@ -190,6 +192,8 @@ function Bill({
                 ))}
               </ul>
             </>
+          ) : traceUnavailable ? (
+            <p className={styles.faint}>Payments could not be read.</p>
           ) : (
             <p className={styles.faint}>No payments applied yet.</p>
           )}
@@ -262,7 +266,8 @@ function OwedBody({ state }: { state: OwedState }) {
                 <Bill
                   key={row.ref}
                   o={row}
-                  trace={state.traces.get(row.ref)}
+                  trace={state.traces?.get(row.ref)}
+                  traceUnavailable={state.traces === null}
                   year={year}
                   windowDays={o.windowDays}
                   currency={o.currency}

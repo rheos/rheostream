@@ -85,7 +85,10 @@ function Grid({
     return (
       <div className={styles.empty}>
         <h2>No coverage for {year}</h2>
-        <p>No account has a statement month in this year.</p>
+        <p>
+          No account has a statement month in this year
+          {noData ? `; ${noData} ${noData === 1 ? "account has" : "accounts have"} no data at all` : ""}.
+        </p>
       </div>
     );
   const missing = months.filter((m) => m.state === "missing").length;

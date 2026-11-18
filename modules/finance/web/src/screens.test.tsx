@@ -275,6 +275,12 @@ describe("owed", () => {
     expect(html).toContain("Dec 28, 2025, $60.00, applied, matched automatically");
   });
 
+  it("says payments could not be read when the trace read fails, never none", async () => {
+    const html = await render("owed", fakeShell("owner", { ...RESULTS, "finance.owed.trace": { state: "unavailable" } }));
+    expect(html).toContain("Payments could not be read.");
+    expect(html).not.toContain("No payments applied yet.");
+  });
+
   it("names an unlabelled payee as unnamed, never by its key", async () => {
     const html = await render("owed", fakeShell());
     expect(html).toContain("Unnamed payee");
@@ -324,6 +330,16 @@ describe("attention", () => {
     // Unapplied credits come from the owed read, not twice.
     expect(html.match(/Credits not applied/g)).toHaveLength(1);
   });
+
+  it("never claims a clear result it could not read", async () => {
+    const lists = await render("attention", fakeShell("owner", { "finance.status.get": STATUS, "finance.sink.state": SINKS }));
+    expect(lists).toContain("1 list needs a look; some lists could not be read.");
+    expect(lists).not.toContain("All clear");
+    const nothing = await render("attention", fakeShell("owner", {}));
+    expect(nothing).toContain("Some lists could not be read.");
+    expect(nothing).not.toContain("Nothing needs a look.");
+    expect(nothing).not.toContain("All clear");
+  });
 });
 
 describe("coverage", () => {
@@ -336,6 +352,13 @@ describe("coverage", () => {
     expect(html).toContain("Dec: Missing: running balance break");
     expect(html).toContain("1 account has no data at all");
     expect(html).toContain('href="/coverage?year=2024"');
+  });
+
+  it("keeps the no-data account count in an empty year", async () => {
+    const empty = ok({ months: [], no_data_accounts: 3 });
+    const html = await render("coverage", fakeShell("owner", { ...RESULTS, "finance.coverage.get": empty }), { year: "2024" });
+    expect(html).toContain("No coverage for 2024");
+    expect(html).toContain("3 accounts have no data at all");
   });
 
   it("falls back to this year for a year it cannot read", async () => {

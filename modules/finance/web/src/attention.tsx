@@ -186,14 +186,18 @@ export function groups(state: AttentionState, year: number): Group[] {
       });
     }
   }
-  out.push({
-    id: "unnamed",
-    label: "Payees and accounts without a name",
-    count: names.unnamedCount,
-    rows: [],
-    empty:
-      "They show as unnamed until you give each a label in your payees or accounts file.",
-  });
+  // The names come from three reads; with any of them missing, a zero is not "all clear",
+  // so the group is left out rather than counted.
+  const namesComplete = [state.owed, state.coverage, state.openItems].every((r) => r.state === "ok");
+  if (namesComplete || names.unnamedCount > 0)
+    out.push({
+      id: "unnamed",
+      label: "Payees and accounts without a name",
+      count: names.unnamedCount,
+      rows: [],
+      empty:
+        "They show as unnamed until you give each a label in your payees or accounts file.",
+    });
   return out;
 }
 
@@ -251,8 +255,12 @@ export function AttentionView({
       <div className={styles.lead}>
         <p className={styles.headline}>
           {open.length
-            ? `${open.length} ${open.length === 1 ? "list needs" : "lists need"} a look.`
-            : "Nothing needs a look."}
+            ? `${open.length} ${open.length === 1 ? "list needs" : "lists need"} a look${
+                failed.length ? "; some lists could not be read" : ""
+              }.`
+            : failed.length
+              ? "Some lists could not be read."
+              : "Nothing needs a look."}
         </p>
       </div>
       {failed.map(([what, outcome]) => (
