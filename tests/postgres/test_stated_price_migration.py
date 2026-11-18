@@ -121,7 +121,7 @@ def test_a_populated_0020_moves_to_preset_v3_and_new_mappings(intake: Intake) ->
                         rule["source_path"],
                         rule["required"],
                         rule["clear_on_null"],
-                    ) == (FIELDS[rule["target"]][2], False, False)
+                    ) == (FIELDS[rule["target"]][2], False, True)
         moved_ids = {feed, pasted}
         assert {k: v for k, v in connections.items() if k not in moved_ids} == {
             k: v for k, v in connections_before.items() if k not in moved_ids
@@ -163,7 +163,15 @@ def test_a_migrated_feed_connection_stores_a_stated_price(intake: Intake) -> Non
         intake,
         "connection.set_routing",
         connection_id=str(feed),
-        rules=[{"action": "create_opportunity", "pipeline_id": pipeline}],
+        rules=[
+            # As the collector routes: a repeat sighting attaches by posting id.
+            {
+                "action": "attach_by_field",
+                "pipeline_id": pipeline,
+                "match_field": "ext.jobsearch.posting_id",
+            },
+            {"action": "create_opportunity", "pipeline_id": pipeline},
+        ],
     )
     body = {
         "title": "Stated price example",
@@ -186,3 +194,24 @@ def test_a_migrated_feed_connection_stores_a_stated_price(intake: Intake) -> Non
     assert states["ext.jobsearch.stated_price_min"] == "3"
     assert states["ext.jobsearch.stated_price_unit"] == "item"
     assert "ext.jobsearch.budget_min" not in states
+
+    # A later read whose text states no price sends nulls, and they clear it.
+    cleared = {
+        **body,
+        "stated_price_min": None,
+        "stated_price_max": None,
+        "stated_price_unit": None,
+        "observed_at": "2026-11-18T20:00:00+00:00",
+    }
+    again = deliver(poll_context(intake, feed), intake, cleared, "stated-~0395-2")
+    assert again.ok and again.result.outcome == "accepted", again
+    drain(intake)
+    with open_unit_of_work(intake.ctx) as uow:
+        kept = {
+            r["target"]: r["value_kind"]
+            for r in rows(
+                uow.connection, p.opportunity_field_state, opportunity_id=job["id"]
+            )
+            if r["value_kind"] == "value"
+        }
+    assert not {target for target in kept if "stated_price" in target}

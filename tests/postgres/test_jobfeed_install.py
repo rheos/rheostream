@@ -216,6 +216,22 @@ def test_install_writes_two_ordered_rules_and_refuses_a_second(
         "subject_id_path": None,
         "verified_email_path": None,
     }
+    clearing = {
+        r["target"]
+        for r in rows(
+            i,
+            select(t.field_mapping_rule).where(
+                t.field_mapping_rule.c.mapping_id == row["mapping_id"],
+                t.field_mapping_rule.c.clear_on_null.is_(True),
+            ),
+        )
+    }
+    # Only the stated price clears on an explicit null (#503).
+    assert clearing == {
+        "ext.jobsearch.stated_price_min",
+        "ext.jobsearch.stated_price_max",
+        "ext.jobsearch.stated_price_unit",
+    }
     mapped = {
         r["target"]: (
             r["source_path"],

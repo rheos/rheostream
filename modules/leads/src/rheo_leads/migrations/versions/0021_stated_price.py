@@ -13,7 +13,9 @@ it. The new version is a strict superset with the same stages and outcomes, so n
 opportunity changes stage, field state or disposition. Each intake connection whose
 job feed or job paste mapping lacks the rules gets a new mapping version, a copy of
 its current one plus the three rules, and moves to it; old versions stay, since
-accepted receipts name the version they were processed under.
+accepted receipts name the version they were processed under. The three rules
+clear their field on an explicit null, so a price a later read of the
+description no longer finds is taken back rather than kept.
 
 Nothing is deleted or rewritten in place, no stored job gains a value here (the
 price is read from jobs collected from now on), and a workspace already carrying
@@ -57,7 +59,7 @@ def upgrade() -> None:
         for target, kind, values, _ in FIELDS
     )
     rules = ",\n               ".join(
-        f"(c.mapping_id, to_v, '{target}', '{source}', NULL, NULL, false, false)"
+        f"(c.mapping_id, to_v, '{target}', '{source}', NULL, NULL, false, true)"
         for target, _, _, source in FIELDS
     )
     op.execute(

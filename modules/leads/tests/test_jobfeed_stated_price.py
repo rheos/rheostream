@@ -53,6 +53,34 @@ def price(low: str, high: str | None = None, unit: str | None = None) -> StatedP
             price("20", unit="item"),
         ),
         ("Company with $10M revenue. Budget $1,500.", price("1500", unit="total")),
+        # From the cold review of #609: ranges with thousands on one end.
+        ("Budget $500-1k for the landing page.", price("500", "1000", "total")),
+        ("Budget: $800 - 1.2k", price("800", "1200", "total")),
+        # The job's own price wins over a product price, a referral bonus or an
+        # agency's old rate, wherever it sits.
+        (
+            "Our app is free; users pay $4.99 per month. Budget: $2,000.",
+            price("2000", unit="total"),
+        ),
+        (
+            "Users earn $5 per referral. Fixed price $3,000",
+            price("3000", unit="total"),
+        ),
+        (
+            f"Our last agency charged $80{HR}; we want a $500 fixed price",
+            price("500", unit="total"),
+        ),
+        # One sentence never lends its words to another's amount.
+        (
+            "Price per video $30. 20 videos. Total budget $600.",
+            price("30", unit="item"),
+        ),
+        # A pasted page's client panel is never read as this job's pay.
+        (
+            "Build a landing page. $1,500.00 Fixed-price\nAbout the client\n"
+            f"$8.4K total spent\n$32.50 {HR} avg hourly rate paid",
+            price("1500", unit="total"),
+        ),
         # The provider's wrapper around the text is no obstacle.
         (
             f"<untrusted_participant_content>Pay $40 {AN_HOUR}"
@@ -77,6 +105,11 @@ def test_a_stated_amount_is_read_with_its_unit(
         "No budget mentioned at all, just tell me your rate.",
         "$0 upfront",
         "Our company has $2 billion in assets.",
+        # Business size after the amount, a client's history, a shell variable.
+        "We are at $10k MRR and growing.",
+        "We did $1,000,000 in sales last year.",
+        f"Client history: $8.4K total spent, $32.50{HR} avg hourly rate paid.",
+        "Run awk '{print $1}' over the log.",
     ],
 )
 def test_no_amount_is_inferred_from_silence(text: str | None) -> None:

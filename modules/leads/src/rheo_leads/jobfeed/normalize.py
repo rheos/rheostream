@@ -215,8 +215,11 @@ class NormalizedPosting:
     # rate, a project total and a per-item price stay distinguishable.
     stated: StatedPrice | None = None
 
-    def to_body(self) -> dict[str, str | int]:
-        """The flat delivery body: unknown values are left out, never zero."""
+    def to_body(self) -> dict[str, str | int | None]:
+        """The flat delivery body: unknown values are left out, never zero. The
+        stated price is the one exception: once the description has been read,
+        each of its keys is sent, as an explicit null when there is none, so a
+        price the text no longer states is cleared, not kept."""
         values: dict[str, str | int | None] = {
             "title": self.title,
             "description": self.description,
@@ -239,12 +242,35 @@ class NormalizedPosting:
             **stated_body(self.stated),
             "observed_at": self.observed_at.isoformat(),
         }
-        return {key: value for key, value in values.items() if value is not None}
+        return without_unknowns(values, read=self.description is not None)
 
     def comparable_fields(self) -> dict[str, str]:
         """Canonical text per comparable field that carries a value."""
         body = self.to_body()
-        return {key: str(body[key]) for key in COMPARABLE_FIELDS if key in body}
+        return {
+            key: str(body[key])
+            for key in COMPARABLE_FIELDS
+            if body.get(key) is not None
+        }
+
+
+STATED_KEYS: tuple[str, ...] = (
+    "stated_price_min",
+    "stated_price_max",
+    "stated_price_unit",
+)
+
+
+def without_unknowns(
+    values: Mapping[str, str | int | None], *, read: bool
+) -> dict[str, str | int | None]:
+    """``values`` without its unknowns. When the description was ``read``, the
+    stated-price keys stay even as nulls: there the absence of a price is known."""
+    return {
+        key: value
+        for key, value in values.items()
+        if value is not None or (read and key in STATED_KEYS)
+    }
 
 
 def stated_body(stated: StatedPrice | None) -> dict[str, str | None]:

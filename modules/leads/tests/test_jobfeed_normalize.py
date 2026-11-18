@@ -19,6 +19,7 @@ from rheo_leads.jobfeed.normalize import (
     BODY_KEYS,
     COMPARABLE_FIELDS,
     POSTING_ID_PATTERN,
+    STATED_KEYS,
     NormalizedPosting,
     apply_detail,
     normalize_invitation,
@@ -771,7 +772,7 @@ def test_a_detail_reads_the_price_its_text_states_when_the_feed_has_none() -> No
     body = result.to_body()
     assert body["stated_price_min"] == "3"
     assert body["stated_price_unit"] == "item"
-    assert "stated_price_max" not in body
+    assert body["stated_price_max"] is None
     assert "budget_min" not in body and "budget_max" not in body
 
 
@@ -779,7 +780,9 @@ def test_a_feed_budget_wins_and_no_stated_price_is_read() -> None:
     result = apply_detail(posting(), described("We pay $25" + "/" + "hr"), HOSTS)
     assert result.budget_min == Decimal("500")
     assert result.stated is None
-    assert not {key for key in result.to_body() if key.startswith("stated_price")}
+    # Sent as nulls: a price an earlier read stored is cleared once a budget shows.
+    body = result.to_body()
+    assert {key: body[key] for key in STATED_KEYS} == dict.fromkeys(STATED_KEYS)
 
 
 def test_a_text_without_an_amount_stores_no_price() -> None:
@@ -791,8 +794,24 @@ def test_a_text_without_an_amount_stores_no_price() -> None:
     assert result.stated is None
 
 
-def test_a_later_detail_without_the_price_clears_it() -> None:
+def test_a_later_detail_without_the_price_sends_explicit_nulls() -> None:
     first = apply_detail(posting(budget=None), described("$40 an" + " hour"), HOSTS)
     assert first.stated is not None
     later = apply_detail(first, described("Rate to be agreed."), HOSTS)
     assert later.stated is None
+    body = later.to_body()
+    # Sent as nulls, so the mapping clears what the earlier read stored.
+    assert {key: body[key] for key in STATED_KEYS} == dict.fromkeys(STATED_KEYS)
+    # A range read before and a single amount now: the old high end is cleared.
+    narrowed = apply_detail(
+        apply_detail(posting(budget=None), described("$25-40 an" + " hour"), HOSTS),
+        described("$50 an" + " hour"),
+        HOSTS,
+    ).to_body()
+    assert (narrowed["stated_price_min"], narrowed["stated_price_max"]) == ("50", None)
+    assert "stated_price_max" in narrowed
+
+
+def test_a_row_whose_description_was_never_read_says_nothing_of_a_price() -> None:
+    body = posting(budget=None).to_body()
+    assert not set(STATED_KEYS) & set(body)

@@ -53,7 +53,8 @@ DIGEST_NAME_SEPARATOR: Final = "="
 TIME_FIELDS: Final = ("observed_at", "proposal_observed_at")
 _HEX: Final = frozenset("0123456789abcdef")
 
-Body = dict[str, str | int]
+# ``None`` is an explicit null: a value the mapping clears (the stated price).
+Body = dict[str, str | int | None]
 
 
 def _short_digest(text: str) -> str:

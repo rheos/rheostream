@@ -54,6 +54,9 @@ class MappingRule:
     transform: str | None = None
     transform_arg: str | None = None
     required: bool = False
+    # An explicit null clears the field: only the stated price, which a later
+    # read of the description can take back.
+    clear_on_null: bool = False
 
 
 # Values arrive flat (canonical strings, integers, "true"/"false", ISO dates), so no
@@ -82,10 +85,11 @@ RULES: tuple[MappingRule, ...] = (
             "client_hire_rate",
             "applied",
             "invited",
-            "stated_price_min",
-            "stated_price_max",
-            "stated_price_unit",
         )
+    ),
+    *(
+        MappingRule(JOBSEARCH_TARGET_PREFIX + name, "/" + name, clear_on_null=True)
+        for name in ("stated_price_min", "stated_price_max", "stated_price_unit")
     ),
 )
 
@@ -268,7 +272,7 @@ def write_job_mapping(uow: UnitOfWork, *, name: str) -> UUID:
                 "transform": rule.transform,
                 "transform_arg": rule.transform_arg,
                 "required": rule.required,
-                "clear_on_null": False,
+                "clear_on_null": rule.clear_on_null,
             }
             for rule in RULES
         ],

@@ -11,21 +11,28 @@ What counts as an amount is narrow on purpose:
   ``USD``/``dollars`` after it. A bare number ("5,000 subscribers", "20 minutes")
   is never a price.
 - An amount in millions or billions ("$2M", "$1.5 billion") is company size, not
-  pay, and so is one introduced by revenue, raised, funding, valuation, sales,
-  turnover, profit, ARR, MRR, GMV or ad spend.
-- A range ("$25-40/hr", "$500 to $800") keeps both ends; a second number below the
-  first is not a range end.
+  pay, and so is one beside revenue, raised, funding, valuation, sales, turnover,
+  profit, ARR, MRR, GMV or ad spend. So is a client's history on a pasted page
+  ("$8.4K total spent", "avg hourly rate paid"), and nothing after "About the
+  client" is read at all. A ``$`` closing a ``{...}`` is a variable, not money.
+- A range ("$25-40/hr", "$500 to $800", "$2-3k", "$500-1k") keeps both ends; a
+  second number below the first is not a range end.
 
-The unit comes from the words right after the amount: an hourly rate (``/hr``,
-``per hour``, ``an hour``) is ``hour``; a price per anything else that is not a span
-of time (``per project``, ``/video``, ``each``) is ``item``; per day, week, month or
-year leaves the unit unknown. Without one of those, a nearby "fixed", "flat",
-"total" or "budget" makes it ``total``, and anything else leaves it unknown.
+Only the amount's own clause before it and its own sentence after it are read,
+so one sentence never lends its unit or its words to another's amount. The unit
+comes from the words right after the amount: an hourly rate (``/hr``, ``per
+hour``, ``an hour``) is ``hour``; a price per anything else that is not a span of
+time (``per project``, ``/video``, ``each``, or "per video $30") is ``item``; per
+day, week, month or year leaves the unit unknown. Without one of those, a nearby
+"fixed", "flat", "total" or "budget" makes it ``total``, and anything else leaves
+it unknown.
 
-When several amounts qualify, the first one with a unit or a pay word ("pay",
-"budget", "rate", "price", "offer", "fee", "compensation", "earn") near it wins,
-else the first. A text that states no amount gives ``None``: nothing is inferred
-from silence.
+When several amounts qualify, the one that reads most like the job's own price
+wins: one beside "budget", "fixed price", "price", "rate" or "total", then one
+with an hourly or per-item unit, then one beside a weaker pay word ("pay", "earn",
+"offer"), then the rest; a per-month price ("users pay $4.99 per month") ranks
+last. Among equals the first wins. A text that states no amount gives ``None``:
+nothing is inferred from silence.
 """
 
 import re
@@ -59,6 +66,13 @@ _NOT_PAY: Final = re.compile(
     r"arr|mrr|gmv|ad\s?spend|spend on ads)\b",
     re.IGNORECASE,
 )
+# A client's history on a pasted page ("$8.4K total spent", "$32.50 /hr avg hourly
+# rate paid") is not this job's pay.
+_HISTORY: Final = re.compile(
+    r"\b(?:spent|rate paid|avg|average|paid out|hires?|jobs posted)\b", re.IGNORECASE
+)
+# Where a pasted page's client panel starts; nothing after it is read.
+_CLIENT_PANEL: Final = re.compile(r"\babout the client\b", re.IGNORECASE)
 _HOUR: Final = re.compile(
     r"\s*(?:/|per\b|an\b|a\b|each\b)?\s*(?:hour|hr|hrs|h)\b|\s*hourly\b",
     re.IGNORECASE,
@@ -70,21 +84,33 @@ _SPAN: Final = re.compile(
 _ITEM: Final = re.compile(
     r"\s*(?:/\s*|per\s+|each\b|apiece\b)(?:[a-z][a-z-]*)?", re.IGNORECASE
 )
+# "Price per video $30": the unit named just before the amount.
+_ITEM_BEFORE: Final = re.compile(r"\bper\s+[a-z][a-z-]*\s*:?\s*$", re.IGNORECASE)
+# Words that say an amount is the job's price; the strongest hint.
+_PRICE_WORDS: Final = re.compile(
+    r"\b(?:fixed[\s-]?price|fixed|flat|total|budget|price|priced|rate|"
+    r"compensation|salary)\b",
+    re.IGNORECASE,
+)
 _TOTAL: Final = re.compile(
     r"\b(?:fixed[\s-]?price|fixed|flat|total|budget)\b", re.IGNORECASE
 )
+# Words that say an amount is paid, more weakly ("users pay", "earn").
 _PAY: Final = re.compile(
-    r"\b(?:pay|paying|paid|budget|rate|price|priced|offer|offering|fee|"
-    r"compensation|earn|salary)\b",
-    re.IGNORECASE,
+    r"\b(?:pay|paying|paid|offer|offering|fee|earn|earns)\b", re.IGNORECASE
 )
-# Where a clause ends, so the words before an amount are read only from its own.
+# Where a clause ends, so the words around an amount are read only from its own.
 _CLAUSE_END: Final = re.compile(r"[.;!?\n]\s|\n|\band\b|\bbut\b|,\s", re.IGNORECASE)
+_SENTENCE_END: Final = re.compile(r"[.;!?](?:\s|$)|\n|,\s")
 # How far around an amount its context is read, in characters.
 _BEFORE: Final = 40
 _AFTER: Final = 30
 # Above this an amount is not a freelance price at all.
 _CEILING: Final = Decimal(10_000_000)
+# How strongly an amount reads as the job's own price; the strongest wins.
+_PRICE_HINT: Final = 3
+_UNIT_HINT: Final = 2
+_PAY_HINT: Final = 1
 
 
 @dataclass(frozen=True)
@@ -98,15 +124,14 @@ class StatedPrice:
 class _Candidate:
     start: int
     price: StatedPrice
-    hinted: bool
+    score: int
 
 
-def _value(number: str, decimals: str | None, thousands: str | None) -> Decimal | None:
+def _value(number: str, decimals: str | None) -> Decimal | None:
     try:
-        value = Decimal(number.replace(",", "") + (f".{decimals}" if decimals else ""))
+        return Decimal(number.replace(",", "") + (f".{decimals}" if decimals else ""))
     except InvalidOperation:
         return None
-    return value * 1000 if thousands else value
 
 
 def _clause(text: str, start: int) -> str:
@@ -117,49 +142,88 @@ def _clause(text: str, start: int) -> str:
     return before[cut:]
 
 
-def _unit(text: str, start: int, end: int) -> PriceUnit | None:
+def _following(text: str, end: int) -> str:
+    """The words after an amount up to the end of its sentence, so "$30. 20
+    videos. Total budget $600." never lends "total" to the $30."""
     after = text[end : end + _AFTER]
+    stop = _SENTENCE_END.search(after)
+    return after if stop is None else after[: stop.start()]
+
+
+def _unit(before: str, after: str) -> tuple[PriceUnit | None, bool]:
+    """The unit, and whether the amount is per day, week, month or year."""
     if _HOUR.match(after):
-        return "hour"
+        return "hour", False
     if _SPAN.match(after):
-        return None
-    if _ITEM.match(after):
-        return "item"
-    if _TOTAL.search(after) or _TOTAL.search(_clause(text, start)):
-        return "total"
-    return None
+        return None, True
+    if _ITEM.match(after) or _ITEM_BEFORE.search(before):
+        return "item", False
+    if _TOTAL.search(after) or _TOTAL.search(before):
+        return "total", False
+    return None, False
+
+
+def _range(
+    text: str, match: re.Match[str], low: Decimal
+) -> tuple[Decimal, Decimal | None, int]:
+    """The low end, the high end if the amount opens a range, and where it ends.
+    "$2-3k" puts the thousands on both ends, "$500-1k" only on the second."""
+    end = match.end()
+    if match["k"]:
+        low *= 1000
+    tail = _RANGE_TAIL.match(text, end)
+    if tail is None:
+        return low, None, end
+    top = _value(tail["n"], tail["d"])
+    if top is None:
+        return low, None, end
+    if tail["k"]:
+        top *= 1000
+    lows = [low * 1000, low] if tail["k"] and not match["k"] else [low]
+    for start in lows:
+        if top > start:
+            return start, top, tail.end()
+    return low, None, end
 
 
 def _candidate(text: str, match: re.Match[str]) -> _Candidate | None:
-    low = _value(match["n"], match["d"], match["k"])
-    if low is None or low <= 0:
+    value = _value(match["n"], match["d"])
+    if value is None or value <= 0:
         return None
-    end = match.end()
-    high: Decimal | None = None
-    tail = _RANGE_TAIL.match(text, end)
-    if tail is not None:
-        top = _value(tail["n"], tail["d"], tail["k"])
-        if top is not None and tail["k"] and not match["k"] and low < 1000:
-            # "$2-3k" puts the thousands on both ends.
-            low *= 1000
-        if top is not None and top > low:
-            high, end = top, tail.end()
+    if text[match.end() : match.end() + 1] == "}":
+        return None  # a shell or template variable ("{print $1}"), not money
+    low, high, end = _range(text, match, value)
     if _LARGE.match(text, end):
         return None
     before = _clause(text, match.start())
-    if _NOT_PAY.search(before):
+    after = _following(text, end)
+    if any(p.search(before) or p.search(after) for p in (_NOT_PAY, _HISTORY)):
         return None
     if (high or low) > _CEILING:
         return None
-    unit = _unit(text, match.start(), end)
-    hinted = unit in ("hour", "item") or _PAY.search(before) is not None
-    return _Candidate(match.start(), StatedPrice(low, high, unit), hinted)
+    unit, per_span = _unit(before, after)
+    if per_span:
+        # A monthly price is usually the product's ("users pay $4.99 per
+        # month"), not the job's; it is kept only when nothing else is stated.
+        score = 0
+    elif _PRICE_WORDS.search(before) or _PRICE_WORDS.search(after):
+        score = _PRICE_HINT
+    elif unit in ("hour", "item"):
+        score = _UNIT_HINT
+    elif _PAY.search(before):
+        score = _PAY_HINT
+    else:
+        score = 0
+    return _Candidate(match.start(), StatedPrice(low, high, unit), score)
 
 
 def stated_price(text: str | None) -> StatedPrice | None:
     """The price ``text`` states, or ``None`` when it states none."""
     if not text:
         return None
+    panel = _CLIENT_PANEL.search(text)
+    if panel is not None:
+        text = text[: panel.start()]
     seen: set[int] = set()
     found: list[_Candidate] = []
     for pattern in (_PREFIXED, _SUFFIXED):
@@ -172,6 +236,5 @@ def stated_price(text: str | None) -> StatedPrice | None:
                 found.append(candidate)
     if not found:
         return None
-    found.sort(key=lambda c: c.start)
-    hinted = [c for c in found if c.hinted]
-    return (hinted or found)[0].price
+    best = max(c.score for c in found)
+    return min((c for c in found if c.score == best), key=lambda c: c.start).price
