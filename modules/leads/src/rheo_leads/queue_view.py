@@ -28,7 +28,7 @@ from rheo_contracts import (
 )
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs.resolver import UnitOfWork
-from sqlalchemy import Integer, and_, case, cast, exists, select
+from sqlalchemy import Integer, and_, case, cast, exists, func, select
 
 from rheo_leads import pipeline_common as h
 from rheo_leads import pipeline_contracts as c
@@ -76,7 +76,8 @@ DISMISS_OUTCOMES = ("disqualified", "lost")
 
 class QueueInput(c.Strict):
     """Without ``ref``: open stages unless a stage or closed ones are asked for,
-    by latest score, then fit, then newest (``sort="score"``) or newest only,
+    by latest score, then fit, then newest (``sort="score"``) or newest only
+    (newest by the posting date the card shows, else the arrival day),
     optionally without postings above the proposal cap, or only the Job search jobs
     the client filters hold (``held_only``, the review queue). With ``ref``: that
     one opportunity, whatever its stage or count."""
@@ -188,7 +189,16 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
                 review.is_held(o.c.id),
                 review.not_promoted(o.c.id),
             )
-    order = [o.c.created_at.desc(), o.c.id.desc()]
+    # Newest by the posting date a card shows, else the day it arrived, then
+    # arrival within a day (#369): the order and the shown dates agree.
+    order = [
+        func.coalesce(
+            _posted_on(o.c.id),
+            func.to_char(func.timezone("UTC", o.c.created_at), "YYYY-MM-DD"),
+        ).desc(),
+        o.c.created_at.desc(),
+        o.c.id.desc(),
+    ]
     if m.sort == "score":
         order[:0] = [
             _latest_score(o.c.id).desc().nulls_last(),
@@ -362,6 +372,26 @@ def _fit_rank(opportunity_id: Any) -> Any:
     """The latest assessment's fit as a sort weight, 0 when unassessed."""
     latest = _latest(p.qualification.c.fit, opportunity_id)
     return case(*((latest == fit, rank) for fit, rank in FIT_RANK.items()), else_=0)
+
+
+def _posted_on(opportunity_id: Any) -> Any:
+    """The posting date a card shows, as its ISO text; null when the job has none.
+
+    ISO dates sort as text exactly as they do as dates, so nothing is cast: a
+    stored value that is not a real date ("2024-02-30") can never fail the
+    queue's query, it only sorts by its digits.
+    """
+    state = p.opportunity_field_state
+    return (
+        select(state.c.value_text)
+        .where(
+            state.c.opportunity_id == opportunity_id,
+            state.c.target == EXTENSION + "posted_on",
+            state.c.value_kind == "value",
+            state.c.value_text.regexp_match("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"),
+        )
+        .scalar_subquery()
+    )
 
 
 def _over_cap(opportunity_id: Any) -> Any:

@@ -30,6 +30,8 @@ import {
   sourceLabel,
   stageMatches,
   afterMove,
+  cookieText,
+  prefsQuery,
 } from "./queue";
 import {
   JobHeader,
@@ -695,6 +697,73 @@ describe("queue screen", () => {
     expect(html).toContain("Job queue");
     expect(html).toContain("Example data service");
     expect(api.submit).not.toHaveBeenCalled();
+  });
+  it("renders the saved view from the preference cookie on the first render", async () => {
+    const preference = vi.fn((name: string) =>
+      name === "queue"
+        ? encodeURIComponent(
+            JSON.stringify({ ...DEFAULT_PREFS, stage: "all", sort: "newest" }),
+          )
+        : undefined,
+    );
+    const api = {
+      ...shell({
+        "leads.ui.catalog": ok({ items: catalog }),
+        "leads.ui.queue": ok({ items: [full] }),
+      }),
+      preference,
+    };
+    const html = renderToStaticMarkup(
+      await screens.queue({ shell: api, query: {} }),
+    );
+    expect(api.call.mock.calls[1]).toEqual([
+      "leads.ui.queue",
+      expect.objectContaining({
+        pipeline_id: JOBS_ID,
+        stage_id: null,
+        include_closed: true,
+        sort: "newest",
+      }),
+    ]);
+    expect(html).toContain("Example data service");
+    // A URL that names a control wins over the saved view.
+    await screens.queue({ shell: api, query: { sort: "score" } });
+    expect(api.call).toHaveBeenNthCalledWith(
+      4,
+      "leads.ui.queue",
+      expect.objectContaining({ sort: "score", stage_id: "review" }),
+    );
+  });
+  it("checks a saved view against the catalog like a URL's", async () => {
+    const api = {
+      ...shell({
+        "leads.ui.catalog": ok({ items: catalog }),
+        "leads.ui.queue": ok({ items: [] }),
+      }),
+      preference: () => '{"pipeline":"gone","stage":"nope","hideFull":false}',
+    };
+    await screens.queue({ shell: api, query: {} });
+    expect(api.call).toHaveBeenNthCalledWith(
+      2,
+      "leads.ui.queue",
+      expect.objectContaining({
+        pipeline_id: JOBS_ID,
+        stage_id: "review",
+        hide_full: false,
+      }),
+    );
+  });
+  it("reads a preference cookie whether or not the host decoded it", () => {
+    const text = '{"stage":"all"}';
+    expect(cookieText(text)).toBe(text);
+    expect(cookieText(encodeURIComponent(text))).toBe(text);
+    expect(cookieText("%E0%A4%A")).toBe("%E0%A4%A");
+    expect(prefsQuery({ ...DEFAULT_PREFS, hideFull: false })).toEqual({
+      pipeline: "",
+      stage: "",
+      full: "show",
+      sort: "score",
+    });
   });
   it("lists job-search pipelines first and asks for what the URL names", () => {
     const scope = queueScope(catalog, { pipeline: "all", stage: "all" });

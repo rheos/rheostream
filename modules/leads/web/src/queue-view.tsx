@@ -41,6 +41,7 @@ import {
   SORTS,
   sourceLabel,
   PREFS_KEY,
+  QUEUE_PREFERENCE,
   type Prefs,
   type Sort,
 } from "./queue";
@@ -80,9 +81,10 @@ function subscribe(listener: () => void) {
 function savedText(): string | null {
   return readPrefsText(storage()) ?? remembered;
 }
-function remember(prefs: Prefs) {
+function remember(prefs: Prefs): string {
   remembered = savePrefs(storage(), prefs);
   for (const listener of listeners) listener();
+  return remembered;
 }
 
 function OpenIcon() {
@@ -465,6 +467,12 @@ export interface QueueProps {
   sort: Sort;
   /** Whether the URL named any control; if not, saved choices apply. */
   explicit: boolean;
+  /** The server holds a saved view (its preference cookie), so the browser
+   * need not hand its own copy over. */
+  serverSaved?: boolean;
+  /** Saves the choice where the server render reads it (the shell's
+   * preference cookie); absent in hosts that cannot. */
+  savePreference?: ShellApi["savePreference"];
   /** The GET target the controls submit to. */
   action: string;
   hrefs: Record<string, string>;
@@ -535,9 +543,19 @@ export function JobQueue(props: QueueProps) {
   };
 
   useEffect(() => {
+    // Choices saved before the server could read them reach it here, so the
+    // next visit renders them on the server.
+    const text = savedText();
+    if (text !== null && !props.serverSaved)
+      void props.savePreference?.(QUEUE_PREFERENCE, text).catch(() => {});
     // A bare queue URL opens the view chosen last time, once a choice exists.
-    if (props.explicit || !form.current || savedText() === null) return;
-    const view = savedView(parsePrefs(savedText()), props);
+    // When the server holds a saved view it rendered from it, and it is the
+    // authority: a browser copy that differs (another device, a refused storage
+    // write) never redirects away from it. The browser applies its own copy only
+    // when the server has none.
+    if (props.explicit || props.serverSaved || !form.current || text === null)
+      return;
+    const view = savedView(parsePrefs(text), props);
     if (!view) return;
     const url = new URL(form.current.action);
     for (const [name, value] of Object.entries(view))
@@ -551,10 +569,24 @@ export function JobQueue(props: QueueProps) {
    * sorts, so the count and the first page always agree with the controls. */
   function choose(changes: Partial<Prefs>) {
     // The whole view the controls now show is saved, so a bare URL reopens it.
-    remember({ ...saved, ...current, ...changes });
+    const text = remember({ ...saved, ...current, ...changes });
     if (changes.hideFull !== undefined && full.current)
       full.current.value = changes.hideFull ? "hide" : "show";
-    form.current?.requestSubmit();
+    const saving = props.savePreference?.(QUEUE_PREFERENCE, text);
+    if (!saving || !form.current) {
+      form.current?.requestSubmit();
+      return;
+    }
+    // The server reads the same choice on the next render (#369), so the view
+    // reloads once it is saved. The selects are controlled: React puts their
+    // old value back as soon as this handler returns, so the form's values are
+    // read now, while they still show the choice, not after the save.
+    const url = new URL(form.current.action);
+    new FormData(form.current).forEach((value, name) => {
+      if (typeof value === "string") url.searchParams.set(name, value);
+    });
+    const go = () => window.location.assign(url.href);
+    void saving.then(go, go);
   }
 
   async function move(item: Row, to: Move) {

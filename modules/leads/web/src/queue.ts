@@ -281,6 +281,29 @@ export const DEFAULT_PREFS: Prefs = {
 };
 export const PREFS_KEY = "rheo.leads.queue.v1";
 
+/** The preference the saved view is also kept under as a cookie, so the
+ * server's first render is already the saved view (#369). */
+export const QUEUE_PREFERENCE = "queue";
+/** Saved choices as the queue URL's parameters, the way the controls submit
+ * them; "" values fall back to the defaults when the server checks them. */
+export function prefsQuery(prefs: Prefs): Record<string, string> {
+  return {
+    pipeline: prefs.pipeline,
+    stage: prefs.stage,
+    full: prefs.hideFull ? "hide" : "show",
+    sort: prefs.sort,
+  };
+}
+/** A preference cookie's text, whether or not the host already decoded it. */
+export function cookieText(value: string): string {
+  if (value.startsWith("{")) return value;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 type Store = Pick<Storage, "getItem" | "setItem">;
 /** Saved preferences (JSON text) merged over the defaults; any unreadable part
  * is ignored. */
