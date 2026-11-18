@@ -123,14 +123,15 @@ uses canonical references and Recallatron's own deletion rules; unrelated memori
 survive and any participant failure rolls back the transaction. Leads also works in
 workspaces where Recallatron was never installed.
 
-The Leads export (format fourteen, declared in the manifest) covers the owned tables,
+The Leads export (format fifteen, declared in the manifest) covers the owned tables,
 including dated follow-up history, each assessment's evidence digest and the job feed's
 connection status, posting dedupe rows and account choices. It never carries the job
 feed's token reference, registered client, run claim, backoff or pending authorization:
 a restored collector reads "authorization required", has no schedule, and registers a
 fresh client when the owner reconnects. Older-format archives require a matching older
 host for restore; the core refuses format mismatches. The schema head is
-`0020_current_handoff`, which follows `0018_invited_jobs` directly. Take a full database
+`0021_stated_price`, after `0020_current_handoff`, which follows `0018_invited_jobs`
+directly. Take a full database
 backup before upgrading from a previous Leads schema; rollback means restoring that
 backup with the previous image, not downgrading the additive 0005_followup_reminders or
 0006_assessment_evidence_digest migrations. Restore preserves source identities,
@@ -191,7 +192,12 @@ job that passed, and the filters it would have failed are kept on its assessment
 conditions to check. A tracked posting is delivered again only
 when one of its fields changed, so its proposal count, budget and client record stay
 current. Collected values fill the `ext.jobsearch.*` fields; no person or organization
-is created. Postings arrive through intake like any other source, so receipts,
+is created. When the feed gives no budget, the collector reads a price the description
+states ("$3 per project", "$25-40/hr", "$500 fixed") into
+`ext.jobsearch.stated_price_min`, `stated_price_max` and `stated_price_unit` (`hour`,
+`total` or `item`), never into the budget fields, so an hourly rate, a project total
+and a per-item price stay apart. Only money marked as money counts; a description
+that names no amount stores none. Pasted jobs get the same reading. Postings arrive through intake like any other source, so receipts,
 observations and processing work as described above.
 
 **Connections.** Open **Connections** in Leads. Before a connection exists, the Job
