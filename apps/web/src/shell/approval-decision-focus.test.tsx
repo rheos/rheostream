@@ -133,7 +133,7 @@ describe("approval decision focus transfer", () => {
     button.focus();
 
     await act(async () => {
-      container.querySelector("form")!.requestSubmit();
+      container.querySelector("form")!.requestSubmit(button);
     });
 
     const error = container.querySelector('[role="alert"]');
