@@ -567,7 +567,7 @@ class _Rig:
             description="A synthetic read for the adapter test.",
         )
         handle = reads.read_handler(spec)
-        uow = SimpleNamespace(connection=self.connection)
+        uow: Any = SimpleNamespace(connection=self.connection)
         if ctx is None:
             ctx = _ctx(ActorKind.TOKEN, None, Role.OWNER)
         return handle(ctx, uow, _In())
