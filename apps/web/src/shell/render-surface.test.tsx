@@ -277,14 +277,16 @@ describe("module screens through the real composition", () => {
     expect(html).not.toContain('type="search"');
   });
 
-  // #530: workspace_unavailable also covers migrating and restoring. Signing out would
-  // leave the account on an unselected session after the workspace came back.
-  it("says to wait and reload, not sign out, for workspace_unavailable", async () => {
+  // #530: workspace_unavailable is usually migrating or restoring, so waiting comes
+  // first; sign-out stays second for a workspace that is gone for good.
+  it("says to wait and reload first, sign out second, for workspace_unavailable", async () => {
     seams.session = { state: "unauthenticated", refusal: "workspace_unavailable" };
     const html = await render(moduleRequest("/search"));
     expect(html).toContain("session: signed out (workspace_unavailable)");
     expect(html).toContain("then reload this page");
-    expect(html).not.toContain("Sign out");
+    expect(html.indexOf("then reload this page")).toBeLessThan(
+      html.indexOf(">Sign out</button>"),
+    );
     expect(html).not.toContain("Sign in");
     expect(html).not.toContain("/auth/restart");
     expect(html).not.toContain('type="search"');

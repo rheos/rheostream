@@ -128,9 +128,10 @@ def _routing_config() -> RoutingConfig:
 
 
 def _return_host(return_target: str) -> str:
-    """``return_target``'s host, or ``""`` when it has none or does not parse, which
-    every caller refuses as ``invalid_return`` (``https://[x/`` raises in ``urlsplit``,
-    and these are anonymous GETs: a bad link is a refusal, not a 500)."""
+    """``return_target``'s host, or ``""`` when it has none or does not parse
+    (``https://[x/`` raises in ``urlsplit``). Every caller refuses an empty host:
+    the return-link GETs as ``invalid_return``, ``_check_origin`` as
+    ``origin_not_allowed``. A bad header or link is a refusal, not a 500."""
     try:
         return normalize_host(urlsplit(return_target).hostname or "")
     except ValueError:
