@@ -261,9 +261,9 @@ function Calls({
         </h2>
         <InfoTip label="About the model call log" wide>
           <p>
-            One row for each model call Leads makes: scoring a job, the steps of
-            drafting a proposal, and pricing. Tokens and time only; the calls
-            run on your subscription login, not a metered API.
+            One row for each model call Leads makes: pre-filtering, full scoring,
+            drafting a proposal, and pricing. Tokens and time only. Jev uses a
+            metered API; its provider account reports the charges.
           </p>
           <p>
             No posting text, prompt or answer is kept. Rows older than 90 days
@@ -554,14 +554,14 @@ export function ScoringView(props: ScoringProps) {
     };
   }, [live, refresh]);
 
-  async function retry() {
+  async function retry(operation: string, failure: string) {
     const submit = props.submit;
     if (!submit || retrying) return;
     setRetrying(true);
     setError("");
     let outcome;
     try {
-      outcome = await submit("leads.jobscoring.retry_failed", {});
+      outcome = await submit(operation, {});
     } catch {
       outcome = { state: "unavailable" as const };
     }
@@ -572,7 +572,7 @@ export function ScoringView(props: ScoringProps) {
       return;
     }
     setRetrying(false);
-    setError("Could not put the failed jobs back in line. Try again.");
+    setError(failure);
   }
 
   const queued = typeof view.queued_total === "number" ? view.queued_total : 0;
@@ -601,12 +601,15 @@ export function ScoringView(props: ScoringProps) {
         <InfoTip label="About scoring" wide>
           <p>
             New jobs are scored one at a time, newest first. The client filters
-            decide first; a job they let through goes to the model with your
-            profile, and its score lands on the job.
+            decide first. When enabled, Jev pre-filters eligible jobs against your
+            profile before full scoring. Held jobs remain in the Review queue;
+            Promote requests full scoring. A Jev failure falls through to the
+            full scorer. Its final score lands on the job.
           </p>
           <p>
             When the usage limit stops a call, every waiting job pauses and
-            scoring tries again on its own. A job that fails five times is
+            scoring tries again on its own, or when an owner retries the
+            waiting jobs here. A job that fails five times is
             marked failed until its posting changes, or until an owner puts it
             back in line here.
           </p>
@@ -627,7 +630,28 @@ export function ScoringView(props: ScoringProps) {
           {eta !== null ? ` · up to about ${span(eta)} to clear` : ""}
         </span>
         {perJob !== null ? <span>{span(perJob)} per job lately</span> : null}
-        {waiting > 0 ? <span>{waiting} waiting to retry</span> : null}
+        {waiting > 0 ? (
+          <span className={styles.waitingTotal}>
+            {waiting} waiting to retry
+            {props.canRetry && props.submit ? (
+              <button
+                type="button"
+                className={styles.iconButton}
+                aria-label={`Retry ${waiting} waiting ${waiting === 1 ? "job" : "jobs"} now`}
+                title={`Retry ${waiting} waiting ${waiting === 1 ? "job" : "jobs"} now`}
+                disabled={retrying}
+                onClick={() =>
+                  retry(
+                    "leads.jobscoring.retry_waiting",
+                    "Could not retry the waiting jobs. Try again.",
+                  )
+                }
+              >
+                <RetryIcon />
+              </button>
+            ) : null}
+          </span>
+        ) : null}
         {failed > 0 ? (
           <span className={styles.failedTotal}>
             <strong>{failed}</strong> failed
@@ -638,7 +662,12 @@ export function ScoringView(props: ScoringProps) {
                 aria-label={`Put ${failed} failed ${failed === 1 ? "job" : "jobs"} back in line`}
                 title={`Put ${failed} failed ${failed === 1 ? "job" : "jobs"} back in line`}
                 disabled={retrying}
-                onClick={retry}
+                onClick={() =>
+                  retry(
+                    "leads.jobscoring.retry_failed",
+                    "Could not put the failed jobs back in line. Try again.",
+                  )
+                }
               >
                 <RetryIcon />
               </button>

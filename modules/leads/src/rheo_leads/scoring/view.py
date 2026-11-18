@@ -25,6 +25,8 @@ run on a subscription login, not a metered API.
 ``leads.jobscoring.retry_failed`` is the owner's re-queue: open jobs whose scoring
 failed go back in line with a fresh attempt count, as setting the profile again does.
 A job set aside as too old is not a failure and stays aside.
+``leads.jobscoring.retry_waiting`` ends the wait instead: open jobs paused on the
+usage limit or a backoff become claimable now, with their attempts as they were.
 """
 
 from collections.abc import Mapping, Sequence
@@ -54,6 +56,7 @@ from rheo_leads import pipeline_common as h
 from rheo_leads.pipeline_contracts import Empty, Strict
 from rheo_leads.references import ref
 from rheo_leads.scoring import job as scoring
+from rheo_leads.scoring import prefilter
 from rheo_leads.short_ids import with_short_ids
 from rheo_leads.storage import jobfeed as jf
 from rheo_leads.storage import pipeline as p
@@ -135,11 +138,23 @@ def stage_of(
     if job["score"] is not None:
         return "scored"
     explanation = job["explanation"] or ""
-    if explanation.startswith(scoring.HELD_LINE):
+    if explanation.startswith((scoring.HELD_LINE, prefilter.HELD_LINE)):
         return "held"
     if explanation.startswith(scoring.UNDESCRIBED_LINE):
         return "needs_posting"
     return "failed" if job["fit"] == "needs_information" else "held"
+
+
+def _waiting(now: datetime) -> Any:
+    """Pending jobs sitting out a deferral or a backoff. A wait carries the failure
+    that started it; a claimed job is pending with a future retry_after too, but
+    its failure word is cleared, so it is never counted or released here."""
+    state = s.job_score_state
+    return and_(
+        state.c.state == "pending",
+        state.c.retry_after > now,
+        state.c.failure_kind.is_not(None),
+    )
 
 
 def _claim_order(uow: UnitOfWork, now: datetime) -> tuple[list[UUID], int]:
@@ -484,7 +499,8 @@ def view(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> ViewOutput:
     scoring_now = {
         r["opportunity_id"]
         for r in running
-        if r["purpose"] == model_calls.SCORING and r["opportunity_id"] is not None
+        if r["purpose"] in (model_calls.SCORING, model_calls.PREFILTER)
+        and r["opportunity_id"] is not None
     }
     position = {
         identifier: index + 1
@@ -504,6 +520,11 @@ def view(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> ViewOutput:
             .group_by(bucket)
         ).all()
     )
+    waiting: int = uow.connection.execute(
+        select(func.count())
+        .select_from(state)
+        .where(_waiting(now), state.c.opportunity_id.in_(open_ids))
+    ).scalar_one()
     batches = _batches(jobs, running=scoring_now, position=position, now=now)
     calls = _calls(uow, now)
     with_short_ids(uow, [j for b in batches for j in b["jobs"]])
@@ -518,7 +539,7 @@ def view(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> ViewOutput:
             "summary_days": SUMMARY_WINDOW.days,
             "status": _status(ctx, uow, running=running, titles=titles, now=now),
             "queued_total": queued,
-            "waiting_total": max(totals.get("pending", 0) - claimable, 0),
+            "waiting_total": waiting,
             "failed_total": totals.get("failed", 0),
             "too_old_total": totals.get(scoring.TOO_OLD, 0),
             "max_age_hours": resolve(
@@ -566,6 +587,25 @@ def retry_failed(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> RetryOutpu
     return RetryOutput(count=count)
 
 
+def retry_waiting(ctx: WorkspaceContext, uow: UnitOfWork, m: Empty) -> RetryOutput:
+    h.require(ctx)
+    if not h.jobsearch_enabled(ctx, uow):
+        raise OperationRefused("capability_disabled", "job search is off")
+    state, o = s.job_score_state, p.opportunity
+    open_ids = scoring._open_jobs().with_only_columns(o.c.id)
+    now = datetime.now(UTC)
+    # A claimed job keeps its lease. Attempts stay: a deferral already gave its
+    # attempt back, and a backoff cut short still counts toward the failure limit.
+    count = uow.connection.execute(
+        update(state)
+        .where(_waiting(now), state.c.opportunity_id.in_(open_ids))
+        .values(retry_after=now, updated_at=now)
+    ).rowcount
+    if count:
+        scoring.queue_sweep(uow, ctx.workspace_id, now=now)
+    return RetryOutput(count=count)
+
+
 OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = (
     (
         OperationDeclaration(
@@ -591,5 +631,19 @@ OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = (
             audit=AuditSpec(subject_field=None),
         ),
         retry_failed,
+    ),
+    (
+        OperationDeclaration(
+            name="leads.jobscoring.retry_waiting",
+            safety_class=SafetyClass.MUTATE,
+            # It spends the owner's scoring account's model time.
+            roles=frozenset({Role.OWNER}),
+            input_model=Empty,
+            output=RetryOutput,
+            # A second call finds nothing waiting and counts zero.
+            idempotency=Idempotency.NATURAL,
+            audit=AuditSpec(subject_field=None),
+        ),
+        retry_waiting,
     ),
 )

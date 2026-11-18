@@ -122,13 +122,25 @@ from rheo_core.deletion.registry import (
     OwnedDeletionRegistry,
 )
 from rheo_core.events.consumers import ConsumerRegistry, ConsumerUnknown
+from rheo_core.modules.execution import (
+    DESTINATIONS,
+    EXECUTION_GUARDS,
+    DestinationRegistry,
+    GuardRegistry,
+)
 from rheo_core.modules.manifest import (
+    KeyedAdapterKind,
     ManifestInvalid,
     ModuleManifest,
     WebSurface,
+    check_explicit_only_tools,
     check_module_id,
     check_name_prefixes,
     check_sensitivity,
+)
+from rheo_core.operations.idempotency import (
+    KEYED_COMPATIBILITY,
+    KeyedCompatibilityRegistry,
 )
 from rheo_core.operations.registry import REGISTRY, OperationRegistry
 from rheo_core.redaction.policy import exclude_types_spec
@@ -317,6 +329,9 @@ def load_modules(
     kinds: JobKindRegistry | None = None,
     consumers: ConsumerRegistry | None = None,
     deletions: OwnedDeletionRegistry | None = None,
+    guards: GuardRegistry = EXECUTION_GUARDS,
+    destinations: DestinationRegistry = DESTINATIONS,
+    keyed_compatibility: KeyedCompatibilityRegistry = KEYED_COMPATIBILITY,
     allow: frozenset[str] | None = None,
 ) -> tuple[str, ...]:
     """Register the allowed discovered modules; return their ids, sorted.
@@ -377,8 +392,9 @@ def load_modules(
     **No manifest is registered until the whole loaded set has passed every check
     this module makes.** The permitted manifests are collected first, each gated on
     the entry-point name and on the contract version; then the set's event
-    declarations, subscription ownership, name prefixes, web surface names,
-    dependency ranges and dependency graph are checked; and only then is anything
+    declarations, subscription ownership, name prefixes, redaction rules, the
+    ``explicit_only`` tool rule, web surface names, dependency ranges and dependency
+    graph are checked; and only then is anything
     registered, in dependency-sorted order. So a
     ``ManifestInvalid`` raised here leaves every registry as it found it rather than
     stranding half a set behind the manifest that failed — which matters most on a
@@ -408,6 +424,7 @@ def load_modules(
     _check_subscriptions(manifests)
     _check_name_prefixes(manifests)
     _check_redaction(manifests)
+    _check_explicit_only_tools(manifests)
     # Against what this process already loaded as well as the incoming set:
     # ``module_surfaces()`` reads the accumulated ``_LOADED`` table, so a surface an
     # earlier load registered is one this load must not collide with. A manifest
@@ -434,6 +451,9 @@ def load_modules(
             kinds=kinds,
             consumers=consumers,
             deletions=deletions,
+            guards=guards,
+            destinations=destinations,
+            keyed_compatibility=keyed_compatibility,
         )
         loaded.append(manifest.module_id)
     return tuple(sorted(loaded))
@@ -618,6 +638,27 @@ def _check_name_prefixes(manifests: Sequence[ModuleManifest]) -> None:
                 tools=manifest.tools,
                 jobs=manifest.jobs,
                 subscriptions=manifest.subscriptions,
+            )
+        except ValueError as refusal:
+            raise ManifestInvalid(manifest.module_id, str(refusal)) from refusal
+
+
+def _check_explicit_only_tools(manifests: Sequence[ModuleManifest]) -> None:
+    """The ``explicit_only`` tool rule, again, before anything registers (#537).
+
+    The manifest's own validator already ran
+    :func:`~rheo_core.modules.manifest.check_explicit_only_tools`; this re-runs it for
+    :func:`_check_redaction`'s reason. A manifest built with ``model_construct`` skips
+    validators, so an ``explicit_only`` module could otherwise register a tool naming
+    a core operation such as ``core.record.delete``, which every routine token
+    holding that operation would then reach past the module's opt-in.
+    """
+    for manifest in manifests:
+        try:
+            check_explicit_only_tools(
+                manifest.package_sets,
+                tools=manifest.tools,
+                declarations={d.name: d for d, _ in manifest.operations},
             )
         except ValueError as refusal:
             raise ManifestInvalid(manifest.module_id, str(refusal)) from refusal
@@ -841,6 +882,9 @@ def _register(
     kinds: JobKindRegistry | None,
     consumers: ConsumerRegistry | None,
     deletions: OwnedDeletionRegistry | None,
+    guards: GuardRegistry,
+    destinations: DestinationRegistry,
+    keyed_compatibility: KeyedCompatibilityRegistry,
 ) -> None:
     """One validated manifest's extension points, its sink and its web surface.
 
@@ -851,7 +895,28 @@ def _register(
     against. ``module-contract.md``'s discovery step 4 records the same.
     """
     for declaration, handler in manifest.operations:
-        registry.register(declaration, handler, origin=manifest.module_id)
+        registry.register(
+            declaration,
+            handler,
+            origin=manifest.module_id,
+            explicit_only=manifest.package_sets == "explicit_only",
+        )
+    for guard_registration in manifest.execution_guards:
+        guards.register(guard_registration, origin=manifest.module_id)
+    for destination_registration in manifest.destinations:
+        destinations.register(destination_registration, origin=manifest.module_id)
+    for adapter in manifest.keyed_compatibility:
+        register_adapter = (
+            keyed_compatibility.register_request
+            if adapter.kind is KeyedAdapterKind.REQUEST
+            else keyed_compatibility.register_result
+        )
+        register_adapter(
+            adapter.operation_name,
+            adapter.from_version,
+            adapter.to_version,
+            adapter.adapter,
+        )
     for record_type, resolver in manifest.resolvers:
         resolvers.register(
             manifest.module_id, record_type, resolver, origin=manifest.module_id

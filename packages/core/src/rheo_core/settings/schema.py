@@ -948,6 +948,19 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         default=30,
         minimum=1,
     ),
+    # A retained KEYED result is the generic lost-response replay envelope. A
+    # workspace may tighten the operator's window, never below thirty days; the
+    # timestamp written on first reservation is fixed, so a later setting change
+    # cannot shorten an already accepted request.
+    KeySpec(
+        key="work.idempotency_retention_days",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=Floor.MIN,
+        explicit_per_workspace=False,
+        default=90,
+        minimum=30,
+    ),
     # The bound on one approval's stored payload snapshot
     # (``confirmation-and-safety.md`` § The approval record). The snapshot is what a
     # person reads at the point of confirmation, so the bound is on what may be
@@ -1042,6 +1055,30 @@ PRODUCTION_KEYS: Final[tuple[KeySpec, ...]] = (
         floor=None,
         explicit_per_workspace=False,
         default="",
+    ),
+    KeySpec(
+        key="runtime.jev.enabled",
+        type=ValueType.BOOL,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default=False,
+    ),
+    KeySpec(
+        key="runtime.jev.credential_ref",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="",
+    ),
+    KeySpec(
+        key="runtime.jev.model_id",
+        type=ValueType.STR,
+        scope=Scope.DEPLOYMENT,
+        floor=None,
+        explicit_per_workspace=False,
+        default="jev-latest",
     ),
     KeySpec(
         key="runtime.session_ttl_hours",

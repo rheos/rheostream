@@ -1,0 +1,67 @@
+# The reviewed table of vendor-documented request paths (FR-44, AC-45a, AC-45b).
+#
+# Every request a sink declares in its SinkSpec, and every entry in a connector's read
+# allowlist, must be a row here, or tests/guards/test_outbound_static.py fails. A
+# prompt that adds an allowlist entry adds its row in the same change, and the row is
+# reviewed with it.
+#
+# One [[read_path]] table per request:
+#
+#   sink       a sink name from finance.sinks (current, telegram, imap, rates, ...)
+#   method     the HTTP method, upper case
+#   path       the path template exactly as the RequestTemplate declares it
+#              (a segment ":name" matches one segment)
+#   docs       the vendor documentation URL for this path; never empty
+#   why        one line saying why the request is read-only (or, for an exception,
+#              what it writes and why that is allowed)
+#   exception  optional, default false. Only a sink's own write requests carry it, and
+#              only the four Current operation POSTs and Telegram's POST to
+#              /api/mcp may carry it. Any other non-GET row fails.
+#
+# Example (not a row):
+#
+#   [[read_path]]
+#   sink = "rates"
+#   method = "GET"
+#   path = "/rowan/observations/:series/json"
+#   docs = "https://example.invalid/rowan-api-docs"
+#   why = "Reads published exchange-rate observations; the endpoint has no write verb."
+
+[[read_path]]
+sink = "rates"
+method = "GET"
+path = "/rowan/observations/:series/json"
+docs = "https://rowan.example/docs"
+why = "Reads published exchange-rate observations for one series and date range; Rowan has no write verb."
+
+[[read_path]]
+sink = "current"
+method = "POST"
+path = "/api/v1/operations/current.item.create"
+docs = "https://github.com/rheos/rheostream/blob/main/apps/core/src/rheo_app_core/api_routes.py"
+why = "Creates one amount-due item per Float period using source identity and fingerprint."
+exception = true
+
+[[read_path]]
+sink = "current"
+method = "POST"
+path = "/api/v1/operations/current.item.get"
+docs = "https://github.com/rheos/rheostream/blob/main/apps/core/src/rheo_app_core/api_routes.py"
+why = "Reads an owned Current item through the operations route, which takes JSON POST."
+exception = true
+
+[[read_path]]
+sink = "current"
+method = "POST"
+path = "/api/v1/operations/current.item.update"
+docs = "https://github.com/rheos/rheostream/blob/main/apps/core/src/rheo_app_core/api_routes.py"
+why = "Converges Float's owned amount-due item by ref and revision."
+exception = true
+
+[[read_path]]
+sink = "current"
+method = "POST"
+path = "/api/v1/operations/current.item.set_status"
+docs = "https://github.com/rheos/rheostream/blob/main/apps/core/src/rheo_app_core/api_routes.py"
+why = "Settles or reopens Float's owned item by ref and revision."
+exception = true

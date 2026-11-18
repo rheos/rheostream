@@ -17,7 +17,11 @@ signal about which credential space they guessed into) -> kind accepted by the
 surface (``TOKEN_WRONG_KIND``) -> ``TOKEN_EXPIRED`` -> ``TOKEN_REVOKED`` ->
 snapshot loaded and checked against ``NON_TOKEN_ISSUABLE`` (``TOKEN_SCOPE_INVALID``
 -- reachable only from a row written outside ``core.token.issue``; checked anyway
-so the rule holds at both ends) -> ``access_token.purpose`` parsed into the
+so the rule holds at both ends) -> snapshot narrowed by
+``sets.effective_operations`` (a token issued from a named set loses whatever module
+is ``explicit_only`` now; never a refusal, and it only ever subtracts, so the
+``NON_TOKEN_ISSUABLE`` check above still sees the raw stored rows) ->
+``access_token.purpose`` parsed into the
 ``bound_purpose`` the context will carry (``TOKEN_PURPOSE_INVALID``) ->
 ``control.membership`` read at presentation
 time, never cached (``MEMBERSHIP_MISSING``) -> ``last_used_at`` touched. Every
@@ -52,6 +56,7 @@ from rheo_core.storage.control_plane import (
 from rheo_core.storage.postgres import get_backend
 from rheo_core.tokens.format import parse
 from rheo_core.tokens.policy import NON_TOKEN_ISSUABLE
+from rheo_core.tokens.sets import effective_operations
 
 _SURFACE_ACCEPTS: Final[dict[str, frozenset[str]]] = {
     "api": frozenset({"cli"}),
@@ -76,8 +81,9 @@ the two keys above."""
 class ResolvedToken:
     """Everything ``context_from_token`` needs to build a ``WorkspaceContext``,
     short of the object itself: the account, the workspace, the account's role
-    (from the membership row just read, at presentation time), and the snapshot
-    as the eventual context's operation set."""
+    (from the membership row just read, at presentation time), and the snapshot,
+    narrowed by ``sets.effective_operations``, as the eventual context's operation
+    set."""
 
     token_id: UUID
     account_id: UUID
@@ -155,6 +161,7 @@ def resolve_token(value: str, surface: str) -> ResolvedToken | Refusal:
         snapshot = list_access_token_operations(connection, row.id)
         if snapshot & NON_TOKEN_ISSUABLE:
             return Refusal(TOKEN_SCOPE_INVALID)
+        operation_set = effective_operations(row.set_name, snapshot)
         bound_purpose = _bound_purpose(row.kind, row.purpose)
         if isinstance(bound_purpose, Refusal):
             return bound_purpose
@@ -173,6 +180,6 @@ def resolve_token(value: str, surface: str) -> ResolvedToken | Refusal:
         account_id=row.account_id,
         workspace_id=row.workspace_id,
         role=membership.role,
-        operation_set=snapshot,
+        operation_set=operation_set,
         bound_purpose=bound_purpose,
     )

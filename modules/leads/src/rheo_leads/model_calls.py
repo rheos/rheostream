@@ -47,6 +47,7 @@ _log = logging.getLogger(__name__)
 RETENTION: Final = timedelta(days=90)
 LOG_WRITE_FAILED: Final = "model_call_log_write_failed"
 SCORING: Final = "scoring"
+PREFILTER: Final = "prefilter"
 CREDENTIAL_NOT_OWNED: Final = "credential_not_owned"
 UNEXPECTED: Final = "unexpected"
 """The failure word for a call that ended in an exception nobody expected."""

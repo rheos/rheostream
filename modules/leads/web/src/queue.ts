@@ -360,6 +360,7 @@ export function afterDismiss(items: Row[], id: string, stage: string): Row[] {
 
 /** A held job's clause, as the review card's badge names it. */
 const HOLD_LABELS: Record<string, string> = {
+  prefilter: "Jev pre-filter",
   payment_unverified: "Payment unverified",
   low_spend: "Low client spend",
   low_rating: "Low client rating",

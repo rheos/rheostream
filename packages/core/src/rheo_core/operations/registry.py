@@ -154,12 +154,18 @@ def reserved_input_fields(model: type[BaseModel]) -> frozenset[str]:
 
 @dataclass(frozen=True, slots=True)
 class RegisteredOperation:
-    """A declaration bound to its handler, its origin, and its owning module id."""
+    """A declaration bound to its handler, its origin, and its owning module id.
+
+    ``explicit_only`` is the owning module's ``package_sets`` choice, recorded with
+    the registration so the package sets read it from this table alone: an
+    operation that is registered always carries its module's opt-out with it.
+    """
 
     declaration: OperationDeclaration
     handler: Handler
     origin: str
     module_id: str
+    explicit_only: bool = False
 
     @property
     def name(self) -> str:
@@ -180,13 +186,19 @@ class OperationRegistry:
         self._operations: dict[str, RegisteredOperation] = {}
 
     def register(
-        self, decl: OperationDeclaration, handler: Handler, *, origin: str
+        self,
+        decl: OperationDeclaration,
+        handler: Handler,
+        *,
+        origin: str,
+        explicit_only: bool = False,
     ) -> RegisteredOperation:
         """Validate and record ``decl`` with ``handler``; see the module docstring.
 
-        Registering the identical declaration, handler and origin again is a no-op
-        (startup and the CLI both build the registry); anything else under a
-        registered name is refused.
+        Registering the identical declaration, handler, origin and ``explicit_only``
+        again is a no-op (startup and the CLI both build the registry); anything else
+        under a registered name is refused. ``explicit_only`` is the loader's: the
+        owning manifest's ``package_sets == "explicit_only"``.
         """
         if not isinstance(decl, OperationDeclaration):
             raise TypeError("register() takes an OperationDeclaration")
@@ -272,12 +284,15 @@ class OperationRegistry:
                 existing.declaration == decl
                 and existing.handler is handler
                 and existing.origin == origin
+                and existing.explicit_only == explicit_only
             ):
                 return existing
             raise RegistrationRefused(
                 name, f"already registered (origin {existing.origin!r})"
             )
-        registered = RegisteredOperation(decl, handler, origin, module_id)
+        registered = RegisteredOperation(
+            decl, handler, origin, module_id, explicit_only=explicit_only
+        )
         self._operations[name] = registered
         return registered
 

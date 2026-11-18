@@ -87,7 +87,64 @@ function createdRef(result: unknown): string {
   if (typeof result !== "object" || result === null) return "";
   const r = result as Record<string, unknown>;
   const item = r.item as Record<string, unknown> | undefined;
-  return str(item?.ref) || str(r.ref);
+  return str(item?.short_id) || str(item?.ref) || str(r.ref);
+}
+
+/** The item's short ID with a one-click copy (#587); a check shows for a moment. */
+export function CopyId({ id }: { id: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(id);
+      setCopied(true);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard refused (permissions or an insecure page): nothing to undo.
+    }
+  }
+  const label = `Copy item ID ${id}`;
+  return (
+    <>
+      <button
+        type="button"
+        className={styles.copyId}
+        onClick={copy}
+        aria-label={label}
+        title={label}
+      >
+        <code>{id}</code>
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={copied ? 2.2 : 1.9}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          {copied ? (
+            <path d="M20 6 9 17l-5-5" />
+          ) : (
+            <>
+              <rect width="13" height="13" x="9" y="9" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </>
+          )}
+        </svg>
+      </button>
+      <span className={styles.visuallyHidden} aria-live="polite">
+        {copied ? `Copied ${id}` : ""}
+      </span>
+    </>
+  );
 }
 
 export interface FormProps {
@@ -217,7 +274,9 @@ export function ActionForm({
                   {...common}
                   type={f.type ?? "text"}
                   onChange={(e) => change(e.target.value)}
-                  maxLength={f.type === "date" ? undefined : (f.maxLength ?? 500)}
+                  maxLength={
+                    f.type === "date" ? undefined : (f.maxLength ?? 500)
+                  }
                 />
               )}
               {f.hint ? (
@@ -244,9 +303,7 @@ export function ActionForm({
             {created && createdHref ? (
               <>
                 {" "}
-                <a
-                  href={`${createdHref}?ref=${encodeURIComponent(created)}`}
-                >
+                <a href={`${createdHref}?ref=${encodeURIComponent(created)}`}>
                   {createdLabel}
                 </a>
               </>
@@ -338,7 +395,13 @@ export function ProjectPicker({
   held,
   projects,
   reloadHref,
+  buttonClass,
+  buttonText,
 }: {
+  /** The trigger's look where a row draws it as a swipe tray button. */
+  buttonClass?: string;
+  /** A visible label beside the icon, for the tray. */
+  buttonText?: string;
   submit: Submit;
   itemRef: string;
   revision: number;
@@ -399,13 +462,14 @@ export function ProjectPicker({
     <>
       <button
         type="button"
-        className={styles.iconButton}
+        className={buttonClass ?? styles.iconButton}
         aria-label={`${verb}: ${subject}`}
         title={verb}
         aria-haspopup="dialog"
         onClick={open}
       >
         <FolderIcon plus={!held} />
+        {buttonText ? <span aria-hidden="true">{buttonText}</span> : null}
       </button>
       <dialog
         ref={dialog}
@@ -478,7 +542,9 @@ export function ProjectPicker({
             ) : null}
           </ul>
         ) : (
-          <p className={styles.meta}>No projects yet. Create one under Projects.</p>
+          <p className={styles.meta}>
+            No projects yet. Create one under Projects.
+          </p>
         )}
         <div aria-live="polite" aria-atomic="true">
           {pending ? <p className={styles.meta}>Saving…</p> : null}
@@ -562,7 +628,13 @@ export function ActionButton({
  * A moment in the viewer's time zone, which the shell learns from the browser
  * (#465). With no zone it shows UTC, labelled.
  */
-export function LocalTime({ iso, zone = "UTC" }: { iso: string; zone?: string }) {
+export function LocalTime({
+  iso,
+  zone = "UTC",
+}: {
+  iso: string;
+  zone?: string;
+}) {
   const d = new Date(iso);
   if (!iso || Number.isNaN(d.valueOf())) return null;
   const text = new Intl.DateTimeFormat("en", {
@@ -585,7 +657,7 @@ function savedStatus(result: unknown): string {
 
 const VERB: Record<Status, string> = {
   open: "Open",
-  waiting: "Wait",
+  waiting: "Watch",
   snoozed: "Snooze",
   done: "Done",
 };
@@ -681,7 +753,9 @@ export function StatusActions({
               className={styles.quiet}
               aria-expanded={pickerOpenedAt !== null}
               aria-controls={pickerId}
-              aria-label={named(status === "snoozed" ? "Snooze again" : "Snooze")}
+              aria-label={named(
+                status === "snoozed" ? "Snooze again" : "Snooze",
+              )}
               disabled={pending}
               onClick={() =>
                 setPickerOpenedAt((open) => (open ? null : new Date()))
@@ -735,7 +809,9 @@ export function StatusActions({
                 value={custom}
                 onChange={(e) => setCustom(e.target.value)}
                 aria-invalid={customError}
-                aria-describedby={customError ? `${id}-custom-error` : undefined}
+                aria-describedby={
+                  customError ? `${id}-custom-error` : undefined
+                }
               />
             </div>
             <button
@@ -771,7 +847,8 @@ export function StatusActions({
         ) : null}
         {result?.state === "unavailable" ? (
           <p className={styles.error} role="alert">
-            We could not confirm the change. Reload to see the item&apos;s status.
+            We could not confirm the change. Reload to see the item&apos;s
+            status.
           </p>
         ) : null}
       </div>

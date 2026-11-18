@@ -41,6 +41,7 @@ from rheo_app_core.main import app, lifespan
 from rheo_app_core.startup import run_startup
 from rheo_core.approvals import (
     APPROVAL_APPROVE,
+    APPROVAL_PREVIEW,
     APPROVAL_REFUSE,
     STANDING_GRANT_CREATE,
     STANDING_GRANT_REVOKE,
@@ -352,14 +353,15 @@ def test_migrate_and_doctor_return_zero(
 
 
 async def test_lifespan_runs_startup_and_healthz_stays_database_free(
-    cluster: ClusterSession, workspace: UUID
+    cluster: ClusterSession, workspace: UUID, fresh_startup_composition: None
 ) -> None:
     async with lifespan(app):
         report = app.state.startup
         assert report.profile == "test"
         assert report.control_database == cluster.control_database
         assert "RHEO_CLUSTER_DSN" in report.env_references
-        # Sorted, and now twenty-one: 0b1's three, 0b2's C8 adds core.token.issue and
+        # Sorted, and now thirty-four. How the list grew, through 1a4b (later runs
+        # are commented inline below): 0b1's three, 0b2's C8 adds core.token.issue and
         # core.token.revoke, 0c1's C3 adds core.work.failures, 0c2's C4 adds
         # core.operation.get/list/resolve, 0c2's C5 adds core.audit.list, 0c3's
         # C6 adds core.approval.approve and core.approval.refuse, 0c3's C7 adds
@@ -392,6 +394,8 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
         # ``tests/test_production_registration.py`` asserts from the other side.
         assert report.operations == (
             APPROVAL_APPROVE,
+            # #481's bound preview ("preview" between "approve" and "refuse").
+            APPROVAL_PREVIEW,
             APPROVAL_REFUSE,
             "core.audit.list",
             # Run 1a4b's ingest and its three enrollment operations ("evidence"
@@ -400,6 +404,7 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
             ENROLLMENT_CREATE,
             ENROLLMENT_REVOKE,
             ENROLLMENT_ROTATE,
+            "core.external_action.get",
             MODULE_ENABLE,
             MODULE_INSTALL,
             "core.module.upgrade",
@@ -470,7 +475,9 @@ async def test_lifespan_runs_startup_and_healthz_stays_database_free(
 
 
 def test_startup_refuses_to_complete_when_an_operation_has_no_audit_sink(
-    cluster: ClusterSession, workspace: UUID
+    cluster: ClusterSession,
+    workspace: UUID,
+    fresh_startup_composition: None,
 ) -> None:
     """AC 22, whose subject is **startup** and not the function startup calls.
 
@@ -488,7 +495,10 @@ def test_startup_refuses_to_complete_when_an_operation_has_no_audit_sink(
     process-wide registry whose module has nothing to write with, which is exactly the
     misassembled deployment the layer exists to refuse.
     """
-    register_harness()
+    # The missing-audit probe excludes the deliberately forbidden EXTERNAL fixture.
+    # Keeping that poison would correctly stop at the earlier final-composition gate
+    # and never exercise this test's audit seam.
+    register_harness(include_external=False)
     reset_sinks()
     try:
         with pytest.raises(RuntimeError) as excinfo:

@@ -10,9 +10,11 @@ Not here, and deliberately:
 (``apps/mcp/src/rheo_app_mcp/tools.py``) as its first reader.
 """
 
+import re
 from enum import StrEnum
+from typing import Literal, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rheo_contracts.context import Role
 from rheo_contracts.safety import SafetyClass
@@ -55,9 +57,6 @@ writes.
 class Idempotency(StrEnum):
     """How a repeated call is made to mean one thing.
 
-    ``KEYED`` is absent on purpose: ``module-contract.md`` says it "arrives with phase
-    five", and release one has no keyed idempotency and no stored-result table.
-
     ``NATURAL`` names a unique index that makes a repeat the same row. The registry is
     meant to assert that index is present in the module's schema **at module install**,
     which is phase 2 — so the 0b1 registry accepts ``NONE`` and ``NATURAL`` and performs
@@ -66,6 +65,46 @@ class Idempotency(StrEnum):
 
     NONE = "none"
     NATURAL = "natural"
+    KEYED = "keyed"
+
+
+_QUALIFIED_GUARD = re.compile(r"[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*")
+
+
+class KeyedSpec(BaseModel):
+    """The input key and wire versions of a retained keyed operation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    key_field: str
+    request_schema_version: int = Field(gt=0)
+    result_schema_version: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _key_field_is_a_field_name(self) -> "KeyedSpec":
+        if not self.key_field or not self.key_field.isidentifier():
+            raise ValueError("key_field must be a nonblank Python field name")
+        return self
+
+
+class ExternalSpec(BaseModel):
+    """The exact destination binding and returned reference of an upper-class call."""
+
+    model_config = ConfigDict(frozen=True)
+
+    destination_field: str
+    destination_ref: str
+    result_ref_field: str
+
+    @model_validator(mode="after")
+    def _names_are_nonblank(self) -> "ExternalSpec":
+        if not self.destination_field or not self.destination_field.isidentifier():
+            raise ValueError("destination_field must be a nonblank Python field name")
+        if not self.result_ref_field or not self.result_ref_field.isidentifier():
+            raise ValueError("result_ref_field must be a nonblank Python field name")
+        if not self.destination_ref or not self.destination_ref.strip():
+            raise ValueError("destination_ref must be nonblank")
+        return self
 
 
 class AuditSpec(BaseModel):
@@ -93,8 +132,9 @@ class OperationDeclaration(BaseModel):
     The subset of ``module-contract.md`` § Operations that the release-one registry
     needs. ``long_running`` **is** declared here, by run 0c2: it is what
     ``rheo_core.operations.dispatch`` reads to decide whether to mint a
-    ``core.operation`` row before it opens the work transaction. ``guards`` is still
-    not declared here; it belongs to the dispatcher work that follows.
+    ``core.operation`` row before it opens the work transaction. Ordered qualified
+    guard names and exact external bindings are declaration-only in this change;
+    their effect-time readers arrive with the continuation path.
 
     **The handler is not a field, and that is a named deviation.** The ratified contract
     types it ``Callable[[WorkspaceContext, UnitOfWork, input], output]``, but
@@ -116,6 +156,9 @@ class OperationDeclaration(BaseModel):
     input_model: type[BaseModel]
     output: type[BaseModel]
     idempotency: Idempotency
+    keyed: KeyedSpec | None = None
+    guards: tuple[str, ...] = ()
+    external: ExternalSpec | None = None
     audit: AuditSpec | None = None
     """Required non-``None`` above ``READ``.
 
@@ -144,6 +187,79 @@ class OperationDeclaration(BaseModel):
     otherwise leave a committed ``pending`` row that nothing can move.
     ``rheo_core.operations.dispatch``'s own module docstring enumerates those exits.
     """
+
+    @model_validator(mode="after")
+    def _declared_execution_contracts_match_models(self) -> "OperationDeclaration":
+        if self.idempotency is Idempotency.KEYED:
+            if self.keyed is None:
+                raise ValueError("KEYED idempotency requires a KeyedSpec")
+            field = self.input_model.model_fields.get(self.keyed.key_field)
+            if field is None:
+                raise ValueError(
+                    f"KEYED key field {self.keyed.key_field!r} is not declared by "
+                    f"{self.input_model.__name__}"
+                )
+            if field.annotation is not str:
+                raise ValueError(
+                    f"KEYED key field {self.keyed.key_field!r} must validate as str"
+                )
+        elif self.keyed is not None:
+            raise ValueError("a non-KEYED operation must not carry a KeyedSpec")
+
+        if len(set(self.guards)) != len(self.guards):
+            raise ValueError("guards must be ordered without duplicates")
+        invalid_guards = [
+            guard
+            for guard in self.guards
+            if not isinstance(guard, str) or _QUALIFIED_GUARD.fullmatch(guard) is None
+        ]
+        if invalid_guards:
+            raise ValueError(
+                "guards must be qualified <module_id>.<guard_name> names; invalid: "
+                f"{invalid_guards!r}"
+            )
+
+        upper_external = self.safety_class in {
+            SafetyClass.EXTERNAL,
+            SafetyClass.FINANCIAL,
+        }
+        if upper_external:
+            if self.external is None:
+                raise ValueError(
+                    f"{self.safety_class.value.upper()} requires an ExternalSpec"
+                )
+            destination = self.input_model.model_fields.get(
+                self.external.destination_field
+            )
+            if destination is None:
+                raise ValueError(
+                    f"destination field {self.external.destination_field!r} is not "
+                    f"declared by {self.input_model.__name__}"
+                )
+            if not (
+                get_origin(destination.annotation) is Literal
+                and get_args(destination.annotation) == (self.external.destination_ref,)
+            ):
+                raise ValueError(
+                    f"destination field {self.external.destination_field!r} must be "
+                    f"Literal[{self.external.destination_ref!r}]"
+                )
+            result_ref = self.output.model_fields.get(self.external.result_ref_field)
+            if result_ref is None:
+                raise ValueError(
+                    f"result reference field {self.external.result_ref_field!r} is "
+                    f"not declared by {self.output.__name__}"
+                )
+            if result_ref.annotation is not str:
+                raise ValueError(
+                    f"result reference field {self.external.result_ref_field!r} must "
+                    "validate as str"
+                )
+        elif self.external is not None:
+            raise ValueError(
+                "only EXTERNAL or FINANCIAL operations may carry an ExternalSpec"
+            )
+        return self
 
 
 class ToolDeclaration(BaseModel):

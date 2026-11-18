@@ -70,6 +70,7 @@ that argument in full.
 | `contract_tests` | path | The module's behavioural suite entry: a repo-relative directory. **Named deviation:** this row once said the suite is "run by the install path in test profile and by CI". Install **validates the path and does not run the suite** — see § Install step 6 for why — and CI runs it, through the `testpaths` widening that puts `modules/` in `make test`. The row is corrected here as well as there because it is the line a module author reads first, and leaving it would have this document asserting the superseded behaviour in its most-read table. |
 | `sensitivity` | mapping of record type to field tiers | Which fields are `public`, `internal`, `restricted` for the [redaction contract](runtime-and-mcp.md#the-redaction-contract). Read by the context builder, through the rendering the loader registers for each tiered record type. The manifest refuses a key that is not one of its own record types, an empty tier map, a tiered type with no `load_for_model`, a `load_for_model` on an untiered type, an event whose `data` model (nested models included) marks a field `restricted`, and a `configuration_schema` key under `<module_id>.redaction.`, which the core declares (`exclude_types`). A model's fields (an event's `data`, an operation's output) are tiered with the `Tiered` marker rather than here; see [tiers](runtime-and-mcp.md#tiers). |
 | `audit_sink` | optional `AuditSink` | The writer for the module's own audit rows, installed under the module's id by `_register` in `packages/core/src/rheo_core/modules/loader.py`. **Not one of the twenty-three ratified fields**, and added because it is the only channel a module has: `rheo_core.operations.dispatch` resolves a sink by the *operation's* owning module and refuses every above-`READ` operation with `AUDIT_SINK_MISSING` when that module has none. Optional, because a module declaring only `READ` operations needs no sink. |
+| `package_sets` | `default` or `explicit_only`, default `default` | Whether the named package sets reach the module's operations ([package sets](identity-and-topology.md#the-named-package-operation-sets)). `explicit_only` keeps every one of them off the module's own operations: `read_only`, `agent_default`, `cli_full` and `alert_writer` each subtract them, so no rule-set issuance or connector grant reaches it. A token issued from a named set before the switch loses the module's operations at presentation; a `module_read` token or an explicit list keeps what it was issued. A token reaches it only by naming it: `module_read:<module_id>` (its `read` operations, issuable by the operator command) or an explicit operation list. It does not cover core operations that act on any module's records, such as `core.record.delete`, `core.audit.list`, `core.workspace.export`, `core.operation.get` and `core.operation.list`; those keep their own sets and roles. The flag is recorded with each registered operation, so the sets never read it from the loader's manifest table. Its tools must name its own operations: the facade offers a tool to any token holding the tool's operation, so an opt-in module's tool naming a core operation would ride on another module's grant of it. **Not one of the twenty-three ratified fields**: added for a module that is opt-in for every agent. |
 
 The manifest is code, not a sidecar file: one source of truth, type-checked, no cross-validation
 between two declarations. The export `schema_path` is the one static file: a JSON Schema for the
@@ -193,17 +194,18 @@ OperationDeclaration
   output: type[BaseModel]
   handler: Callable[[WorkspaceContext, UnitOfWork, input], output]   # travels beside the declaration, not in it
   roles: set[Role]                          # who may call; Role in {owner, member, operator, service}; default {owner, member}
-  idempotency: Idempotency                  # NONE | NATURAL(unique index); KEYED arrives with phase five
+  idempotency: Idempotency                  # NONE | NATURAL(unique index) | KEYED(retained result)
+  keyed: KeyedSpec | None                   # key field plus positive request/result schema versions
   audit: AuditSpec | None                   # required unless safety_class is READ
-  guards: list[ExecutionGuard]              # domain rechecks added to the core's; not declared yet
+  guards: tuple[str, ...]                    # ordered qualified domain-guard names
+  external: ExternalSpec | None             # exact destination and returned-reference fields
   long_running: bool                        # returns an operation id and runs as a job
 ```
 
-The shipped `rheo_contracts.OperationDeclaration` carries neither `handler` nor `guards`. The
-handler is the second half of the manifest's `(OperationDeclaration, Handler)` pair, for the
-reason [the manifest](#the-manifest) gives. `guards` has no field yet: the core's own guards are
-attached by `core_guards_for` (`packages/core/src/rheo_core/approvals/guards.py`), and the first
-module that needs a domain guard adds the field.
+The shipped `rheo_contracts.OperationDeclaration` does not carry its `handler`; the handler is
+the second half of the manifest's `(OperationDeclaration, Handler)` pair, for the reason
+[the manifest](#the-manifest) gives. Its guard names are ordered and qualified; the owned
+registrations that resolve them arrive with the first production external destination.
 
 `roles` is checked by the dispatcher against `ctx.role` on every call. `service` is the role a
 `connection` actor at `entry = intake` and a `system` actor at `entry = job` carry
@@ -255,9 +257,10 @@ Registration rules the core enforces at startup (criterion 18, criterion 14, cri
   handler is what returns the existing row on a repeat, and the declaration exists so the
   registry can assert the index is present in the module's schema at install. That assertion is
   not written yet: `Idempotency.NATURAL` carries no index name, and registration accepts it
-  without checking any schema. Release one has no
-  keyed idempotency and no stored-result table; the first operation that must return a created
-  reference on a retry is phase five's ([idempotency](intake-and-events.md#idempotency)).
+  without checking any schema. `KEYED` instead declares a validated string key field and
+  positive request/result wire versions. Core retains the canonical request identity and the
+  terminal result or error; compatibility across retained versions is explicit through pure
+  adapters ([idempotency](intake-and-events.md#idempotency)).
 - A tool registered by a module may name a core operation (the deletion tools do) only when its
   input restricts the reference to the module's own record types. This one is a contract rule
   rather than a registration check: the tool's own narrower `input_model` is what carries the
@@ -399,14 +402,20 @@ At process start, in `core` and `worker` alike:
    registered" are both unreachable rather than refused. `tests/test_module_registration.py` pins
    the property instead of building a second mechanism for it. A future run that lets a module
    supply registration code of its own is the run that has to build the check.
-5. The production-profile rule (criterion 18): under `RHEO_PROFILE=production` the registry
-   must contain no item whose `origin` is `test_harness` and no operation in the `EXTERNAL` or
-   `FINANCIAL` classes. At runtime the only gate is the first half: every registry refuses the
-   `test_harness` origin unless the profile is `test`. The whole assertion is a CI check,
-   `tests/test_production_registration.py`, which starts a real production-profile process and
-   enumerates what it registered; no startup code refuses an `EXTERNAL` or `FINANCIAL`
-   operation. Test fixtures register with `origin=test_harness` by calling the harness's own
-   `register_harness()` (`tests/harness/`), which no production process imports.
+5. The final production-composition rule (criterion 18) is shipped code, not only a CI
+   enumeration. After all selected modules load, both the Core startup root and the worker root
+   call the same fail-closed assertion. It rejects every `FINANCIAL` declaration and every
+   `EXTERNAL` declaration or destination registration except the one exact tuple
+   `current.item.create_external` / owner `current` / destination `current` / in-process mode /
+   `ExternalSpec(destination_field="destination_ref", destination_ref="current",
+   result_ref_field="item_ref")`. The operation must be `KEYED`; an unkeyed upper-class inline
+   hold is not a production alternative. Wrong or missing specs and destinations, owner,
+   operation or mode mismatches, and orphan registrations all fail startup. Current may be absent
+   only as the wholly absent declaration-and-registration pair. There is no wildcard, prefix,
+   class-wide, profile or test bypass. Separately, every registry refuses the `test_harness`
+   origin unless the profile is `test`; test fixtures register through `register_harness()` in
+   `tests/harness/`, which no production process imports. Production-profile tests drive the real
+   Core and worker roots for both rules.
 
 The registry is global to the process. Per-workspace activation is applied at every boundary by
 `WorkspaceContext.enabled_modules`, so a tool listing, a route resolution, an event fan-out, a

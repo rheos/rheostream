@@ -39,7 +39,7 @@ from datetime import datetime, timedelta
 from typing import Final
 from uuid import UUID
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from rheo_contracts import (
     OperationDeclaration,
     RecordRef,
@@ -55,7 +55,8 @@ from rheo_core.approvals.binding import (
     payload_bytes,
     payload_digest,
 )
-from rheo_core.approvals.guards import GuardRefusal, core_guards_for, run_guards
+from rheo_core.approvals.guards import GuardRefusal, effective_guards_for, run_guards
+from rheo_core.approvals.snapshot import SnapshotRefusal, verify_snapshot
 from rheo_core.audit import AUDIT_SUCCEEDED
 from rheo_core.boundary.context import Refusal
 from rheo_core.boundary.factories import context_for_approved_execution
@@ -68,7 +69,6 @@ from rheo_core.operations.records import (
     mint,
 )
 from rheo_core.operations.refusals import (
-    OPERATION_UNKNOWN,
     OUTPUT_INVALID,
     RECORD_STALE,
     OperationRefused,
@@ -148,6 +148,23 @@ def window_seconds(ctx: WorkspaceContext) -> int:
         settings.get_int("approvals.default_window_seconds"),
         settings.get_int("approvals.max_window_seconds"),
     )
+
+
+def _bound_destination(
+    declaration: OperationDeclaration, model_input: BaseModel
+) -> str | None:
+    """The exact destination an EXTERNAL/FINANCIAL hold binds, or null.
+
+    Null for a declaration without an ``ExternalSpec``. For one with a spec, the
+    validated input's destination is recorded only when it is the declared exact
+    destination; anything else stays null, which ``DestinationGuard`` refuses at
+    execution rather than trusting.
+    """
+    external = declaration.external
+    if external is None:
+        return None
+    supplied = getattr(model_input, external.destination_field, None)
+    return supplied if supplied == external.destination_ref else None
 
 
 def _subject_revision(
@@ -252,10 +269,9 @@ def hold_for_approval(
             actor_id=ctx.actor.id,
             operation_name=declaration.name,
             operation_id=operation_id,
-            # Null in release one: nothing declares a destination. See
-            # ``approvals/tables.py``'s own comment for why that is a recorded gap
-            # rather than a missing write.
-            destination_ref=None,
+            # The declared exact destination for EXTERNAL/FINANCIAL, which
+            # ``DestinationGuard`` compares at execution; null for every other class.
+            destination_ref=_bound_destination(declaration, model_input),
             subject_ref=None if subject_ref is None else subject_ref.format(),
             subject_revision=_subject_revision(ctx, uow, subject_ref),
             payload_digest=payload_digest(body),
@@ -388,7 +404,10 @@ def execute_approved(
     - ``operation_unknown`` — the approved operation is not registered in this
       process. A deployment that dropped a module between the hold and the approval.
     - ``invalid_approval`` — the snapshot is gone, no longer validates, or the
-      binding tuple does not match what is about to run (criterion 60).
+      binding tuple does not match what is about to run (criterion 60): the digest,
+      the exact destination, the window, or — for a KEYED EXTERNAL/FINANCIAL call —
+      the staged action it must run through. Every clause but the window is
+      ``approvals/snapshot.py:verify_snapshot``, the verifier the preview shares.
     - ``record_stale`` — the handler's own compare-and-set missed and it raised
       :class:`~rheo_contracts.StaleRecord`, translated here because this call does not
       go back through ``dispatch()``'s own ``except``.
@@ -409,30 +428,20 @@ def execute_approved(
     the row that says this operation did not happen. The operation record carries the
     guard's name for the reader who wants to know *why*.
     """
-    operation = registry.lookup(approval.operation_name)
-    if operation is None:
-        raise OperationRefused(
-            OPERATION_UNKNOWN,
-            f"{approval.operation_name} is approved but not registered in this process",
-        )
-    declaration = operation.declaration
-    body = records.payload_body(uow.connection, approval_id=approval.id)
-    if body is None:
-        raise OperationRefused(
-            INVALID_APPROVAL,
-            f"the payload snapshot of approval {approval.id} is no longer stored",
-        )
-    try:
-        model_input = declaration.input_model.model_validate(body)
-    except ValidationError:
-        raise OperationRefused(
-            INVALID_APPROVAL,
-            f"the stored payload of approval {approval.id} no longer validates "
-            f"against {declaration.input_model.__name__}",
-        ) from None
+    # The snapshot is verified by the verifier ``core.approval.preview`` and both
+    # decisions use (``approvals/snapshot.py``), so what a person was shown as
+    # verified and what may execute inline cannot drift apart; the window is compared
+    # below. The verifier's one registry lookup comes back on the snapshot, so a
+    # refusal for an unregistered operation is the verifier's typed answer above.
+    verified = verify_snapshot(uow.connection, approval, registry=registry)
+    if isinstance(verified, SnapshotRefusal):
+        raise OperationRefused(verified.state, verified.detail)
+    operation = verified.operation
+    declaration = verified.declaration
+    model_input = verified.model_input
     detail = binding_detail(
         approved_digest=approval.payload_digest,
-        digest=payload_digest(executable_payload(model_input)),
+        digest=payload_digest(verified.payload),
         window_start=approval.window_start,
         window_end=approval.window_end,
         now=now,
@@ -468,7 +477,7 @@ def execute_approved(
         approval=approval,
         model_input=model_input,
         now=now,
-        guards=core_guards_for(declaration),
+        guards=effective_guards_for(declaration),
     )
     if refusal is not None:
         return _record_guard_refusal(uow, approval=approval, refusal=refusal, now=now)

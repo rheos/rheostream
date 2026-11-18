@@ -139,7 +139,9 @@ def _recallatron_entry_point() -> EntryPoint:
 
 
 @pytest.fixture(autouse=True)
-def restored_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def restored_settings(
+    monkeypatch: pytest.MonkeyPatch, fresh_startup_composition: None
+) -> Iterator[None]:
     """A private copy of the settings tables, and both modules discoverable."""
     monkeypatch.setattr(SETTINGS_REGISTRY, "_specs", dict(SETTINGS_REGISTRY._specs))
     monkeypatch.setattr(SETTINGS_REGISTRY, "_origins", dict(SETTINGS_REGISTRY._origins))
@@ -680,6 +682,50 @@ def test_worker_main_resolves_with_the_module_variable_set(
     with pytest.raises(_ReachedModuleLoad):
         worker_main_module.main()
     assert resolve().get_str(EMBEDDING_PROVIDER_KEY) == "local"
+
+
+# --- the finance command's composition root (#574) -----------------------------------
+
+
+def _finance_core_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``operator_context()`` up to core's first full ``resolve()``.
+
+    Every ``finance`` command that reaches core goes through ``operator_context()``.
+    ``context_for_operator`` is replaced by a sentinel that resolves the settings in
+    full, as ``get_backend()`` does first, then stops: no backend, no database. Without
+    the early hook in ``operator_context()``, the resolve refuses the other module's
+    variable as a stray.
+    """
+    from rheo_finance.wiring import core as finance_core
+
+    def _resolve_then_stop(_workspace_id: UUID) -> None:
+        resolve()
+        raise _ReachedModuleLoad
+
+    monkeypatch.setattr(finance_core, "context_for_operator", _resolve_then_stop)
+    monkeypatch.setenv(finance_core.WORKSPACE_VARIABLE, str(uuid7()))
+    finance_core.operator_context()
+
+
+@pytest.mark.usefixtures("provider_in_environment")
+def test_the_finance_command_accepts_another_modules_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The pre-fix failure: nothing has registered the other module's key yet.
+    with pytest.raises(SettingUndeclared):
+        resolve()
+    with pytest.raises(_ReachedModuleLoad):
+        _finance_core_path(monkeypatch)
+    assert resolve().get_str(EMBEDDING_PROVIDER_KEY) == "local"
+
+
+@pytest.mark.usefixtures("provider_in_environment")
+def test_the_finance_command_still_refuses_a_stray_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRAY_VARIABLE, "x")
+    with pytest.raises(SettingUndeclared):
+        _finance_core_path(monkeypatch)
 
 
 # --- workspace create's side effect ---------------------------------------------------

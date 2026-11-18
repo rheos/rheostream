@@ -29,7 +29,9 @@ does not establish that an external submission or business decision succeeded.
 `open`, `waiting` and `snoozed` move freely between each other; any status can become
 `done`, and `done` reopens to `open`. Only a snoozed item holds `snoozed_until`, which
 must be in the future when set; database checks hold the same rule. An expired snooze
-needs no job: the default `active` list includes it, flagged `woke`.
+needs no job: the default `active` list includes it, flagged `woke`. The `active` list is
+open items plus woke ones; a `waiting` item is being watched (the screens call it
+Watching) and stays out of it until someone moves it.
 
 ## Source dedup
 
@@ -55,14 +57,81 @@ fingerprint sent before the close. A person's move to `done` through
 `current.item.set_status` does not clear them: an email thread closed by hand stays
 closed when intake re-reads it with the same newest-message fingerprint.
 
+The source kind `handoff` is reserved: `current.item.create` refuses it, and only
+the approved external destination below creates items of that kind. Ordinary create
+still accepts provenance `handoff`, because provenance only describes where a request
+came from and takes no part in dedup; only the source kind is reserved.
+
+## Approved external items and the source link
+
+`current.item.create_external` turns one approved outside source into one standalone
+item. Why it works this way is in
+[ADR-0001](../../docs/adr/0001-leads-current-project-link.md).
+
+- **Staging only asks.** It is `external` class and `KEYED` on `idempotency_key`, for
+  owners and members, with no MCP tool. A call stages an approval request and changes
+  nothing in Current. A service context is refused at staging. A token may stage it
+  but cannot approve it: the approval operations are never token-issuable, so a person
+  decides every request in the shell.
+- **The effect runs once, in core's continuation.** After approval, core's worker
+  rebuilds the held caller, runs its guards again and calls the in-process
+  destination `current`. The operation's declared handler always refuses, so nothing
+  reaches the effect another way. The input fixes `destination_ref` to `current`,
+  takes title, body, priority, area and due date, and has no project field. The
+  result is `{item_ref}`.
+- **One item per source.** Core's retained keyed result answers a retry of the same
+  approved request without calling Current. Without it (another key, or an expired
+  row) the source link and the `(source_kind, source_ref)` index still return the
+  first item. A retry never folds, reopens, wakes, counts an event or changes a
+  priority, and there is no repeat-signal handling on this path.
+
+Each such item has one `current.source_item_link` row, created with the item:
+
+| Field | Meaning |
+| --- | --- |
+| `source_ref` | The outside source; one row per source. |
+| `item_ref` | The item; fixed for the row's life, unique. |
+| `revision` | One order for every reader; moves by one per change. |
+| `item_state` | `available`, or `deleted` once the item is erased. |
+| `project_ref` | The live project, present exactly when `project_state` is `linked`. |
+| `last_project_ref` | The project the item most recently left. |
+| `project_state` | `never_assigned`, `linked`, `cleared` or `deleted`. |
+| `changed_at` | When the link last changed. |
+
+The link changes only through paths Current already has:
+
+- `current.item.update` with `project_ref` assigns or moves (`linked`; a move records
+  the old project in `last_project_ref`), and `clear: ["project_ref"]` clears
+  (`cleared`, the old project kept as `last_project_ref`). This stays the only way to
+  set an item's project, from the item edit screen as before.
+- Deleting the item marks `item_state` `deleted` and leaves a linked project live.
+  The row stays as a tombstone: the same source can never create the item again.
+- Deleting a project moves it to `last_project_ref` with `project_state` `deleted` on
+  every link that held it, including links whose item is already deleted.
+
+Repeating the same assignment, or clearing a project that is already empty, leaves
+the link's revision alone and publishes nothing (the item's own revision still moves,
+as for any edit). Every real change publishes one `current.source_item_link.changed`
+event, schema version 1, whose `data` is the whole link, the same shape the read
+below returns. Its subject is the item ref and its subject revision the link revision,
+so a consumer sees one link's changes in order.
+
+`current.item.link_state` reads the link by `source_ref`. It is a separate read
+operation for owners, members and services, with no tool, and reads no item or
+project row: it answers for a deleted item, and it neither needs nor grants
+`current.item.get` or `current.project.get`. Item and project content stay behind
+those reads.
+
 ## Operations and roles
 
 | Operation | Class | Roles | MCP tool |
 | --- | --- | --- | --- |
-| `current.item.create` | mutate | owner, member | `current_create` |
+| `current.item.create` | mutate | owner, member, service | `current_create` |
 | `current.item.get`, `current.item.list` | read | owner, member, service | `current_get`, `current_list` |
-| `current.item.update` | mutate | owner, member | `current_update` |
-| `current.item.set_status` | mutate | owner, member | `current_status` |
+| `current.item.link_state` | read | owner, member, service | none |
+| `current.item.create_external` | external, keyed | owner, member (stage only) | none |
+| `current.item.update` | mutate | owner, member, service | `current_update` |
+| `current.item.set_status` | mutate | owner, member, service | `current_status` |
 | `current.item.close_by_source` | mutate | owner, member | `current_close_by_source` |
 | `current.item.comment` | mutate | owner, member | `current_comment` |
 | `current.dependency.add`, `.remove` | mutate | owner, member | `current_add_dependency`, `current_remove_dependency` |
@@ -74,6 +143,16 @@ closed when intake re-reads it with the same newest-message fingerprint.
 | `current.summary.get` | read | owner, member, service | `current_summary` |
 | `core.record.delete` on `current.item`, `current.project` | destructive | owner | `current_delete_item`, `current_delete_project` |
 
+The service role on create, update and set_status lets a module job write items
+in-process through `call_in_transaction`, with a restricted service context from core's
+boundary factory. That context's operation set is the only bound: a service context
+granted these operations can create, edit and move any Current item, not only items it
+created. A refusal raises `OperationRefused`; a job that lets it
+propagate has its whole transaction rolled back by the worker, while one that catches
+it and returns keeps whatever it already wrote. A service context still cannot close
+by source, comment, change dependencies, create or edit projects or areas, or delete.
+It may still set an item's area or project on create and update, as any writer can.
+
 Updates are compare-and-set on the revision and answer `record_stale` when it moved on.
 A null or omitted update field stays as it is; `clear` names the optional fields to
 empty. The MCP tool facade forwards every field, defaults included, so field presence
@@ -82,15 +161,26 @@ revision.
 
 Deleting an item removes its comments, seen fingerprints and dependency edges. Deleting
 a project detaches its items, bumping each item's revision, and deletes none of them.
-Nothing outside Current refers to its records yet, so it registers no deletion
-participants.
+Either deletion updates a source link instead of removing it. Nothing outside Current
+refers to its records yet, so it registers no deletion participants.
 
-Events carry a reference and revision only: `current.item.created`,
+Item events carry a reference and revision only: `current.item.created`,
 `current.item.completed` and `current.item.reopened`.
+`current.source_item_link.changed` carries the whole link (see above).
 
-Export format 1 covers every table. Restore expects a freshly installed module: it
-replaces the seeded area list with the exported one and refuses if any other table
-holds rows.
+Export format 2 covers every table, the source link included, row for row with its
+revision. Restore expects a freshly installed module: it replaces the seeded area
+list with the exported one and refuses if any other table holds rows. It refuses the
+whole artifact when a handoff item and its link disagree: a `handoff`-kind item with
+no link, a link whose item is missing (or present after deletion), a linked project
+that is missing, a link whose project or source differs from its item's, two links
+for one item, or a link that breaks the table's checks. Format 1 artifacts do not
+restore.
+
+Record routes let another module link a Current reference without knowing hosts or
+paths: `item` opens the `item` route and `project` the `project` route, each with the
+reference in the `ref` query key. The shell builds the URL; the screen authorizes
+again when it opens.
 
 ## External writers and readers
 
@@ -159,8 +249,8 @@ and adds one main-nav entry, Current. Routes are exact paths; a record travels a
 
 | Path | Screen |
 | --- | --- |
-| `/` | Queue: summary counts, a Woke up section for expired snoozes, then active items by priority and last update. Filters for status, area, project, priority, overdue and blocked, full-text search and paging. Each row has Done, Snooze and Wait (or Back to open). |
-| `/item?ref=` | Item: details, notes, status controls, snooze picker, comments, blocked-by and blocking links, and origin. |
+| `/` | Queue: a find box, Projects and `+`; chips for status, area and priority; overdue and blocked counters only when above zero; a folding Woke up section with Wake all; then active items by priority and last update, with paging. A row shows the area's icon and colour, title, priority, type tag, signals and due date or age. Swipe left for Project and Done, right for Watch and Snooze; a long swipe runs Done or Watch. The tray buttons are reachable by keyboard and screen reader, and show as hover icons with a mouse. |
+| `/item?ref=` | Item (the ref may be the short ID, e.g. `?ref=b50a1e99`): details, a copyable ID, notes, status controls, snooze picker, comments, blocked-by and blocking links, and origin. |
 | `/new` | New item. `?project=` preselects a project. |
 | `/projects`, `/project?ref=` | Projects with item counts by status; one project's items, with create and edit. |
 | `/areas` | Areas, owner only: add, rename, retire and restore. |
