@@ -171,6 +171,23 @@ def test_json_under_reference_is_not_statement_type(repo: Repo) -> None:
     assert_passes(repo.check())
 
 
+@pytest.mark.parametrize("path", ["web/package.json", "web/tsconfig.json"])
+def test_web_package_config_is_not_statement_type(repo: Repo, path: str) -> None:
+    repo.stage(path, '{"name": "web"}\n')
+    assert_passes(repo.check())
+
+
+@pytest.mark.parametrize("path", ["web/data.json", "web/src/package.json"])
+def test_other_json_under_web_is_statement_type(repo: Repo, path: str) -> None:
+    repo.stage(path, "{}\n")
+    assert_fails(repo.check(), path, "statement-type")
+
+
+def test_web_package_config_is_scanned(repo: Repo) -> None:
+    repo.stage("web/package.json", f'{{"id": "{PLAIN_RUN}"}}\n')
+    assert_fails(repo.check(), "web/package.json:1", "8 or more", PLAIN_RUN)
+
+
 def test_fixture_outside_the_synthetic_directory_fails_when_staged(repo: Repo) -> None:
     repo.stage("tests/fixtures/other/layout.txt", "fake layout\n")
     assert_fails(repo.check(), "tests/fixtures/other/layout.txt", "outside")
