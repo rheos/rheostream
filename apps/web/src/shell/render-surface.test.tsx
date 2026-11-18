@@ -267,18 +267,28 @@ describe("module screens through the real composition", () => {
 
   // A live session core refuses is not dead, so `/auth/restart` would leave it alone and
   // the link would do nothing. Sign-out is the way forward for these.
-  it.each(["membership_missing", "workspace_unavailable"])(
-    "offers sign-out, not a sign-in that cannot help, for %s",
-    async (refusal) => {
-      seams.session = { state: "unauthenticated", refusal };
-      const html = await render(moduleRequest("/search"));
-      expect(html).toContain(`session: signed out (${refusal})`);
-      expect(html).toContain(">Sign out</button>");
-      expect(html).not.toContain("Sign in");
-      expect(html).not.toContain("/auth/restart");
-      expect(html).not.toContain('type="search"');
-    },
-  );
+  it("offers sign-out, not a sign-in that cannot help, for membership_missing", async () => {
+    seams.session = { state: "unauthenticated", refusal: "membership_missing" };
+    const html = await render(moduleRequest("/search"));
+    expect(html).toContain("session: signed out (membership_missing)");
+    expect(html).toContain(">Sign out</button>");
+    expect(html).not.toContain("Sign in");
+    expect(html).not.toContain("/auth/restart");
+    expect(html).not.toContain('type="search"');
+  });
+
+  // #530: workspace_unavailable also covers migrating and restoring. Signing out would
+  // leave the account on an unselected session after the workspace came back.
+  it("says to wait and reload, not sign out, for workspace_unavailable", async () => {
+    seams.session = { state: "unauthenticated", refusal: "workspace_unavailable" };
+    const html = await render(moduleRequest("/search"));
+    expect(html).toContain("session: signed out (workspace_unavailable)");
+    expect(html).toContain("then reload this page");
+    expect(html).not.toContain("Sign out");
+    expect(html).not.toContain("Sign in");
+    expect(html).not.toContain("/auth/restart");
+    expect(html).not.toContain('type="search"');
+  });
 
   it.each(["session_missing", "session_expired", "session_revoked"])(
     "offers the sign-in restart, not sign-out, for %s",
@@ -309,6 +319,19 @@ describe("the shell-owned approval route", () => {
     expect(returnTo.host).toBe(APPROVAL_REQUEST.host);
     expect(returnTo.pathname.endsWith("/approvals/detail")).toBe(true);
     expect(returnTo.searchParams.get("approval_id")).toBe(APPROVAL_ID);
+    expect(seams.calls).not.toContain("core.approval.preview");
+  });
+
+  it.each([
+    ["membership_missing", ">Sign out</button>"],
+    ["workspace_unavailable", "then reload this page"],
+  ])("answers a live %s refusal on the approval route without its content", async (refusal, way) => {
+    seams.session = { state: "unauthenticated", refusal };
+    const html = await render(APPROVAL_REQUEST);
+    expect(html).toContain(`session: signed out (${refusal})`);
+    expect(html).toContain(way);
+    expect(html).not.toContain("Sign in to continue");
+    expect(html).not.toContain("/auth/restart");
     expect(seams.calls).not.toContain("core.approval.preview");
   });
 

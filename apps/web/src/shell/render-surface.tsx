@@ -283,7 +283,9 @@ function currentPage(config: RoutingConfig, request: SurfaceRequest): string {
  * sign-in goes through `/auth/restart` here rather than straight to the identity host,
  * which would sign in and leave that cookie in place (#528). A live session pointed at
  * a workspace it can no longer open is not dead, and `/auth/restart` rightly leaves it
- * alone, so that one gets sign-out, and signing back in picks a workspace again.
+ * alone, so that one gets sign-out, and signing back in picks a workspace again. The
+ * exception is `workspace_unavailable`, which may only be temporary: it gets wait and
+ * reload, not sign-out (#530).
  */
 function sessionStatus(
   config: RoutingConfig,
@@ -293,6 +295,20 @@ function sessionStatus(
 ): ReactNode {
   if (session.state === "unavailable") {
     return <p className={panel.line}>session: unavailable</p>;
+  }
+  if (session.refusal === "workspace_unavailable") {
+    // Also covers temporary states (migrating, restoring). Signing out here would land
+    // the account on an unselected session that stays unselected after the workspace
+    // returns, so the advice is to wait and reload (#530).
+    return (
+      <>
+        <p className={panel.line}>session: signed out ({session.refusal})</p>
+        <p className={panel.detail}>
+          This workspace is unavailable right now, often because it is being moved or
+          restored. Wait a few minutes, then reload this page.
+        </p>
+      </>
+    );
   }
   if (!isDeadSessionRefusal(session.refusal)) {
     return (

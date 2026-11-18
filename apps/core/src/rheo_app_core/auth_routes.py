@@ -193,7 +193,9 @@ def _check_origin(request: Request, config: RoutingConfig) -> Response | None:
     ``rheo_core.boundary.context`` (07 already declared every constant this
     listener needs; this file does not touch that module)."""
     origin = request.headers.get("origin")
-    host = normalize_host(urlsplit(origin).hostname or "") if origin else ""
+    # ``_return_host`` answers "" for an Origin ``urlsplit`` cannot parse
+    # (``https://[x``), so a hand-made header is refused, not a 500 (#530).
+    host = _return_host(origin) if origin else ""
     if not host or not is_application_host(config, host):
         return _refused(ORIGIN_NOT_ALLOWED, status_code=403)
     return None
