@@ -107,6 +107,7 @@ from rheo_core.operations import (  # noqa: E402
 from rheo_core.operations.idempotency import KEYED_COMPATIBILITY  # noqa: E402
 from rheo_core.refs import uuid7  # noqa: E402
 from rheo_core.settings import current_profile, resolve  # noqa: E402
+from rheo_core.storage.backend import UnitOfWork  # noqa: E402
 from rheo_core.storage.control_plane import (  # noqa: E402
     WorkspaceRow,
     get_workspace,
@@ -515,6 +516,22 @@ def drop_test_databases(cluster: ClusterSession) -> Iterator[None]:
                 ],
             )
             _drop_own(cluster.maintenance, list(reversed(names)))
+
+
+@pytest.fixture(autouse=True)
+def database_assertion(
+    cluster: ClusterSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Start every test with ``UnitOfWork.verify_database`` as the session backend
+    resolved it, and put it back afterwards (#602).
+
+    Building a ``PostgresBackend`` publishes its ``verify_database`` to the class, so
+    every unit of work in the process sees it. A test that builds one outside the
+    ``test`` profile (the doctor budget tests, a production-profile composition)
+    turns the database assertion off for whichever tests the same worker runs after
+    it, and which tests those are depends on the CI shard partition.
+    """
+    monkeypatch.setattr(UnitOfWork, "verify_database", cluster.backend.verify_database)
 
 
 @pytest.fixture(autouse=True)
