@@ -28,7 +28,7 @@ from rheo_contracts import (
 )
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs.resolver import UnitOfWork
-from sqlalchemy import Date, Integer, and_, case, cast, exists, func, select
+from sqlalchemy import Integer, and_, case, cast, exists, func, select
 
 from rheo_leads import pipeline_common as h
 from rheo_leads import pipeline_contracts as c
@@ -189,7 +189,10 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
     # Newest by the posting date a card shows, else the day it arrived, then
     # arrival within a day (#369): the order and the shown dates agree.
     order = [
-        func.coalesce(_posted_on(o.c.id), cast(o.c.created_at, Date)).desc(),
+        func.coalesce(
+            _posted_on(o.c.id),
+            func.to_char(func.timezone("UTC", o.c.created_at), "YYYY-MM-DD"),
+        ).desc(),
         o.c.created_at.desc(),
         o.c.id.desc(),
     ]
@@ -369,11 +372,15 @@ def _fit_rank(opportunity_id: Any) -> Any:
 
 
 def _posted_on(opportunity_id: Any) -> Any:
-    """The posting date a card shows, as a date; null when the job has none or the
-    stored text is not an ISO date."""
+    """The posting date a card shows, as its ISO text; null when the job has none.
+
+    ISO dates sort as text exactly as they do as dates, so nothing is cast: a
+    stored value that is not a real date ("2024-02-30") can never fail the
+    queue's query, it only sorts by its digits.
+    """
     state = p.opportunity_field_state
     return (
-        select(cast(state.c.value_text, Date))
+        select(state.c.value_text)
         .where(
             state.c.opportunity_id == opportunity_id,
             state.c.target == EXTENSION + "posted_on",

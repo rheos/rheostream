@@ -8,8 +8,9 @@ from rheo_contracts import Role, WorkspaceContext
 from rheo_core.boundary import context_for_harness
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_leads.queue_view import PREVIEW_CHARS, SUMMARY_CHARS, QueueInput, queue
+from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 
 from postgres.test_leads_intake import Intake
 from postgres.test_leads_intake import intake as intake
@@ -332,3 +333,16 @@ def test_newest_sorts_by_the_posting_date_the_card_shows(intake: Intake) -> None
         "No posting date",
         "Posted long ago",
     ]
+    # A stored value that is not a real date only sorts by its digits; it never
+    # fails the queue (the field kind checks dates on write, so this is defence).
+    with open_unit_of_work(intake.ctx) as uow:
+        state = p.opportunity_field_state
+        uow.connection.execute(
+            update(state)
+            .where(state.c.target == "ext.jobsearch.posted_on")
+            .where(state.c.value_text == "2000-01-01")
+            .values(value_text="2000-02-30")
+        )
+        uow.commit()
+    assert order(sort="newest")[-1] == "Posted long ago"
+    assert order(sort="score")[-1] == "Posted long ago"

@@ -11,15 +11,17 @@ import { JobQueue, type QueueProps } from "./queue-view";
 let host: HTMLDivElement;
 let root: Root;
 const replace = vi.fn();
+const assign = vi.fn();
 beforeEach(() => {
   host = window.document.createElement("div");
   window.document.body.appendChild(host);
   root = createRoot(host);
   replace.mockReset();
+  assign.mockReset();
   window.localStorage.clear();
   Object.defineProperty(window, "location", {
     configurable: true,
-    value: { ...window.location, replace },
+    value: { ...window.location, replace, assign },
   });
 });
 afterEach(() => {
@@ -82,15 +84,12 @@ describe("saved queue view (#369)", () => {
     expect(replace).not.toHaveBeenCalled();
   });
 
-  it("saves a new choice before the form reloads the view", async () => {
+  it("saves a new choice, then reloads the view it names", async () => {
     let release = () => {};
     const savePreference = vi.fn(
       () => new Promise<void>((resolve) => (release = resolve)),
     );
     act(() => root.render(<JobQueue {...props({ savePreference })} />));
-    const form = host.querySelector("form");
-    const submitted = vi.fn((event: Event) => event.preventDefault());
-    form?.addEventListener("submit", submitted);
     const select = host.querySelector<HTMLSelectElement>('select[name="sort"]');
     if (!select) throw new Error("no sort control");
     act(() => {
@@ -101,8 +100,33 @@ describe("saved queue view (#369)", () => {
       "queue",
       expect.stringContaining('"sort":"newest"'),
     );
-    expect(submitted).not.toHaveBeenCalled();
+    expect(assign).not.toHaveBeenCalled();
+    // The select is controlled, so React has already put "score" back in it;
+    // the reload still carries the choice, read before the save finished.
+    expect(select.value).toBe("score");
     await act(async () => release());
-    expect(submitted).toHaveBeenCalledTimes(1);
+    expect(assign).toHaveBeenCalledTimes(1);
+    const url = new URL(String(assign.mock.calls[0]?.[0]));
+    expect(Object.fromEntries(url.searchParams)).toMatchObject({
+      pipeline: "jobs",
+      stage: "review",
+      full: "hide",
+      sort: "newest",
+    });
+  });
+
+  it("reloads with the choice even when the save fails", async () => {
+    const savePreference = vi.fn(async () => {
+      throw new Error("refused");
+    });
+    act(() => root.render(<JobQueue {...props({ savePreference })} />));
+    const select = host.querySelector<HTMLSelectElement>('select[name="sort"]');
+    if (!select) throw new Error("no sort control");
+    act(() => {
+      select.value = "newest";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => {});
+    expect(String(assign.mock.calls[0]?.[0])).toContain("sort=newest");
   });
 });

@@ -696,10 +696,8 @@ describe("queue screen", () => {
       }),
     ]);
     expect(html).toContain("Example data service");
-    // A URL that names a control wins, and the cookie is not even read.
-    preference.mockClear();
+    // A URL that names a control wins over the saved view.
     await screens.queue({ shell: api, query: { sort: "score" } });
-    expect(preference).not.toHaveBeenCalled();
     expect(api.call).toHaveBeenNthCalledWith(
       4,
       "leads.ui.queue",

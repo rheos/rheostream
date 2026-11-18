@@ -594,11 +594,13 @@ export async function queue({ shell, query }: ScreenProps) {
     (name) => query[name] !== undefined,
   );
   // A bare URL opens the view saved last time, already on this render (#369);
-  // queueScope checks every saved value against the catalog like a URL's.
-  const saved = explicit ? undefined : shell.preference?.(QUEUE_PREFERENCE);
+  // queueScope checks every saved value against the catalog like a URL's. A
+  // URL that names a control wins; the cookie is still read, so the browser
+  // knows not to hand its own copy over again.
+  const saved = shell.preference?.(QUEUE_PREFERENCE);
   const scope = queueScope(
     items(catalogResult),
-    saved === undefined
+    saved === undefined || explicit
       ? query
       : { ...query, ...prefsQuery(parsePrefs(cookieText(saved))) },
   );
