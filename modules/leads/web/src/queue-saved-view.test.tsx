@@ -84,6 +84,25 @@ describe("saved queue view (#369)", () => {
     expect(replace).not.toHaveBeenCalled();
   });
 
+  it("never redirects to an older browser copy when the server holds a saved view", () => {
+    // The server rendered "newest" from its cookie; this browser still holds
+    // "score" from before (another device chose, or a storage write failed).
+    window.localStorage.setItem(
+      PREFS_KEY,
+      JSON.stringify({ ...DEFAULT_PREFS, sort: "score", stage: "open" }),
+    );
+    const savePreference = vi.fn(async () => {});
+    act(() =>
+      root.render(
+        <JobQueue
+          {...props({ sort: "newest", serverSaved: true, savePreference })}
+        />,
+      ),
+    );
+    expect(replace).not.toHaveBeenCalled();
+    expect(savePreference).not.toHaveBeenCalled();
+  });
+
   it("saves a new choice, then reloads the view it names", async () => {
     let release = () => {};
     const savePreference = vi.fn(

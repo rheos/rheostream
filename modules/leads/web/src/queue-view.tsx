@@ -549,9 +549,12 @@ export function JobQueue(props: QueueProps) {
     if (text !== null && !props.serverSaved)
       void props.savePreference?.(QUEUE_PREFERENCE, text).catch(() => {});
     // A bare queue URL opens the view chosen last time, once a choice exists.
-    // The server has normally applied it already, so this only redirects when
-    // the cookie was missing or refused.
-    if (props.explicit || !form.current || text === null) return;
+    // When the server holds a saved view it rendered from it, and it is the
+    // authority: a browser copy that differs (another device, a refused storage
+    // write) never redirects away from it. The browser applies its own copy only
+    // when the server has none.
+    if (props.explicit || props.serverSaved || !form.current || text === null)
+      return;
     const view = savedView(parsePrefs(text), props);
     if (!view) return;
     const url = new URL(form.current.action);
