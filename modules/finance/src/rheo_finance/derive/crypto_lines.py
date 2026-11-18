@@ -114,7 +114,7 @@ class CryptoLines:
 
 @dataclass(frozen=True)
 class _Keyed:
-    row: Row[Any]
+    row: Row[*tuple[Any, ...]]
     code: str
     # occurred_at in UTC, to the second.
     at: dt.datetime

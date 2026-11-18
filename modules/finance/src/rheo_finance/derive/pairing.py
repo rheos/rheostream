@@ -78,7 +78,7 @@ def source_lines(*columns: ColumnElement[Any]) -> Select[Any]:
     )
 
 
-def wording(row: Row[Any]) -> str:
+def wording(row: Row[*tuple[Any, ...]]) -> str:
     """The wording of one ``source_lines`` row: its document line's, else the txn's."""
     text = row.txn_wording if row.document_line_id is None else row.line_wording
     return text or ""
