@@ -194,6 +194,7 @@ export const STAGE_LABELS: Record<string, string> = {
   needs_posting: "needs the full posting",
   failed: "failed",
   held: "held by the filters",
+  too_old: "too old to score",
   closed: "closed",
   untracked: "new",
 };
@@ -252,6 +253,13 @@ export function stageChip(
         mark: "held",
         title: "Held before full scoring. Review or promote this job.",
         tone: "plain",
+      };
+    case "too_old":
+      return {
+        mark: "old",
+        title:
+          "Not scored: it was past the age cutoff when scoring reached it.",
+        tone: "dim",
       };
     case "closed":
       return { mark: "closed", title: "Closed before scoring.", tone: "dim" };
