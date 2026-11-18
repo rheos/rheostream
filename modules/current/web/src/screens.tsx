@@ -7,6 +7,7 @@ import type {
 import {
   ActionButton,
   ActionForm,
+  CopyId,
   LocalTime,
   ProjectPicker,
   StatusActions,
@@ -66,17 +67,7 @@ function Frame({
 }) {
   return (
     <section className={styles.surface}>
-      <header className={styles.header}>
-        <div className={styles.headerText}>
-          <h1 className={styles.heading}>{title}</h1>
-          {description ? <p className={styles.intro}>{description}</p> : null}
-        </div>
-        {action && shell.submit ? (
-          <a className={styles.primary} href={shell.href("new")}>
-            New item
-          </a>
-        ) : null}
-      </header>
+      {/* Section tabs first (#589), so the header flows straight into its content. */}
       <nav className={styles.nav} aria-label="Current">
         {NAV.filter(([id]) => id !== "areas" || shell.role === "owner").map(
           ([id, text]) => (
@@ -90,6 +81,17 @@ function Frame({
           ),
         )}
       </nav>
+      <header className={styles.header}>
+        <div className={styles.headerText}>
+          <h1 className={styles.heading}>{title}</h1>
+          {description ? <p className={styles.intro}>{description}</p> : null}
+        </div>
+        {action && shell.submit ? (
+          <a className={styles.primary} href={shell.href("new")}>
+            New item
+          </a>
+        ) : null}
+      </header>
       {children}
     </section>
   );
@@ -291,7 +293,7 @@ export function deskRow(
     status: item.status,
     priority: item.priority,
     revision: item.revision,
-    href: shell.href("item", { ref: item.ref }),
+    href: shell.href("item", { ref: item.shortId }),
     areaName: areaLabel(labels, item.area),
     areaIcon: look.icon,
     areaTone: look.tone,
@@ -635,7 +637,7 @@ function NeighbourList({
       {items.map((other) => (
         <li key={other.ref}>
           <span className={styles.linkText}>
-            <a href={shell.href("item", { ref: other.ref })}>{other.title}</a>
+            <a href={shell.href("item", { ref: other.shortId })}>{other.title}</a>
             <span className={styles.meta}>{STATUS_LABEL[other.status]}</span>
           </span>
           {shell.submit ? (
@@ -685,7 +687,7 @@ export async function item({ shell, query }: ScreenProps) {
   const areas = page(areaResult, areaOf).items;
   const labels = areaLabels(areas);
   const projects = page(projectResult, projectOf).items;
-  const here = shell.href("item", { ref: record.ref });
+  const here = shell.href("item", { ref: record.shortId });
   const linked = new Set([
     record.ref,
     ...record.blockers.map((b) => b.ref),
@@ -747,6 +749,7 @@ export async function item({ shell, query }: ScreenProps) {
           <span className={styles.flagLate}>Overdue</span>
         ) : null}
         {record.blocked ? <span className={styles.flag}>Blocked</span> : null}
+        <CopyId id={record.shortId} />
       </span>{" "}
       Updated <LocalTime iso={record.updatedAt} zone={shell.timeZone} />
     </>

@@ -16,9 +16,10 @@ flowchart with hover notes on every shape. Its source is in the
 
 | Part | State |
 | --- | --- |
-| Workflow maps: email intake into Current | Drawn |
-| Workflow maps: the Upwork job feed through Leads, an agent action through approval, memory capture through recall | Not drawn yet |
-| Schema map, architecture, delivery | Not drawn yet |
+| Workflow maps: email intake into Current | Drawn, summarized below |
+| Workflow maps: the Upwork job feed through Leads, an agent action through approval, memory capture through recall | Drawn on the site only |
+| Schema map ([rheo.stream/review/schema](https://rheo.stream/review/schema/)), architecture ([rheo.stream/review/architecture](https://rheo.stream/review/architecture/)) | Drawn on the site only |
+| Delivery | Not drawn yet |
 
 Tracking issue: #469.
 

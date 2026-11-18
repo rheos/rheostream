@@ -11,10 +11,12 @@ idea-document question 13 for release one.
 ### The operation
 
 `core.record.delete(ref)`, destructive class, per-action confirmation, no standing grant. Any
-module can call it for a record type whose manifest marks `deletable = true`; release one has
-four: the three R5 types (`leads.observation`, `relationships.party`, `leads.opportunity`) and
-`recallatron.memory`, whose `recallatron_forget` tool is this same coordinator. Only
-`recallatron.memory` is built so far; the other three arrive with Leads and Relationships.
+module can call it for a record type whose manifest marks `deletable = true`. Six types are
+deletable today, all built: the three R5 types (`leads.observation`, `relationships.party`,
+`leads.opportunity`), `recallatron.memory`, whose `recallatron_forget` tool is this same
+coordinator, and Current's `current.item` and `current.project`, whose `current_delete_item`
+and `current_delete_project` tools call it too. Finance declares no record type, so nothing of
+its ledger is deletable through it.
 Who may call it per type is the manifest's `delete_roles`
 ([module contract](module-contract.md#operations-tools-events)).
 
@@ -38,7 +40,12 @@ which the one-database-per-workspace layout makes possible without a distributed
      `merge_record` that names it as survivor or merged (set null; `evidence_refs` stay), because
      a reviewer's note about why two records were one person can restate that person
      ([relationships](relationships.md#deletion-r5));
-   - a memory: its purposes, embeddings, links, and mentions.
+   - a memory: its purposes, embeddings, links, and mentions;
+   - a work item: its comments, signals and dependency edges in both directions; its
+     `source_item_link` row stays as a tombstone with its project unchanged
+     ([ADR-0001](../adr/0001-leads-current-project-link.md));
+   - a project: nothing it owns is removed with it; its items are detached (`project_id`
+     cleared, revision moved on) and its source links record the deletion.
 
    That set is normally the one reference; a party that is a merge survivor also returns its
    alias rows, which it removes with it ([relationships](relationships.md#deletion-r5)). Steps 3
@@ -162,7 +169,20 @@ modules/
 Every exportable module's rows are written by its `exporter` through a core writer that
 enforces the schema. The core writes its own tables. Secret values are absent by construction:
 no exporter can resolve one. Copies of workspace files are to travel with the records that
-reference them; no module stores files yet, so the artifact carries none.
+reference them; the artifact carries none yet. The one module that stores files in the data
+root, Finance (under `workspaces/<id>/uploads/finance/`), is not in the export at all.
+
+A module is in the artifact only when the workspace installed it and its manifest declares at
+least one exportable record type (`_exportable` in `rheo_core/exports/artifact.py`). Today that
+is Recallatron, Relationships, Leads and Current. Finance declares none, so its ledger state
+never enters a workspace export; it moves with `finance state export` instead
+([Finance](../../modules/finance/README.md)). Some rows are left out or rewritten on purpose:
+
+- **Leads** leaves out the job feed's pending authorization, its run history
+  (`leads.jobfeed_run`), the model call log and the Current link repair cursor; it exports the
+  job feed connection without its token reference, registered client, run claim and backoff.
+- **Current** exports every table, `source_item_link` included.
+- **Core** writes no `external_action` rows, so a pending action does not travel.
 
 `export_format_version` is the compatibility contract for a module's exported rows. If the
 row shape changes, the module must bump that version; the core refuses an artifact whose
@@ -170,6 +190,16 @@ recorded version differs from the host's version. An importer owns the upgrade l
 older rows within the format it accepts. The manifest's recorded `schema_version` is
 informational for the restored workspace and is not used to select a migration point for
 export rows.
+
+Format versions today (each manifest's `ExportDeclaration.format_version`):
+
+| Module | Format | What the latest version added |
+| --- | --- | --- |
+| `leads` | 14 | each handoff's attempt count, its Current project projection and the qualification its request was made against (`modules/leads/src/rheo_leads/export.py`) |
+| `current` | 2 | `source_item_link`, row for row (`modules/current/src/rheo_current/export.py`) |
+| `recallatron` | 1 | |
+| `relationships` | 1 | |
+| `finance` | 1 | declared, but its exporter and importer refuse, since it has no exportable record type |
 
 ### Export records
 
@@ -204,9 +234,13 @@ owner into a workspace the control plane does not yet know:
    then each module's second pass, which resolves self-references.
 5. Every approval lands `requires_reapproval`. An operation bound to a restored approval lands
    `approval_required` and any other lands `unresolved`, so nothing executes until a person
-   approves again (criterion 21). Every pending external action is to land `pending` with
-   `approval_id` pointing at an approval that is not `approved`, every connection
-   `needs_credential` and every member credential `needs_value`; none of the three is built yet.
+   approves again (criterion 21). External actions are not in the artifact, so nothing can
+   execute from one. Modules restore their own in-flight state as unproven: a Leads handoff
+   that was `pending` lands `unresolved` (`result_detail = restored_unresolved`) and never
+   restages; a queued or running proposal or pricing request lands `failed`
+   (`failure_kind = restored`); an active webhook connection lands `needs_credential`; the job
+   feed connection lands `authorization_required`, so the owner reconnects. Member credentials
+   landing `needs_value` is not built.
 6. Write an `export_record` of `kind = restore` with the source artifact's digest, commit, and
    set the workspace `active`.
 
@@ -261,16 +295,19 @@ guard migration-output paths; they do not approve arbitrary report contents.
 
 Answers the remainder of idea-document question 13 at release-one scale.
 
-- **What is backed up.** The control-plane database and every workspace database by `pg_dump`,
-  plus the data root (secrets directory, workspace files, exports). Postgres backups are the
-  operator's, on the operator's schedule; `deploy/` is to ship a generic example and does not
-  yet.
+- **What is backed up.** The control-plane database and every workspace database, plus the
+  data root (secrets directory, workspace files, exports). Postgres backups are the
+  operator's, on the operator's schedule. `deploy/backup/rheostream-pgdumpall.sh` is the
+  flagship's nightly job: one `pg_dumpall` of the whole cluster (so every workspace database
+  is in it), checked for a clean gzip stream, a minimum size and pg_dumpall's completion line,
+  then kept by count (14 daily, 8 weekly by default). It does not copy the data root; that
+  stays the operator's ([deploy](../../deploy/README.md#backups)).
 - **What restore means.** Two paths, both exercised: a database-level restore of a cluster
   backup, which is Postgres's own procedure; and the application-level export and restore above,
   which is the path the acceptance criteria drill at the end of each phase.
 - **How it is tested.** Criteria 21, 36, and 67 are the drill: export, restore into an empty
   deployment, compare by digest. Running them in CI at every phase end is the release-one
-  disaster-recovery test plan; a cluster-backup restore drill is to be an operator runbook in
-  `deploy/` (not written yet) and is not automated in release one.
+  disaster-recovery test plan. Restoring a cluster backup into an empty cluster is written up
+  in the [deploy guide](../../deploy/README.md#restore); it is not automated as a drill.
 - **What is not covered.** Point-in-time recovery, replica failover, and per-workspace encryption
   keys are the hosted edition's ([later phases](later-phases.md#phase-8-the-hosted-edition)).

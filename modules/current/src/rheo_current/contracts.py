@@ -170,6 +170,7 @@ class Comment(Strict):
 
 class Blocker(Strict):
     ref: str
+    short_id: str
     title: str
     status: str
 
@@ -182,6 +183,8 @@ class ProjectSummary(Strict):
 
 class ItemSummary(Strict):
     ref: str
+    short_id: str
+    """The UUID's tail (#587): what links and people use; every item input takes it."""
     title: str
     status: str
     priority: str

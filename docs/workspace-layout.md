@@ -27,8 +27,8 @@ The parent files and private directories are local to each installation. They ar
 not part of this repository. Use a fresh parent outside any existing Git repository;
 clone or move the public checkout into it without copying any legacy Git history.
 Create private directories with owner-only permissions, or equivalent service-account
-permissions where collaboration is intended. This scaffold creates no real client
-data, credentials, or running application.
+permissions where collaboration is intended. The layout itself creates no real client
+data or credentials.
 
 From the parent, scope commands explicitly:
 
@@ -37,7 +37,7 @@ git -C rheo-stream status
 python3 rheo-stream/scripts/check_repository.py
 ```
 
-Use `rheo-stream/` as the context for future container builds and package publishing.
+Use `rheo-stream/` as the context for container builds and package publishing.
 Do not publish the parent as an archive or initialize Git there. A parent ignore-all
 file is only a guard against accidental staging; it can be bypassed. Private siblings
 are excluded from the child repository by location, not by the child's `.gitignore`.
@@ -59,24 +59,32 @@ directory. For example:
 }
 ```
 
-This is an operator path map for the initial scaffold, not a versioned runtime API.
-There is no automatic loader yet. When implemented, the host should accept an
-explicit configuration location, validate and resolve its paths, then supply scoped
-storage to modules. Do not make the source tree writable to store personalization.
-Deployment policy must constrain path resolution, including traversal and symlink
-escapes; an incoming event, model argument, or tenant setting cannot select a host
-directory. Credentials belong in the selected secret store, not in this map.
+This is an operator path map, not a versioned runtime API, and the application does
+not read it. The application uses one data root instead: the directory
+`RHEO_DATA_ROOT` names, or a container or platform default. Its layout is fixed:
+`config/deployment.toml` for private deployment settings, `secrets/` for file secrets,
+`workspaces/<workspace id>/` for each workspace's uploads, exports and runs, `logs/` and
+`models/` (`packages/core/src/rheo_core/storage/data_root.py`). Startup refuses a data
+root inside the source checkout (except `.rheo-local/`, and only when `RHEO_DATA_ROOT`
+names it) and a symlink whose target escapes its parent, so a data root under the
+parent's `workspaces/` works. Modules get a directory only by asking for a purpose
+(uploads, exports, scratch); they cannot name a path. Do not make the source tree
+writable to store personalization. An incoming event, model argument, or tenant setting
+cannot select a host directory. Credentials belong in the selected secret store, not in
+this map.
 
 The editor workspace root is a filesystem convenience. It is not an authenticated
-rheoStream workspace and does not replace workspace or member authorization. A
-single `workspaces/` data root may eventually contain several isolated application
-workspaces managed by the host. Avoid deriving authorization from folder names.
+rheoStream workspace and does not replace workspace or member authorization. One data
+root holds a directory for each application workspace (`workspaces/<workspace id>/`),
+managed by the host. Avoid deriving authorization from folder names.
 
 Private modules can use the same contracts as public modules, but their presence
-on disk must not cause automatic discovery or execution. Installation and explicit
-registration still require the module lifecycle checks. Production packaging must
-deliberately include authorized private extensions without publishing their source
-or bundling their configuration and customer data into public artifacts.
+on disk must not cause automatic discovery or execution. Core loads only the module ids
+named in the deployment's `modules.installed` setting, found through the `rheo.modules`
+entry-point group, and a workspace still has to install and enable each one.
+Production packaging must deliberately include authorized private extensions without
+publishing their source or bundling their configuration and customer data into public
+artifacts.
 
 ## Private instructions and new sessions
 
@@ -125,7 +133,8 @@ still do not protect a file already tracked on an older branch.
 - Scope indexing, file watching, and tooling to the directories they need. The
   directory arrangement is not a sandbox for an agent or process with filesystem access.
 - Backups remain private and need their own access, retention, and restore policy.
-  Git does not back up these sibling directories, and this scaffold schedules no backups.
+  Git does not back up these sibling directories, and this layout schedules no backups.
+  The flagship's nightly backups are described in the [deployment guide](../deploy/README.md#backups).
 
 Installed applications may use an OS application-data directory instead. Hosted
 deployments use operator-selected private databases and file/object storage; they
