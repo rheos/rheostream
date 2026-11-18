@@ -82,7 +82,7 @@ def applied(ledger: Ledger) -> list[Applied]:
     )
 
 
-def owed(ledger: Ledger) -> dict[str, Row[Any]]:
+def owed(ledger: Ledger) -> dict[str, Row[*tuple[Any, ...]]]:
     return {
         row.period_label: row for row in ledger.conn.execute(select(obligation)).all()
     }

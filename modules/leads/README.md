@@ -123,21 +123,23 @@ uses canonical references and Recallatron's own deletion rules; unrelated memori
 survive and any participant failure rolls back the transaction. Leads also works in
 workspaces where Recallatron was never installed.
 
-Export format seven covers the owned tables, including dated follow-up history,
-each assessment's evidence digest and the job feed's connection status, posting
-dedupe rows and account choices. It never carries the job feed's token reference,
-registered client, run claim, backoff or pending authorization: a restored collector
-reads "authorization required", has no schedule, and registers a fresh client when the
-owner reconnects. Older-format archives require a matching older
-host for restore; the core refuses format mismatches. Take a full database backup
-before upgrading from a previous Leads schema; rollback means restoring that backup
-with the previous image, not downgrading the additive 0005_followup_reminders or
+The Leads export (format fourteen, declared in the manifest) covers the owned tables,
+including dated follow-up history, each assessment's evidence digest and the job feed's
+connection status, posting dedupe rows and account choices. It never carries the job
+feed's token reference, registered client, run claim, backoff or pending authorization:
+a restored collector reads "authorization required", has no schedule, and registers a
+fresh client when the owner reconnects. Older-format archives require a matching older
+host for restore; the core refuses format mismatches. The schema head is
+`0020_current_handoff`, which follows `0018_invited_jobs` directly. Take a full database
+backup before upgrading from a previous Leads schema; rollback means restoring that
+backup with the previous image, not downgrading the additive 0005_followup_reminders or
 0006_assessment_evidence_digest migrations. Restore preserves source identities,
 replaces only a fresh seed and strips deployment-local signing handles. The populated
-round-trip test also exercises Relationships through the real archive format. Signed website intake is available as described below. Import runners, email adapters
-and live source activation remain separate work.
+round-trip test also exercises Relationships through the real archive format. Signed
+website intake is available as described below. Import runners, email adapters and live
+source activation remain separate work.
 
-Export format fourteen adds each handoff's attempt count, its Current project
+Format fourteen added each handoff's attempt count, its Current project
 projection and the qualification its request was made against. A workspace export
 carries no core external action, so a handoff that was still pending restores as
 `unresolved` with `restored_unresolved`: nothing can prove whether its item was made,
@@ -242,6 +244,19 @@ sighting is collected again and, if the posting still qualifies as a discovery, 
 a new opportunity. Erasing only an observation also removes that memory; the next
 sighting is delivered again and refreshes the opportunity that still tracks it.
 
+**Pasting jobs.** Without a feed, or for a job the feed did not return, an owner or member
+can paste instead. `leads.jobfeed.paste` takes a Job search pipeline, a `kind` and the
+pasted `content`: `search_page` for a copied search-results page (its HTML), or `posting`
+for one full posting's copied text with its `posting_url`. The job queue's **Paste jobs**
+and the job page's **Paste the full posting** call it. Each job is keyed by the posting id
+in its link on a configured job host (`leads.jobfeed.job_hosts`); one without that id is
+skipped and counted. Pasted jobs go through intake on the pipeline's own job paste
+connection, created on first use, and route like the feed: they attach to the opportunity
+that already holds that posting id, else create one. A search tile is only a snippet and
+never becomes the description; only a full posting supplies one. Pasting identical content
+again counts a duplicate and records nothing new. The operation refuses
+`capability_disabled` while job search is off.
+
 ## Job scoring
 
 Every open opportunity in a Job search pipeline gets a score you can triage by: the
@@ -266,11 +281,13 @@ failing clauses as its reasons, and no score. Unknown payment is a condition to
 confirm, not a failure.
 
 **Optional Jev pre-filter** runs after tier 1 and before tier 2, once a full
-posting exists. It is off by default and needs both deployment enablement and an
-explicit workspace opt-in. It sends the posting, candidate evidence and scoring
+posting exists. It is off by default and needs both deployment enablement
+(`runtime.jev.enabled`) and an explicit workspace opt-in (`leads.scoring.prefilter_enabled`
+set to true). It sends the posting, candidate evidence and scoring
 policy to TypeSafe System One for typed judgments. Code combines those judgments
 into a preliminary estimate; only a confident estimate below the workspace threshold
-(default 50/100) holds the job. Equality passes. Low-confidence experience judgments
+(`leads.scoring.prefilter_threshold`, 1 to 100, default 50) holds the job. Equality
+passes. Low-confidence experience judgments
 pass unless a separate clear exclusion, unmet mandatory requirement or goal mismatch
 already holds the job. Missing price alone never counts as poor economics.
 
@@ -306,6 +323,15 @@ while more wait. A job is scored again when its title, description, price or pay
 status changes, or when its proposal count, spend, rating, reviews or hire rate moves
 into another bracket; a profile change does not rescore jobs that already have a score.
 `leads.scoring.model_id` picks the model (empty uses the CLI's default).
+
+**Too old to score.** A job still waiting `leads.scoring.max_age_hours` (default 24)
+after it was imported is set aside without a model call: its scoring state is
+`failed` with the word `too_old`, and no assessment is written. This keeps a sweep
+that resumes after a long pause, such as the usage limit, on the recent jobs instead
+of the whole backlog. A job that already had a score keeps it. A job the owner
+promoted, one the client invited the owner to, and one that was waiting for its full
+posting (so a posting pasted days later still gets it scored) are never too old. Setting the profile and
+re-queueing failed jobs both leave these jobs aside. `0` turns the cutoff off.
 
 **Failures.** A failure of the model login or the deployment (a usage limit, an
 expired or refused login, a missing executable, a crashed or timed-out run) makes
@@ -486,6 +512,19 @@ and processing receipts. The main navigation has one entry per module; list, pip
 capture and connection controls stay inside Leads. Board counts describe the current page,
 not the entire pipeline. Drafts never send a message.
 
+The Leads home (`/`) is the job queue: pipeline, stage and sort choices (Score or Newest),
+then one card per opportunity with its badges (Invited, New client, Draft, Notes), score,
+stage select, open-posting link, Copy job ID and Dismiss. With a Job search pipeline it
+opens on that pipeline's first open stage; otherwise on open stages of all pipelines. The
+other routes are `/review` (the review queue), `/scoring` (the Scoring view),
+`/opportunities` (the list), `/board`, `/detail`, `/capture`, `/receipt` and
+`/connections`. A Job search job's detail page has Posting, Questions, Proposal and Pricing
+tabs, with notes and follow-up below them and edits in dialogs. Jobs show and link by a
+short ID: the last 8 hex characters of the opportunity's UUID (its random part), longer only
+when two opportunities share a tail. Every opportunity reference input, MCP tools included,
+takes the full reference, a typed `leads.opportunity:<tail>` or a bare tail, and refuses an
+ambiguous tail rather than guessing.
+
 In a workspace where an owner has installed and enabled Relationships and Leads:
 
 1. Open **Connections**, create a pipeline, and route the seeded manual connection to it.
@@ -507,7 +546,8 @@ remain readable and require the operation API. Routing edits include the ordered
 so a stale form cannot overwrite newer configuration. Opportunity edits use record revisions.
 
 Appearance, in the header's settings menu, offers GreenStream dark (default), Novadiem dark
-and Novadiem light. A cookie on the deployment's base host remembers the selection for every
+and Novadiem light, plus a time zone: Automatic (the browser's) or a fixed zone. Leads shows
+times in that zone. A cookie on the deployment's base host remembers each choice for every
 module host. All three use Geist; the Novadiem pair shares its corner geometry, and
 confirmation chrome stays identical across all themes.
 

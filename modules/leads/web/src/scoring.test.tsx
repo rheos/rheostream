@@ -57,6 +57,8 @@ const VIEW: Row = {
   queued_total: 1,
   waiting_total: 0,
   failed_total: 2,
+  too_old_total: 3,
+  max_age_hours: 24,
   median_call_seconds: 40,
   eta_seconds: 40,
   batches: [
@@ -185,6 +187,10 @@ describe("the Scoring view's words", () => {
       ).title,
     ).toContain("unreadable answer");
     expect(stageChip({ stage: "untracked" }, NOW).mark).toBe("new");
+    expect(stageChip({ stage: "too_old" }, NOW)).toMatchObject({
+      mark: "old",
+      tone: "dim",
+    });
     expect(outcomeLabel({ purpose: "scoring", outcome: "answered" })).toBe(
       "Scored",
     );
@@ -231,6 +237,8 @@ describe("the Scoring view", () => {
     expect(html).toMatch(/<details[^>]*><summary>1 held by the filters/);
     expect(html).toContain('href="/leads/review"');
     expect(html).toContain('aria-label="Put 2 failed jobs back in line"');
+    expect(html).toContain("3 too old to score");
+    expect(html).toMatch(/still waiting 24 hours/);
     expect(html).toContain('aria-current="page"');
     // No posting text and no money anywhere on the page.
     expect(html).not.toContain("$");

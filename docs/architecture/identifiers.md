@@ -91,8 +91,12 @@ collected postings would all look alike.
   it then asks for more characters, as a git short hash does.
 - A record type opts in by declaring a `tail_lookup` in its manifest
   ([owned record types](module-contract.md#owned-record-types)). Without one, a type takes
-  full references only. Lookup is a scan on the tail today, which is fine at a workspace's
-  scale; an expression index is a module migration away if it ever is not.
+  full references only. Three types declare it today. `leads.opportunity`: Leads' job links
+  (`/detail?ref=<tail>`), its Copy job ID buttons and every opportunity reference input take
+  short IDs. `current.item` and `current.project`: Current's item links (`/item?ref=<tail>`),
+  its copyable item ID, `current.item.get` and every item or project reference input take
+  them, and its item reads return a `short_id`. Lookup is a scan on the tail, which is fine
+  at a workspace's scale; an expression index is a module migration away if it ever is not (#431).
 - An external provider's own id (a job board's posting id) is a separate field and never a
   short ID.
 
@@ -143,7 +147,7 @@ aliases; a module that wants "the canonical reference" offers a read operation f
 | Web route | path mode `/<module>/...`; subdomain mode `<host>/...` | see [topology](identity-and-topology.md) |
 | Configuration key | `<module>.<section>.<key>` | `recallatron.retention.days` |
 | Job kind | `<module>.<name>` | `recallatron.retention_sweep` |
-| Consumer id | `<module>.<handler>` | `recallatron.on_record_deleted` |
+| Consumer id | `<module>.<handler>` | `leads.process_delivery`, `recallatron.automatic_memory` |
 | Secret scope | `<component>[.<name>]` | `runtime.claude_cli`, `identity.github`, `storage` |
 
 The registry refuses any registration whose name does not start with the registering module's id
@@ -159,7 +163,9 @@ validation, and refuses any module tool, job kind or consumer id that is already
 different declaration: a module registration refuses, it never replaces.
 
 **Named deviation: the core's own tools carry no prefix.** `workspace_status`, `operations_get`,
-`operations_list`, `audit_list` and `harness_get_note` are registered under the `core` origin
+`operations_list`, `audit_list`, the discover-then-call trio `operations_catalog`,
+`operations_describe` and `operations_call`, and the test-only `harness_get_note` are registered
+under the `core` origin
 without a `core_` prefix, so the rule is enforced for modules only. A module whose id is the first
 word of a core tool (a module named `workspace` declaring `workspace_status`) passes the prefix
 check and is then refused by the tool registry as a duplicate name, loudly, rather than replacing

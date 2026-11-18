@@ -11,7 +11,8 @@ workspace and never think about it. A studio can give several people access to t
 workspace, and an operator can host several workspaces side by side.
 
 Inside the database, the core and each installed module keep their tables in their own
-schema: `core`, `recallatron`, `relationships`, `leads`, `current`.
+schema: `core`, `recallatron`, `relationships`, `leads`, `current` and `finance`. A
+module's schema exists only in a workspace that has installed it.
 
 ## What you can do with it
 
@@ -59,8 +60,8 @@ operator tightens it.
 
 A secret is named as `secret://file/...` or `secret://env/...` and lives in a file store
 under the data root or in an environment variable. Only components the core hands a scope
-to (the Claude CLI adapter, the identity provider, the storage layer, the intake receiver)
-can resolve one, and only under their own prefixes. Domain modules get no scope at all, so
+to (the Claude CLI and Jev adapters, the identity provider, the storage layer, connector
+credentials and the outbound OAuth client, the internal listener) can resolve one, and only under their own prefixes. Domain modules get no scope at all, so
 they have no way to call `resolve`. Even the references do not travel: a model run names a
 credential slot such as `model`, and the adapter maps it to a reference privately at the
 moment it starts the process.

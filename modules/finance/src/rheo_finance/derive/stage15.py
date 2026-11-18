@@ -223,7 +223,7 @@ def _stored_payees(uow: UnitOfWork) -> _Payees:
 
 
 def _line(
-    group: Sequence[Row[Any]], hint_rows: Sequence[TransferHintRow]
+    group: Sequence[Row[*tuple[Any, ...]]], hint_rows: Sequence[TransferHintRow]
 ) -> _Line | None:
     """One txn from its source lines, the primary first; a fee line is None."""
     first = group[0]
@@ -269,7 +269,7 @@ def _lines(
             document_line.c.fee_type,
         ).where(*stage8.LINES, txn.c.origin != fees.FEE_ORIGIN)
     ).all()
-    groups: dict[uuid.UUID, list[Row[Any]]] = defaultdict(list)
+    groups: dict[uuid.UUID, list[Row[*tuple[Any, ...]]]] = defaultdict(list)
     for row in rows:
         groups[row.id].append(row)
     found = (_line(group, hint_rows) for group in groups.values())

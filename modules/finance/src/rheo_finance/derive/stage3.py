@@ -171,7 +171,7 @@ def _document_lines(uow: UnitOfWork, overlap_days: int) -> Lines:
     # depend on any other document.
     occurrences: dict[uuid.UUID, _Occurrences] = defaultdict(_Occurrences)
     lines: dict[tuple[uuid.UUID, uuid.UUID], list[overlap.Line]] = defaultdict(list)
-    extra: dict[uuid.UUID, Row[Any]] = {}
+    extra: dict[uuid.UUID, Row[*tuple[Any, ...]]] = {}
     incomplete = 0
     for row in rows:
         if row.posting_date is None or row.amount is None or row.currency is None:

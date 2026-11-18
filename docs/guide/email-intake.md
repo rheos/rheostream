@@ -69,7 +69,9 @@ Each item carries the thread id as its source reference and the newest message i
 someone other than the workspace owner as its fingerprint. Current finds an existing item
 by source and decides what a repeat means (see [repeated signals](current.md#repeated-signals-become-one-item)).
 The owner's own replies never change the fingerprint, so answering a thread does not
-reopen its item. If a thread holds two actions, the item's body names both.
+reopen its item. An item marked done by hand also stays done when the run reads its
+thread again with the same newest message; only new mail from someone else reopens it.
+If a thread holds two actions, the item's body names both.
 
 ### The fields
 

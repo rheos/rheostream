@@ -121,7 +121,7 @@ class IngestResult(BaseModel):
     dropped: tuple[str, ...]
 
 
-def _active_enrollment(uow: UnitOfWork, token_id: UUID) -> Row[Any] | None:
+def _active_enrollment(uow: UnitOfWork, token_id: UUID) -> Row[*tuple[Any, ...]] | None:
     """The active enrollment holding ``token_id``, read ``FOR SHARE``, or ``None``."""
     return uow.connection.execute(
         select(evidence_enrollment)

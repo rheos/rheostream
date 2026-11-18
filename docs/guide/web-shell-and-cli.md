@@ -22,19 +22,22 @@ In the shell:
 - Sign in with GitHub. A fresh deployment admits exactly one person (the first account)
   and then closes signup unless the operator opens it.
 - Switch the active workspace. Every request after that routes there with no id in any
-  URL.
+  URL. The switcher shows only when you belong to more than one workspace.
 - Use each enabled module's screens: Recallatron's browse, search and possible
-  duplicates; Leads' list, board, capture, connections and job views; Current's queue,
-  items, projects and areas.
+  duplicates; Leads' job queue, review queue, scoring page, list, board, capture,
+  connections and job pages; Current's queue, items, projects and areas.
 - Approve or refuse a held operation, reading exactly what it will do.
-- Pick a theme: GreenStream dark (the default), Novadiem dark or Novadiem light.
-- See a banner on every screen while any background delivery has failed.
+- Open the settings button in the header for the workspace, appearance and sign-out.
+  Appearance holds the theme (GreenStream dark, the default, Novadiem dark or Novadiem
+  light) and the time zone screens show times in.
 
 From the command line:
 
 - `rheo account create`, `rheo workspace create|repair|list|status|export|restore`,
   `rheo member add`
-- `rheo token issue|list|revoke|events`, including `--discover` for discover-then-call
+- `rheo token issue|list|revoke|events`, with `--set` naming a package set (`read_only`,
+  `agent_default`, `cli_full`, `alert_writer` or `module_read:<module>`) and `--discover`
+  for discover-then-call
 - `rheo migrate`, `rheo module check|upgrade`
 - `rheo evidence enroll|rotate|revoke` for the Claude Code bridge
 - `rheo connector export-key` to hand a website its signing key
@@ -81,6 +84,12 @@ through the identity host, which writes a single-use 60-second grant bound to a 
 only in this browser, so a grant minted in an attacker's browser cannot log you into their
 session. Logging out on any host revokes the one session behind every host's secret.
 
+A host can be left holding a cookie whose session has ended. The web tier only checks
+that a cookie is present, so the signed-out panel links to `GET /auth/restart?return=`
+on the same host. It clears the cookie only when its session is no longer live, then
+returns to the page, which starts a fresh sign-in. `return` must name the host it was
+called on, and only its path and query are used.
+
 ### Path mode and subdomain mode are one implementation
 
 One routing configuration names every host, and both codebases build every link through
@@ -92,6 +101,17 @@ runs both modes.
 A theme is 43 tokens in six groups: palette, state, form controls, type, shape and
 density, and six chrome tokens reserved for built-in themes. Module screens are written
 against the tokens, and a third-party theme cannot change how an approval reads.
+
+The chosen theme lives in the `rheo_theme_site` cookie. In subdomain mode it is set on
+the base host, so every module host shares one choice.
+
+### Times show in the viewer's zone
+
+Screens render on the server, which runs in UTC, so the browser's zone reaches it in the
+`rheo_tz_site` cookie, also on the base host. The shell writes `auto:<zone>` from what the
+browser reports, and a zone picked under Appearance is stored as `set:<zone>`, which
+detection never replaces. Module screens format times in that zone, leave date-only
+values unshifted, and label a time UTC only when no zone is known.
 
 ### Platform independence
 
@@ -114,7 +134,10 @@ It reports the connection budget against Postgres's limit, the relation between 
 time and the worker's reconcile interval, whether the database role can create the
 extensions loaded modules need, each bridge enrollment's token expiry, the connector
 sign-in surface, and connector grants near their cap or unable to refresh. An hourly host
-job can turn every `FAIL` line into a ticket that pages.
+job (`deploy/doctor/rheostream-doctor-alert.py`) sends one page when a check starts
+failing and one notice when it recovers. It remembers what it paged in a state file on
+the host, so that file must stay writable: when the job cannot write it, it still sends,
+exits 2, and the next run sends the same page or notice again.
 
 ### The API is one route
 
@@ -142,6 +165,7 @@ core file.
   [processes](../architecture/overview.md#processes)
 - Code: [shell](../../apps/web/src/shell),
   [themes](../../apps/web/src/theme),
+  [viewer time zone](../../apps/web/src/time),
   [web contract](../../packages/web-contract),
   [internal routes](../../apps/core/src/rheo_app_core/internal_routes.py),
   [auth routes](../../apps/core/src/rheo_app_core/auth_routes.py),

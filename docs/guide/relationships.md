@@ -51,7 +51,8 @@ just a hint.
 
 Without strong evidence a new party is created, and every weak match becomes an open
 candidate: the same email at any verification, the same phone, a similar person name
-(trigram similarity of at least 60%, up to 10 candidates), or a domain or organization
+(trigram similarity of at least 60%, up to 10 candidates; both are settings, and
+those are the defaults), or a domain or organization
 name that matches an existing organization. A new organization hint with no match creates
 the organization and a dated affiliation, because creating is not matching.
 
