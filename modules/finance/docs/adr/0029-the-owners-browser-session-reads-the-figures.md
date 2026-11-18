@@ -38,6 +38,9 @@ that kept amounts from the owner's screen was finance's own view.
 - The registered output schema gains the restricted fields, optional. A client that
   reads them must handle `None`.
 - Widening a token's view of amounts stays a separate decision (#568).
+- The owner's browser is now the one way a figure can reach a model: a browser agent
+  that reads a finance page sends what the page shows. Only the owner's own browser
+  has the page.
 
 Partly replaces ADR-0028's "No restricted field reaches a model" bullet: still true of
 every model and token; no longer true of the owner's browser.
