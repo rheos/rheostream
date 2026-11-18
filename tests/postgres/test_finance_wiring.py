@@ -83,7 +83,7 @@ from rheo_core.work.jobs import acquire_lease, enqueue_job
 from rheo_core.work.kinds import JobKindRegistry
 from rheo_core.work.loop import HEARTBEAT_SECONDS, LEASE_SECONDS, visit_workspace
 from rheo_core.work.schedules import run_due_schedules
-from rheo_finance import db
+from rheo_finance import catalogue, db
 from rheo_finance.contracts import Role as FinanceRole
 from rheo_finance.contracts import SafetyClass as FinanceSafetyClass
 from rheo_finance.contracts import Tiered
@@ -655,8 +655,11 @@ SESSION_HOST: Final = "example.test"
 
 
 def test_only_the_eight_opt_in_reads_reach_core_registries(finance: Finance) -> None:
-    """D8 (RS-6d D3): exactly the eight reads and their tools, each registration
-    ``explicit_only``, each output with nothing restricted or unrenderable."""
+    """D8 (RS-6d D3, ADR-0029): exactly the eight reads and their tools, each
+    registration ``explicit_only`` and owner-only. Each registered output is the owner
+    view: its shared view has nothing restricted, and every field the owner view adds
+    is one core itself finds restricted, so core's tool facade drops it from any tool
+    answer. Nothing in either view is unrenderable."""
     operations = finance.surfaces.operations
     names = {name for name in operations.names() if name.startswith("finance")}
     tools = {
@@ -664,13 +667,24 @@ def test_only_the_eight_opt_in_reads_reach_core_registries(finance: Finance) -> 
     }
     assert names == FINANCE_READS
     assert tools == FINANCE_TOOLS
+    specs = catalogue.load_all()
+    restricted_somewhere = False
     for name in names:
         registered = operations.lookup(name)
         assert registered is not None and registered.explicit_only, name
         assert registered.declaration.roles == frozenset({Role.OWNER}), name
         output = registered.declaration.output
-        assert restricted_fields(output) == (), name
+        model = specs[name].output_model
+        assert output is reads.owner_view(model), name
+        shared = reads.output_view(model)
+        assert restricted_fields(shared) == (), name
+        assert unrenderable_paths(shared) == (), name
         assert unrenderable_paths(output) == (), name
+        added = set(output.model_fields) - set(shared.model_fields)
+        restricted_top = {path.split(".", 1)[0] for path in restricted_fields(output)}
+        assert added <= restricted_top, (name, added - restricted_top)
+        restricted_somewhere = restricted_somewhere or bool(restricted_fields(output))
+    assert restricted_somewhere  # the control: the owner view does add amounts
     # The control: core's own operations are registered, and are not opt-in.
     core_status = operations.lookup("core.workspace.status")
     assert core_status is not None and not core_status.explicit_only

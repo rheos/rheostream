@@ -564,7 +564,7 @@ Recorded from the ratified requirements; each is configuration a self-hoster may
 | apex `rheo.stream` | Project and marketing page | Not the application. Never receives the session cookie. |
 | `circuit.rheo.stream` | The application shell and the workspace switcher | `web` |
 | `auth.rheo.stream` | Login, the OAuth callback, the session grant, and connector sign-in's `/auth/oauth/*` (register, authorize, consent, token) | `core` |
-| `leads.`, `current.`, `recall.`, `relationships.` | Module surfaces | `web` |
+| `leads.`, `current.`, `finance.`, `recall.`, `relationships.` | Module surfaces | `web` |
 | `api.rheo.stream` | HTTP API and intake | `core`, token auth |
 | `mcp.rheo.stream` | MCP facade, and connector sign-in's two OAuth metadata documents when it is configured | `core`, token auth; the metadata is public `GET` |
 | `docs.rheo.stream` | Documentation | Not the application. |
@@ -574,7 +574,7 @@ Recorded from the ratified requirements; each is configuration a self-hoster may
 
 **What the flagship serves today.** Run 0d deployed the reference instance with
 `deploy/compose.flagship.yaml` (PR #144). It routes `circuit.`, `auth.`, `recall.`, `leads.`,
-`current.`, `api.` and `mcp.`, plus the `recallatron.` and `app.` redirects. Relationships has no
+`current.`, `finance.`, `api.` and `mcp.`, plus the `recallatron.` and `app.` redirects. Relationships has no
 web surface, so `relationships.` is not routed; `docs.` is not configured either. A routed module
 host shows a module's screens only in a workspace that has installed and enabled that module. The
 apex serves the project page from elsewhere.

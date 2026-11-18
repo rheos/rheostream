@@ -34,6 +34,8 @@ Rule 2, over data-shaped files only (everything under ``tests/fixtures/`` and
 The epoch allow-pattern is exactly ``1[0-9]{12}`` (2001 to 2033); do not widen it.
 Fractional digit runs (an 8-decimal quantity) are digit runs too and need the 999
 prefix in fixtures. Claude Code's settings files (``.claude/*.json``) are not checked.
+The web package's ``web/package.json`` and ``web/tsconfig.json`` are not statement-type,
+by exact path; rule 2 still scans them.
 Rule 3, over every file checked: a path with a ``.bureau`` component anywhere in it
 (compared without case) fails unless it is exactly ``.bureau/regression/run.sh`` or a
 fixture ``.bureau/regression/NN-<slug>.md`` (two or three digits), as a regular file.
@@ -61,6 +63,10 @@ from pathlib import PurePosixPath
 SYNTHETIC_DIR = "tests/fixtures/synthetic/"
 MANIFEST_PATH = SYNTHETIC_DIR + "MANIFEST.toml"
 REFERENCE_DIR = "src/rheo_finance/reference/"
+# The web package's two config files, by exact path: a module web package needs both
+# (#584), and they are configuration, not exports. They stay data-shaped, so rule 2
+# still scans them; any other json under web/ is statement-type as before.
+WEB_CONFIG = frozenset({"web/package.json", "web/tsconfig.json"})
 FIXTURES_DIR = "tests/fixtures/"
 DATA_DIRS = (FIXTURES_DIR, REFERENCE_DIR)
 
@@ -196,7 +202,7 @@ def is_statement_type(path: str) -> bool:
         return False
     suffix = PurePosixPath(path).suffix.lower()
     if suffix == ".json":
-        return not path.startswith(REFERENCE_DIR)
+        return not path.startswith(REFERENCE_DIR) and path not in WEB_CONFIG
     return suffix in STATEMENT_EXTENSIONS
 
 
