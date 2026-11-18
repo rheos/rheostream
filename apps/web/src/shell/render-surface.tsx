@@ -1,4 +1,4 @@
-import type { ComposedModule, Screen, ShellApi } from "@rheo-stream/web-contract/screen";
+import { preferenceCookie, type ComposedModule, type Screen, type ShellApi } from "@rheo-stream/web-contract/screen";
 import { cookies } from "next/headers";
 import { themeId } from "@/theme/builtins";
 import { readThemeCookie } from "@/theme/theme-cookie";
@@ -39,6 +39,7 @@ import {
 } from "@/shell/compose";
 import { ApprovalDetail } from "@/shell/approval-detail";
 import panel from "@/shell/panel.module.css";
+import { savePreference } from "@/shell/preference-action";
 import { refreshScreen } from "@/shell/refresh-screen";
 import { submitModuleForm } from "@/shell/submit-form";
 import { moduleScreenCall } from "@/shell/screen-call";
@@ -486,6 +487,11 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
     approvalHref: (approvalId) => approvalHref(config, approvalId),
     refresh: refreshScreen,
     timeZone: timeZone?.zone ?? "UTC",
+    preference: (name) => {
+      const cookie = preferenceCookie(owner.id, name);
+      return cookie === null ? undefined : jar.get(cookie)?.value;
+    },
+    savePreference: savePreference.bind(null, owner.id),
   };
   return (
     <ShellFrame theme={theme} timeZone={timeZone} health={health} account={account} navigation={navigation} homeHref={home}>

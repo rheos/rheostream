@@ -14,7 +14,13 @@ import {
 } from "./jobfeed-panel";
 import { JobHeader, JobQueue, type Choice } from "./queue-view";
 import type { Sort } from "./queue";
-import { postingUrl } from "./queue";
+import {
+  cookieText,
+  parsePrefs,
+  postingUrl,
+  prefsQuery,
+  QUEUE_PREFERENCE,
+} from "./queue";
 import type { FinishState } from "./finish-connecting";
 import { PasteCapture } from "./paste-capture";
 import { JobPaste } from "./job-paste";
@@ -584,7 +590,18 @@ export function queueScope(catalog: Row[], query: ScreenProps["query"]) {
 }
 export async function queue({ shell, query }: ScreenProps) {
   const catalogResult = await read(shell, "leads.ui.catalog");
-  const scope = queueScope(items(catalogResult), query);
+  const explicit = ["pipeline", "stage", "full", "sort"].some(
+    (name) => query[name] !== undefined,
+  );
+  // A bare URL opens the view saved last time, already on this render (#369);
+  // queueScope checks every saved value against the catalog like a URL's.
+  const saved = explicit ? undefined : shell.preference?.(QUEUE_PREFERENCE);
+  const scope = queueScope(
+    items(catalogResult),
+    saved === undefined
+      ? query
+      : { ...query, ...prefsQuery(parsePrefs(cookieText(saved))) },
+  );
   const result =
     catalogResult.state === "ok"
       ? await read(shell, "leads.ui.queue", scope.input)
@@ -659,9 +676,9 @@ export async function queue({ shell, query }: ScreenProps) {
           stage={scope.stage}
           hideFull={scope.hideFull}
           sort={scope.sort}
-          explicit={["pipeline", "stage", "full", "sort"].some(
-            (name) => query[name] !== undefined,
-          )}
+          explicit={explicit}
+          serverSaved={saved !== undefined}
+          savePreference={shell.savePreference}
           filtered={
             scope.pipeline !== scope.fallback ||
             scope.stage !== scope.defaultStage

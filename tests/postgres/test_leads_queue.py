@@ -311,3 +311,24 @@ def test_score_sort_and_cap_filter_apply_before_the_limit(intake: Intake) -> Non
     assert order(ref=crowded, hide_full=True) == ["Crowded"], "a ref ignores filters"
     summary = cards(intake)["Older high fit"]["assessment"]["summary"]
     assert len(summary) == SUMMARY_CHARS + 1 and summary.endswith("…")
+
+
+def test_newest_sorts_by_the_posting_date_the_card_shows(intake: Intake) -> None:
+    """A job posted days ago that arrived last sorts below a job posted today, and
+    a job with no posting date sorts by the day it arrived (#369)."""
+    setup(intake)
+    job_pipeline(intake)
+    capture(intake, "fresh", {"subject": "Posted today", "posted_on": "2099-01-02"})
+    capture(intake, "undated", {"subject": "No posting date"})
+    capture(intake, "stale", {"subject": "Posted long ago", "posted_on": "2000-01-01"})
+
+    def order(**query: Any) -> list[str]:
+        return [r["title"] for r in ok(intake, "ui.queue", **query).items]
+
+    # Arrival order is fresh, undated, stale; the posting dates put the stale one
+    # last and the undated one by its arrival day, between the two.
+    assert order(sort="newest") == [
+        "Posted today",
+        "No posting date",
+        "Posted long ago",
+    ]
