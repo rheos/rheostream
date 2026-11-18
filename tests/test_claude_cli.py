@@ -569,6 +569,48 @@ def test_file_secret_resolves_into_the_expected_child_env(
     assert env_names & _CREDENTIAL_VARIABLES == {variable}
 
 
+def test_a_replaced_token_file_reaches_the_next_spawn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The flagship's account switcher (rheos/reauth-web) relies on this: it moves
+    the deployment to another Claude account by replacing the token file, with no
+    restart, and the next run must pick the new token up (issue #596)."""
+    stub = _write_stub(tmp_path / "claude-stub", _CAPTURE_STUB)
+    credential_ref = "secret://file/runtime/claude-cli/oauth-token"
+    _configure(
+        monkeypatch,
+        tmp_path,
+        executable=stub,
+        kind="oauth_token",
+        credential_ref=credential_ref,
+    )
+    secret_path = (
+        tmp_path
+        / "data-root"
+        / "secrets"
+        / credential_ref.removeprefix("secret://file/")
+    )
+    secret_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime = ClaudeCliRuntime()
+    digests = []
+    for name, token in (("first", _OAUTH_SECRET), ("second", "sk-ant-oat-test-other")):
+        # Replace the way the switcher does: a new file renamed over the old one.
+        staged = secret_path.with_name("oauth-token.tmp")
+        staged.write_text(token)
+        staged.chmod(0o600)
+        staged.replace(secret_path)
+        (tmp_path / name).mkdir()
+        spawn = _spawn(tmp_path / name)
+        event = drain_until_terminal(runtime.start(_request(), spawn=spawn))
+        assert event.type == "final_output"
+        digests.append((Path(spawn.work_dir) / "oauth_token_sha256.txt").read_text())
+
+    assert digests == [
+        hashlib.sha256(_OAUTH_SECRET.encode()).hexdigest(),
+        hashlib.sha256(b"sk-ant-oat-test-other").hexdigest(),
+    ]
+
+
 def test_empty_api_key_ref_is_credential_invalid_before_spawn(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -130,6 +130,66 @@ def test_a_usage_limit_is_logged_deferred_and_pauses_the_queue(
     assert data["summary"][0]["deferred"] == 1
 
 
+def test_an_owner_ends_the_wait_and_a_claimed_job_keeps_its_lease(
+    scored: Scoring,
+) -> None:
+    for posting in ("~02100", "~02101", "~02102"):
+        scored.paste(posting, FULL.format(title=posting, what="pipeline", activity=""))
+    scored.model(failure(FailureKind.USAGE_LIMITED))
+    scored.set_profile()
+    scored.sweep()
+    assert view(scored)["waiting_total"] == 3
+    attempts = {p: scored.state(p)["attempts"] for p in ("~02100", "~02101")}
+
+    # One job is mid-call: claimed rows are pending with a future retry_after
+    # and no failure word.
+    claimed = the_opportunity(scored.i, "~02102")["id"]
+    lease = datetime.now(UTC) + timedelta(minutes=5)
+    with open_unit_of_work(scored.c.owner) as uow:
+        uow.connection.execute(
+            s.job_score_state.update()
+            .where(s.job_score_state.c.opportunity_id == claimed)
+            .values(retry_after=lease, failure_kind=None)
+        )
+        uow.commit()
+
+    member_id = add_member(
+        scored.i.cluster.backend, scored.i.workspace, Role.MEMBER, display_name="m"
+    )
+    member = context_for_harness(scored.i.workspace, member_id, Role.MEMBER)
+    assert isinstance(member, WorkspaceContext)
+    refused = dispatch(
+        member,
+        "leads.jobscoring.retry_waiting",
+        {},
+        registry=scored.i.surfaces.operations,
+        consumers=scored.i.consumers,
+    )
+    assert not refused.ok
+    before = view(scored)
+    assert before["status"]["state"] == "paused"
+    # The job mid-call is not waiting, so no retry is offered for it.
+    assert before["waiting_total"] == 2
+
+    retried = call(scored.i, scored.c.owner, "leads.jobscoring.retry_waiting")
+    assert retried.count == 2
+    for posting, before in attempts.items():
+        state = scored.state(posting)
+        assert state["state"] == "pending" and state["attempts"] == before
+    assert scored.state("~02102")["retry_after"] == lease
+    data = view(scored)
+    assert data["status"]["state"] != "paused"
+    assert data["queued_total"] == 2 and data["waiting_total"] == 0
+    assert call(scored.i, scored.c.owner, "leads.jobscoring.retry_waiting").count == 0
+
+    scored.model(final(7), final(6))
+    scored.sweep()
+    scored.sweep()
+    scores = {j["title"]: j["score"] for j in jobs(view(scored)).values()}
+    assert scores["~02100"] is not None and scores["~02101"] is not None
+    assert scores["~02102"] is None
+
+
 def test_failures_are_logged_and_an_owner_puts_failed_jobs_back_in_line(
     scored: Scoring,
 ) -> None:
