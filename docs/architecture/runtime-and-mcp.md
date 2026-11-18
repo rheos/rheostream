@@ -425,6 +425,56 @@ provider allow lists, required-parameter enforcement, and a fallback policy that
 receives private context are adapter settings under the operator floor. It changes no domain
 module, which is the point of the second adapter (D4).
 
+## One-shot model questions
+
+A module job that needs one structured answer from a model, with no tools, does not build a
+`RuntimeRequest` itself. It calls `rheo_core.runtime.oneshot.OneShotRunner`, which the worker
+registers over its `claude_cli` adapter. Recallatron's evidence extraction, Finance's model
+steps, and Leads' job scoring, proposal drafting and pricing use it. Leads' three choose
+their model through a module setting (`leads.scoring.model_id`, `leads.proposals.model_id`,
+`leads.proposals.analysis_model_id`; empty leaves the CLI's default). A run is one turn with the CLI's built-in tools disabled, a run token with an empty
+snapshot, nothing pre-approved, the deadline capped by `runtime.max_deadline_seconds`, and a
+throwaway directory the runner tries to remove whatever happens. That removal is best effort: a
+filesystem error is ignored, and nothing sweeps a directory left behind, transcript included.
+The task carries the account the work belongs to, and the [single-account login rule](#the-login-credential-is-bound-to-one-account) applies to it
+as to any run. The runner returns the reply's structured mapping unvalidated; the caller owns the
+schema and checks it. A failure of the run itself raises a fixed word and no task text or model
+output: `OneShotDeferred` when the account's usage limit refused the run (the caller waits without
+spending an attempt), `OneShotCredentialNotOwned`, and `OneShotFailed` for the rest. An error
+raised outside the run (a settings read, token issuance, creating the directory, starting the
+adapter, or the caller's own `heartbeat`) propagates unchanged.
+
+## Typed judgments
+
+A typed judgment is a separate, tool-free protocol (`rheo_contracts.judgment`), not a
+conversational runtime. A `JudgmentRequest` is a model id, a mapping of state and a set of named
+questions (`score` or `noul`); a `JudgmentResult` is a number per question with its confidence and
+token counts, never generated prose. A provider fails only with one of a closed set of kinds
+(`disabled`, `adapter_unavailable`, `credential_invalid`, `input_too_large`, `input_invalid`,
+`output_invalid`, `rate_limited`, `provider_unavailable`, `deadline_exceeded`). The worker
+composes `rheo_core.runtime.judgment.JudgmentRunner`, which bounds a call at 30 seconds and keeps
+the job's lease alive while it waits, over the one shipped provider.
+
+That provider is `rheo_runtimes.jev.JevProvider`, which calls TypeSafe's System One API at a
+fixed HTTPS endpoint: one bounded attempt, no redirects, no ambient proxy, size limits on the
+request and the response, and every answer and token count validated. It needs both an operator
+and the workspace owner. The deployment sets `runtime.jev.enabled = true`,
+`runtime.jev.credential_ref` (the adapter's scope admits only `secret://file/runtime/jev/...` and
+`secret://env/RHEO_TYPESAFE_API_KEY`) and optionally `runtime.jev.model_id` (default
+`jev-latest`). The owner then sets `leads.scoring.prefilter_enabled` to true, which is the consent
+to send that workspace's postings and scoring profile to the provider; deployment defaults cannot
+opt a workspace in.
+
+Its one caller is the Leads scoring pre-filter: after the deterministic first tier and before the
+full model score, a job whose confident estimate is below `leads.scoring.prefilter_threshold`
+(1 to 100, default 50) is held with no final score, for review and promotion in Leads. An
+uncertain estimate (low confidence about experience, when no exclusion, unmet requirement or
+goal mismatch decided first) is never held and goes on to full scoring. Any provider failure
+falls through to full scoring and leaves a content-free failed-call record. Setup and rollback
+are in [the runtimes README](../../runtimes/README.md#jev-typed-judgments). The provider
+receives posting and profile text that has not passed through the
+[context builder](#the-context-builder); the owner's opt-in is what authorizes that.
+
 ## The embedding provider
 
 Embeddings are model-provider calls and sit behind the same kind of seam:
@@ -595,8 +645,9 @@ set instead ([discover-then-call](#discover-then-call)).
   nested inside another output. A plain row that names itself with a `ref` (a list item)
   is dropped whole when that `ref` names an excluded type, as a model whose `ref` does is.
   A class with no marker is untiered and
-  answers its JSON dump with contact values and secret references masked, which is every output
-  model in release one: Recallatron's and the core's tools return the same fields as before,
+  answers its JSON dump with contact values and secret references masked, which is every
+  Recallatron, Current and core output model (Leads, Relationships and Finance's registered
+  views carry markers): Recallatron's and the core's tools return the same fields as before,
   and a contact value inside a memory's text reaches a model as `[email withheld]` or `[phone
   withheld]` unless the allowance below is on. A write-class tool (every class above `read`)
   refuses input carrying one of those mask tokens `input_invalid`, so a model shown masked text
@@ -620,8 +671,9 @@ what it proposed. Approval happens in the web interface (R3 item 8). A tool may 
 approval on behalf of the actor, which is what `approval_required` is, and a destructive tool in
 a token's set is that request right and nothing more.
 
-**Release-one tool set.** Each names one operation and restates its class and roles; the
-operation tables in the module documents are authoritative.
+**The tool set.** Each names one operation and restates its class and roles; the
+operation tables in the module documents are authoritative. Phases one to three are release
+one; the Leads job-search tools, Current and Finance came after it.
 
 | Phase | Tool | Class | Roles |
 | --- | --- | --- | --- |
@@ -634,18 +686,24 @@ operation tables in the module documents are authoritative.
 | Two (memory) | recallatron_correct, recallatron_supersede | mutate | owner, member |
 | Two (memory) | recallatron_forget | destructive | owner, member |
 | Three (relationships) | `relationships_find_party`, `relationships_get_party`, `relationships_list_review` | read | owner, member |
-| Three (relationships) | `relationships_merge_parties`, `relationships_unmerge`, `relationships_resolve_review` | mutate | owner, member |
+| Three (relationships) | `relationships_create_contact`, `relationships_merge_parties`, `relationships_unmerge`, `relationships_resolve_review` | mutate | owner, member |
 | Three (relationships) | `relationships_delete_party` | destructive | owner |
-| Three (leads) | `leads_search`, `leads_list`, `leads_get`, `leads_get_handoff` | read | owner, member |
-| Three (leads) | `leads_connection_health` | read | owner |
-| Three (leads) | `leads_capture`, `leads_update`, `leads_qualify`, `leads_transition` | mutate | owner, member |
-| Three (leads) | `leads_handoff` | mutate; writes the handoff record and returns `unavailable` with no destination (criterion 64) | owner, member |
-| Three (leads) | `leads_prepare_followup` | draft | owner, member |
+| Three (leads) | `leads_search`, `leads_list`, `leads_get`, `leads_get_observation`, `leads_pipelines` | read | owner, member, service |
+| Three (leads) | `leads_get_handoff` | read | owner, member |
+| Three (leads) | `leads_ingest_link`, `leads_attach_observation`, `leads_qualify`, `leads_schedule_followup`, `leads_resolve_followup` | mutate | owner, member, service |
+| Three (leads) | `leads_capture`, `leads_update`, `leads_transition` | mutate | owner, member |
+| Three (leads) | `leads_handoff` | mutate; writes the handoff record and, with Current enabled, stages `current.item.create_external`, which waits for a person's approval; with no destination it returns `unavailable` (criterion 64) | owner, member |
+| Three (leads) | `leads_connection_create_webhook`, `leads_connection_rotate_secret`, `leads_connection_revoke_secret`, `leads_connection_revoke` | mutate | owner |
+| Three (leads) | `leads_prepare_followup` | draft | owner, member, service |
 | Three (leads) | `leads_delete` | destructive | owner |
+| Leads job search | `leads_get_proposal`, `leads_match_library_answer` | read | owner, member, service |
+| Leads job search | `leads_save_library_answer` | mutate | owner, member |
+| Leads job search | `leads_request_proposal`, `leads_update_proposal`, `leads_delete_proposal`, `leads_set_proposal_section`, `leads_use_library_answer`, `leads_request_pricing`, `leads_set_proposal_milestone` | draft; text only, nothing is sent to the job board | owner, member |
 | Five (current) | `current_get`, `current_list`, `current_list_projects`, `current_areas`, `current_summary` | read | owner, member, service |
 | Five (current) | `current_create`, `current_update`, `current_status` | mutate | owner, member, service |
 | Five (current) | `current_close_by_source`, `current_comment`, `current_add_dependency`, `current_remove_dependency`, `current_create_project`, `current_update_project` | mutate | owner, member |
 | Five (current) | `current_delete_item`, `current_delete_project` | destructive | owner |
+| Finance | `finance_status`, `finance_coverage`, `finance_documents`, `finance_sinks`, `finance_lines`, `finance_open_items`, `finance_owed`, `finance_trace` | read; every restricted field left out of the registered output | owner. `explicit_only`: reached only by a `module_read:finance` token or an explicit list ([package sets](identity-and-topology.md#the-named-package-operation-sets)) |
 
 `audit_list` declares `limit` and nothing else. `core.audit.list`'s two opt-ins,
 `include_tool_telemetry` and `include_deletions`, open owner/operator-only collections (tool
@@ -669,8 +727,9 @@ owner/operator-readable and bounded to seven days and ten thousand rows or a tig
 setting; failure cannot change a tool result.
 
 No tool in the production set is external or financial class. The recording sink and the
-destructive fixture are test-harness registrations, never in the production set (criterion 18);
-the sink is release one's only external-class operation anywhere.
+destructive fixture are test-harness registrations, never in the production set (criterion 18).
+The one production external-class operation, `current.item.create_external`, has no tool: Leads
+stages it, and it runs only after a person approves it in the web interface.
 
 Release one ships **no no-query context bundle**: every memory a run is shown is one its caller
 named by reference in `core.runtime.run` or one the run fetched itself through

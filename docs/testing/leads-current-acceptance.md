@@ -52,12 +52,13 @@ tests/harness/prompt14.sh reset /ABSOLUTE/PRIVATE/stack.env /ABSOLUTE/PROOF_DIR
 - The env file must live outside the checkout. The project name and image tags come
   from `HEAD`, and `build` refuses a working tree with uncommitted changes, so a tag
   never misstates what it contains.
-- Every command first saves the fully resolved Compose configuration and refuses to
-  go on unless every writable volume belongs to this project, only host ports 8000
-  (Core) and 3000 (the front) are published, Core's internal 8100 stays private, and
-  Core's `RHEO__routing__public_host` is `localhost:3000`, so every link the product
-  builds (Current records, approvals, the sign-in redirect) opens on the port the
-  browser is served from rather than on port 80.
+- Every command that takes `ENV PROOF_DIR` (`config`, `build`, `up`, `seed`, `reset`,
+  `current-omitted`, `current-restored`, `core-stop` and `core-start`) first saves the
+  fully resolved Compose configuration and refuses to go on unless every writable volume
+  belongs to this project, only host ports 8000 (Core) and 3000 (the front) are
+  published, Core's internal 8100 stays private, and Core's `RHEO__routing__public_host`
+  is `localhost:3000`, so every link the product builds (Current records, approvals, the
+  sign-in redirect) opens on the port the browser is served from rather than on port 80.
 - `up` starts Postgres, Core, the web app and a small test-only front, and never the
   worker. The seed runs every worker visit itself, so approved-and-queued and
   in-progress handoffs stay put.
@@ -72,6 +73,12 @@ tests/harness/prompt14.sh reset /ABSOLUTE/PRIVATE/stack.env /ABSOLUTE/PROOF_DIR
   `reset` deletes the database that held the review browser's session, so the old
   window is signed out, and every URL and id in `urls` is new.
 - `reset` removes this project's containers, volumes and network only.
+- Two helpers need no stack: `static-check` confirms the override's internal and public
+  Core URLs and that its text holds no literal `8100:8100` mapping, and `config ENV
+  PROOF_DIR` only saves and checks the resolved Compose configuration. The resolved check
+  is the one that proves Core 8100 is never published, whatever port syntax the override
+  uses. Only the commands listed above run it; `urls`, `prepare-env` and the browser
+  helpers do not, so after an override change run `config` before trusting `urls`.
 
 Two scripted steps reach states that only exist while something is down:
 

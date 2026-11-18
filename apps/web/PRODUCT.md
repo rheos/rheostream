@@ -8,7 +8,7 @@ web
 
 ## Users
 
-Workspace owners and members who capture inquiries, review evidence, and move opportunities toward an outcome. The Leads interface supports manual triage in a browser.
+Workspace owners and members who capture inquiries, review evidence, and move opportunities toward an outcome. The Leads interface supports manual triage in a browser, including an optional job-search queue with scores, proposals and pricing. Current's queue is where active work is picked up, snoozed and finished, often on a phone. Recallatron's screens browse and search memory.
 
 ## Product Purpose
 
@@ -16,9 +16,9 @@ Preserve source evidence while keeping user decisions, notes, qualification, and
 
 ## Capabilities and Constraints
 
-The Next.js app calls registered operations through the shell. Rendering is read-only; explicit forms submit declared mutations through verified sessions. Module enablement and operation roles govern access. Stale revisions refuse changes. Confirmation chrome uses reserved built-in tokens.
+The Next.js app calls registered operations through the shell. Rendering is read-only; explicit forms submit declared mutations through verified sessions. Module enablement and operation roles govern access. Stale revisions refuse changes. A call that needs approval is decided on the shell's own approval page, never inside a module screen. Confirmation chrome uses reserved built-in tokens.
 
-Capture queues processing and does not itself promise an opportunity. Pipeline routing controls that result. Qualification describes evidence completeness; it does not invent buying intent or fit. Drafts remain internal. Authenticated webhook delivery and live funnel activation are separate work.
+Capture queues processing and does not itself promise an opportunity. Pipeline routing controls that result. Qualification describes evidence completeness; it does not invent buying intent or fit. Drafts remain internal. Signed webhook delivery arrives through the API, not the shell, and connecting a live funnel is a deliberate operator step.
 
 ## Product Principles
 
@@ -29,4 +29,4 @@ Capture queues processing and does not itself promise an opportunity. Pipeline r
 
 ## Accessibility & Inclusion
 
-Use native form controls, visible labels, keyboard focus, readable contrast, and responsive layouts. Do not require dragging to change stages.
+Use native form controls, visible labels, keyboard focus, readable contrast, and responsive layouts. Do not require dragging to change stages. Every swipe action has a button that keyboard and screen-reader users can reach.
