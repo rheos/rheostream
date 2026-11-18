@@ -154,8 +154,21 @@ PROPOSAL_SETTINGS: Final = (
         default="",
     ),
 )
+# Business days from receipt to the first follow-up on an inquiry opportunity that
+# routing creates. 0 (the default) schedules none. Job search pipelines never get one.
+INQUIRY_FOLLOWUP_KEY: Final = "leads.intake.followup_business_days"
+INQUIRY_FOLLOWUP_SETTING: Final = KeySpec(
+    key=INQUIRY_FOLLOWUP_KEY,
+    type=ValueType.INT,
+    scope=Scope.WORKSPACE,
+    floor=None,
+    explicit_per_workspace=False,
+    default=0,
+    minimum=0,
+    maximum=30,
+)
 SETTINGS: Final = (
-    (JOBSEARCH_SETTING,)
+    (JOBSEARCH_SETTING, INQUIRY_FOLLOWUP_SETTING)
     + tuple(
         KeySpec(
             key=f"leads.intake.{name}",
