@@ -18,6 +18,7 @@ from rheo_contracts import (
     SafetyClass,
     WorkspaceContext,
 )
+from rheo_core.deletion.lifecycle import lock_workspace_lifecycle
 from rheo_core.events import failed_delivery_count_for_subjects
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.operations.registry import Handler
@@ -63,16 +64,26 @@ def capture(
     if event_id is not None:
         # A caller-keyed repeat is the same event read again (an agent rescanning a
         # mailbox writes a fresh body each time), so the first capture stands and the
-        # repeat records no conflict.
-        seen = uow.connection.execute(
-            select(t.delivery_receipt.c.id).where(
-                t.delivery_receipt.c.connection_id == connection_id,
-                t.delivery_receipt.c.source_event_id == event_id,
+        # repeat records no conflict. The lifecycle lock comes first, as in job paste
+        # and accept_delivery, so two concurrent repeats cannot both miss the receipt.
+        lock_workspace_lifecycle(uow.connection)
+        seen = (
+            uow.connection.execute(
+                select(
+                    t.delivery_receipt.c.id, t.delivery_receipt.c.state_detail
+                ).where(
+                    t.delivery_receipt.c.connection_id == connection_id,
+                    t.delivery_receipt.c.source_event_id == event_id,
+                )
             )
-        ).scalar_one_or_none()
-        if seen is not None:
+            .mappings()
+            .one_or_none()
+        )
+        # An erased inquiry goes on to accept_delivery, which refuses the reimport
+        # and records the attempt as a deleted_observation conflict, as before.
+        if seen is not None and seen["state_detail"] != "observation_deleted":
             return AcceptedDelivery(
-                receipt_ref=ref("delivery_receipt", seen), outcome="duplicate"
+                receipt_ref=ref("delivery_receipt", seen["id"]), outcome="duplicate"
             )
     return accept_delivery(
         ctx,

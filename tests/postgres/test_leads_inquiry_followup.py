@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from postgres.test_leads_intake import Intake
 from postgres.test_leads_intake import intake as intake
-from postgres.test_leads_pipeline import ok
+from postgres.test_leads_pipeline import approve_delete, ok
 
 pytestmark = pytest.mark.postgres
 
@@ -95,6 +95,18 @@ def test_a_caller_keyed_repeat_is_a_duplicate_of_the_first(intake: Intake) -> No
     capture(intake, {"subject": "Pasted inquiry"})
     assert intake.count(t.delivery_receipt) == 4
     assert intake.count(p.opportunity) == 4
+
+
+def test_a_repeat_of_an_erased_inquiry_is_refused_and_recorded(intake: Intake) -> None:
+    route(intake)
+    first = capture(intake, {"subject": "Erase me"}, "msg-gone")
+    approve_delete(intake, ref("observation", RecordRef.parse(first.receipt_ref).id))
+    assert intake.count(t.observation) == 0
+    # Not a silent duplicate: accept_delivery refuses the reimport and records it.
+    again = capture(intake, {"subject": "Erase me, reworded"}, "msg-gone")
+    assert again.outcome == "conflict"
+    assert intake.count(t.observation) == 0
+    assert intake.count(t.delivery_conflict) == 1
 
 
 def test_source_link_folds_a_thread_and_keeps_distinct_leads_apart(
