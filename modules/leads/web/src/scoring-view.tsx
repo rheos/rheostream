@@ -618,7 +618,7 @@ export function ScoringView(props: ScoringProps) {
               A job still waiting {maxAge} {maxAge === 1 ? "hour" : "hours"}{" "}
               after it arrived is set aside unscored, so scoring that resumes
               after a pause starts with the recent jobs. Promoted and invited
-              jobs are always scored.
+              jobs are exempt from the age cutoff.
             </p>
           ) : null}
         </InfoTip>
