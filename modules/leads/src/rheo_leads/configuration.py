@@ -121,6 +121,18 @@ SCORING_SETTINGS: Final = (
         default=10,
         minimum=1,
     ),
+    # A pending job imported more than this many hours ago is set aside unscored, so
+    # a sweep resuming after a long pause scores recent jobs only. 0 turns it off.
+    KeySpec(
+        key="leads.scoring.max_age_hours",
+        type=ValueType.INT,
+        scope=Scope.WORKSPACE,
+        floor=None,
+        explicit_per_workspace=False,
+        default=24,
+        minimum=0,
+        maximum=24 * 365,
+    ),
 )
 # Proposal drafting: the model for the letter and its repair, and the one for the
 # posting analysis and the accuracy extraction (empty leaves the CLI's default).
@@ -142,8 +154,21 @@ PROPOSAL_SETTINGS: Final = (
         default="",
     ),
 )
+# Business days from receipt to the first follow-up on an inquiry opportunity that
+# routing creates. 0 (the default) schedules none. Job search pipelines never get one.
+INQUIRY_FOLLOWUP_KEY: Final = "leads.intake.followup_business_days"
+INQUIRY_FOLLOWUP_SETTING: Final = KeySpec(
+    key=INQUIRY_FOLLOWUP_KEY,
+    type=ValueType.INT,
+    scope=Scope.WORKSPACE,
+    floor=None,
+    explicit_per_workspace=False,
+    default=0,
+    minimum=0,
+    maximum=30,
+)
 SETTINGS: Final = (
-    (JOBSEARCH_SETTING,)
+    (JOBSEARCH_SETTING, INQUIRY_FOLLOWUP_SETTING)
     + tuple(
         KeySpec(
             key=f"leads.intake.{name}",

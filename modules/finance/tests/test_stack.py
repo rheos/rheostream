@@ -59,7 +59,7 @@ def test_runtime_dependencies_pin_the_majors() -> None:
     deps = project()["project"]["dependencies"]
     assert requirement("sqlalchemy", deps) == "sqlalchemy>=2.1,<2.2"
     assert requirement("psycopg", deps) == "psycopg[binary]>=3.3.6,<4"
-    assert requirement("pydantic", deps) == "pydantic>=2,<3"
+    assert requirement("pydantic", deps) == "pydantic>=2.14.3,<3"
     requirement("alembic", deps)
     # uv resolved them to those majors.
     assert locked_major("sqlalchemy") == 2

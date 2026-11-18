@@ -324,6 +324,15 @@ status changes, or when its proposal count, spend, rating, reviews or hire rate 
 into another bracket; a profile change does not rescore jobs that already have a score.
 `leads.scoring.model_id` picks the model (empty uses the CLI's default).
 
+**Too old to score.** A job still waiting `leads.scoring.max_age_hours` (default 24)
+after it was imported is set aside without a model call: its scoring state is
+`failed` with the word `too_old`, and no assessment is written. This keeps a sweep
+that resumes after a long pause, such as the usage limit, on the recent jobs instead
+of the whole backlog. A job that already had a score keeps it. A job the owner
+promoted, one the client invited the owner to, and one that was waiting for its full
+posting (so a posting pasted days later still gets it scored) are never too old. Setting the profile and
+re-queueing failed jobs both leave these jobs aside. `0` turns the cutoff off.
+
 **Failures.** A failure of the model login or the deployment (a usage limit, an
 expired or refused login, a missing executable, a crashed or timed-out run) makes
 every waiting job wait 15 minutes without spending an attempt. A failure about the job
@@ -487,6 +496,13 @@ apply. Stale revisions cannot overwrite a newer reminder. Moving to a terminal
 stage cancels the pending reminder; closed opportunities refuse scheduling.
 Later source evidence leaves the user-selected reminder unchanged.
 
+A workspace can give every inquiry a first follow-up without anyone scheduling it:
+set `leads.intake.followup_business_days` (0 to 30, default 0, which schedules none)
+with `core.settings.set`. When routing creates a new opportunity, it schedules
+"Reply to the inquiry" due that many working days (Monday to Friday) after the UTC
+date rheoStream received the inquiry. Job search pipelines never get one, and a later
+observation that attaches to an existing opportunity leaves its follow-up alone.
+
 Pass `followup_due_by` to `leads_list` / `leads_search` for pending reminders due
 on or before that date, ordered by due date then stable opportunity creation/ID.
 The list and board expose the same cutoff and preserve it through pagination.
@@ -555,6 +571,16 @@ been demonstrated.
 Agents can submit the same flat inquiry facts through `leads_capture`, keeping
 original text in `body.message`. To add only a person or organization, use
 `relationships_create_contact` instead; contact creation is independent of Leads.
+
+An agent that reads the same source more than once (a mailbox scan that rereads a
+window) passes its own `source_event_id`, such as the mail message id. A repeat id
+records nothing and returns `outcome` `duplicate` with the first capture's
+`receipt_ref`, even when the agent words the facts differently the second time.
+To fold later messages of one conversation into one opportunity, put the
+conversation's link in `source_url` and give the manual connection an
+`attach_by_field` rule on `source_url` ahead of its create rule. Unverified email
+never links two captures to the same person, so `attach_to_open_opportunity` does
+not fold captured mail.
 Website and email adapters call intake directly and do not require an agent runtime;
 those transports are not implemented by the paste UI.
 

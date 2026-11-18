@@ -27,6 +27,7 @@ from rheo_core.storage.backend import (
 )
 from rheo_core.storage.control_plane import WorkspaceRow
 from rheo_core.storage.pools import EnginePool
+from rheo_core.storage.postgres import PostgresBackend, cluster_url_from_dsn
 from rheo_core.storage.repositories import upsert_workspace_setting, workspace_settings
 from sqlalchemy import Engine, func, select, text
 
@@ -272,3 +273,28 @@ def test_database_assertion_is_resolved_once_not_per_unit_of_work(
     with UnitOfWork(engine_for(cluster, a), b.database_name) as uow:
         actual = uow.connection.execute(text("SELECT current_database()")).scalar_one()
         assert actual == a.database_name
+
+
+# --- one test's backend does not switch the assertion off for the next (#602) --------
+
+
+def test_a_backend_built_off_the_test_profile_turns_the_assertion_off() -> None:
+    """Building a backend publishes its flag to the class. The next test checks that
+    the shared ``database_assertion`` fixture puts it back."""
+    PostgresBackend(
+        cluster_url_from_dsn(
+            "postgresql://rheo:not-a-secret@db.example.invalid/postgres"
+        ),
+        control_database="rheo_control",
+        template_database="template1",
+        pool_cache_size=1,
+        pool_max_connections=1,
+        pool_idle_close_seconds=300,
+        verify_database=False,
+    )
+    assert UnitOfWork.verify_database is False
+
+
+def test_the_next_test_starts_with_the_assertion_on(cluster: ClusterSession) -> None:
+    assert cluster.backend.verify_database is True
+    assert UnitOfWork.verify_database is True
