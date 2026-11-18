@@ -25,7 +25,6 @@ from rheo_app_cli.commands.doctor import (
     _check_connection_budget,
 )
 from rheo_core.settings.defaults import PACKAGE_DEFAULTS
-from rheo_core.storage.backend import UnitOfWork
 from rheo_core.storage.postgres import (
     MAINTENANCE_RESERVED,
     PostgresBackend,
@@ -37,14 +36,6 @@ DSN = "postgresql://rheo:not-a-secret@db.example.invalid:5432/postgres"
 """Never dialled: nothing in this file opens a connection."""
 
 STOCK_MAX_CONNECTIONS = 100
-
-
-@pytest.fixture(autouse=True)
-def _keep_the_database_assertion(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Building a backend publishes its ``verify_database`` (False here) to every
-    unit of work in the process. Restore it after each test, or a later file in the
-    same worker, such as ``tests/postgres/test_isolation.py``, loses its assertion."""
-    monkeypatch.setattr(UnitOfWork, "verify_database", UnitOfWork.verify_database)
 
 
 def backend(
