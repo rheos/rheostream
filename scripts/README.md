@@ -111,7 +111,9 @@ Three scripts here are not gates:
 
 - `python3 scripts/check_future_work_claims.py [--json] [PATH ...]` lists prose that
   hands work to a later run, so a run can check at close-out that it has not made such
-  a sentence false (#73). It reports and always exits 0; it is deliberately not in
+  a sentence false (#73). It reports and exits 0 whatever it finds. When it cannot scan
+  at all (Git is missing, or cannot list the tracked files), it prints "Nothing was
+  scanned" and exits 2, so a caller never reads that as a clean run. It is deliberately not in
   `make check`, because a claim true today would otherwise fail CI later for reasons no
   commit caused.
 - `scripts/absence_proof.py`, run by `make absence-proof` and its own CI job, runs the

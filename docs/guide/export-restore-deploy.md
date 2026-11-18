@@ -47,7 +47,10 @@ sealed snapshot so it cannot slip a second, later view into the same file.
 Only modules with an exportable record type are exported. Finance declares none, so
 ledger state never enters a workspace export; it moves with the module's own
 `finance state export` and `finance state import` commands, which write and check a
-directory of per-table files with counts and SHA-256 hashes.
+directory of per-table files with counts and SHA-256 hashes. Finance's files under the
+workspace's `uploads/finance/` (its settings and manual files, statement archive, inbox
+and keys) are not in a workspace export either; `finance remote push` copies them into a
+host's layout, as the [Finance README](../../modules/finance/README.md) describes.
 
 ### Formats are versioned per module
 

@@ -181,8 +181,9 @@ The scaffold's tree is the package layout; nothing new is invented.
 Only part of this tree holds code today. `modules/recallatron` (phase two),
 `modules/relationships` and `modules/leads` (phase three), `modules/current` (phase five) and
 `modules/finance` are built modules. Finance is a personal ledger and reminder module with no
-screens; it is `explicit_only`, so no named token set reaches its operations
-([module contract](module-contract.md#the-manifest)). `connectors` and `channels` are
+screens; it is `explicit_only`, so the routine token sets skip its operations, and a token
+reaches them only by naming them: the `module_read:finance` set for its reads, or an explicit
+operation list ([module contract](module-contract.md#the-manifest)). `connectors` and `channels` are
 placeholder distributions with an empty package, and `packs` holds one README.
 
 The core carries no import of any module: `rheo_core` and `rheo_contracts` list no module

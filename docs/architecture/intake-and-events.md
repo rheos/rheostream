@@ -227,10 +227,11 @@ and the three existing values keep their meaning. The job runs every two hours
 (`interval_seconds = 7200`), gated on `leads.capabilities.jobsearch`. Each run first lists
 the account's pending invitations, then the searches in the workspace setting
 `leads.jobfeed.presets` (the defaults when it is empty); an invited job is delivered with
-`ext.jobsearch.invited` set. Each run also writes one content-free `leads.jobfeed_run` row
-(migration `0016_jobfeed_runs`): its outcome, stop code, counts and the reason codes of
-failed detail reads, never a posting or an upstream message. Rows older than 90 days are
-deleted as each new one is written. Operator detail is in
+`ext.jobsearch.invited` set. A run that finishes or stops also writes one content-free
+`leads.jobfeed_run` row (migration `0016_jobfeed_runs`): its outcome, stop code, counts and
+the reason codes of failed detail reads, never a posting or an upstream message. A run
+whose connection moved on meanwhile, or that hit an internal error, writes none. Rows
+older than 90 days are deleted as each new one is written. Operator detail is in
 [Job feed collector](../../deploy/README.md#job-feed-collector), and the owner's side in the
 [Leads README](../../modules/leads/README.md#job-feed).
 

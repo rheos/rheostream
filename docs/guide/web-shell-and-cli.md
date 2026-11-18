@@ -135,7 +135,9 @@ time and the worker's reconcile interval, whether the database role can create t
 extensions loaded modules need, each bridge enrollment's token expiry, the connector
 sign-in surface, and connector grants near their cap or unable to refresh. An hourly host
 job (`deploy/doctor/rheostream-doctor-alert.py`) sends one page when a check starts
-failing and one notice when it recovers.
+failing and one notice when it recovers. It remembers what it paged in a state file on
+the host, so that file must stay writable: when the job cannot write it, it still sends,
+exits 2, and the next run sends the same page or notice again.
 
 ### The API is one route
 

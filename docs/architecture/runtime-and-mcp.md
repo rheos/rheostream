@@ -434,12 +434,15 @@ steps, and Leads' job scoring, proposal drafting and pricing use it. Leads' thre
 their model through a module setting (`leads.scoring.model_id`, `leads.proposals.model_id`,
 `leads.proposals.analysis_model_id`; empty leaves the CLI's default). A run is one turn with the CLI's built-in tools disabled, a run token with an empty
 snapshot, nothing pre-approved, the deadline capped by `runtime.max_deadline_seconds`, and a
-throwaway directory removed whatever happens. The task carries the account the work belongs to,
-and the [single-account login rule](#the-login-credential-is-bound-to-one-account) applies to it
+throwaway directory the runner tries to remove whatever happens. That removal is best effort: a
+filesystem error is ignored, and nothing sweeps a directory left behind, transcript included.
+The task carries the account the work belongs to, and the [single-account login rule](#the-login-credential-is-bound-to-one-account) applies to it
 as to any run. The runner returns the reply's structured mapping unvalidated; the caller owns the
-schema and checks it. Every failure raises a fixed word and no task text or model output:
-`OneShotDeferred` when the account's usage limit refused the run (the caller waits without
-spending an attempt), `OneShotCredentialNotOwned`, and `OneShotFailed` for everything else.
+schema and checks it. A failure of the run itself raises a fixed word and no task text or model
+output: `OneShotDeferred` when the account's usage limit refused the run (the caller waits without
+spending an attempt), `OneShotCredentialNotOwned`, and `OneShotFailed` for the rest. An error
+raised outside the run (a settings read, token issuance, creating the directory, starting the
+adapter, or the caller's own `heartbeat`) propagates unchanged.
 
 ## Typed judgments
 
@@ -463,8 +466,10 @@ to send that workspace's postings and scoring profile to the provider; deploymen
 opt a workspace in.
 
 Its one caller is the Leads scoring pre-filter: after the deterministic first tier and before the
-full model score, a job the provider scores below `leads.scoring.prefilter_threshold` (1 to 100,
-default 50) is held with no final score, for review and promotion in Leads. Any provider failure
+full model score, a job whose confident estimate is below `leads.scoring.prefilter_threshold`
+(1 to 100, default 50) is held with no final score, for review and promotion in Leads. An
+uncertain estimate (low confidence about experience, when no exclusion, unmet requirement or
+goal mismatch decided first) is never held and goes on to full scoring. Any provider failure
 falls through to full scoring and leaves a content-free failed-call record. Setup and rollback
 are in [the runtimes README](../../runtimes/README.md#jev-typed-judgments). The provider
 receives posting and profile text that has not passed through the

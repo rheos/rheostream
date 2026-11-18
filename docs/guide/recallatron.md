@@ -131,8 +131,10 @@ creates at most one memory, keyed by a content-free receipt, so a model change o
 re-chunking cannot turn consumed evidence into new memories. An automatic memory carries
 exactly its producer's verified purpose and audience. A failed extraction backs off and,
 on its fifth attempt, settles its evidence as a gap. A model login at its usage limit is
-not a failure: the batch waits 15 minutes without spending an attempt, so a limit that
-lasts days never turns pending evidence into gaps.
+not a failure: the batch waits 15 minutes without spending an attempt, so a limit never
+uses up attempts. Waiting does not stop the evidence's own expiry, though: a unit whose
+source expires while the limit lasts still settles as `gap/expired_pending`, with its
+body cleared.
 
 ### Possible duplicates are only proposals
 

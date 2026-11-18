@@ -67,9 +67,10 @@ with the same newest message.
 An external service holds an `alert_writer` token: a named set of exactly
 `current.item.create` and `current.item.close_by_source`, which never grows when an
 operation is added. Its results carry an action, or `closed`, and at most a reference,
-never an item's content. A module job can also file and move its own items in process,
-through a service context that names only the operations it may call; that is how a
-module's reminders become Current items.
+never an item's content. A module job can also write items in process, through a service
+context that names only the operations it may call (create, update and set status). That
+set is the only bound, so such a context can write any Current item, not only the ones it
+filed. It is how a module's reminders become Current items.
 
 ### Snooze needs no job
 

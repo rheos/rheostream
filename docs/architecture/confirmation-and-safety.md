@@ -237,8 +237,10 @@ would arrive only if a preset needed to name a destination.
 requirements, fields, `preset_rubric` pin (`inbound_services`, 1), and `followup` template, and
 `0007_jobsearch_preset` writes the Job search preset the same way. No pipeline is seeded: an
 owner creates one with `leads.pipeline.create` (the `job_search` preset only while
-`leads.capabilities.jobsearch` is on), and routing rules are set explicitly before
-opportunities are created automatically. Migration `0003_seed_manual_capture` seeds the
+`leads.capabilities.jobsearch` is on). On a connection an owner creates, routing rules are set
+explicitly before opportunities are created automatically. The job feed and job paste
+connections are the exception: installing one writes its two enabled rules (attach a repeat by
+posting id, else create) into a Job search pipeline. Migration `0003_seed_manual_capture` seeds the
 manual-capture connection, its mapping and a default funnel, "General inquiries", at install
 ([intake](intake-and-events.md#transports)).
 
@@ -433,7 +435,7 @@ assertion that no external-class operation exists.
 Not built from this design: funnel and campaign operations (`leads.funnel.create`, `.archive`,
 `leads.campaign.create`, `.archive`), `leads.connection.update_mapping` and `.list`,
 `leads.conflict.list` and `.resolve`, `leads.opportunity.list_notes`, and `leads.import.run`.
-The job-search operations (`leads.jobfeed.*`, `leads.jobprofile.*`, `leads.jobscoring.retry_failed`,
+The job-search operations (`leads.jobfeed.*`, `leads.jobprofile.*`, `leads.jobscoring.*`,
 `leads.jobreview.promote`, `leads.jobproposal.*`, `leads.jobpricing.request`,
 `leads.proposalprofile.*`, `leads.proposalsection.*`, `leads.proposalmilestone.set`,
 `leads.answerlibrary.*`) are documented in the job-search sections of the

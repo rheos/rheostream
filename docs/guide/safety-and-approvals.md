@@ -53,7 +53,8 @@ an approval; resolve an unknown outcome; create and revoke a standing grant; iss
 revoke a token; and create and rotate a bridge enrollment. Preview is on the list because
 it shows the whole held payload a person is about to approve. The rule is checked when a
 token is issued and again every time one is presented. So approval is always the act of a signed-in
-person in a web session, or of an enrolled account confirming in a channel. A model cannot
+person in a web session. Confirming in a channel by an enrolled account is part of the
+channel design and not built. A model cannot
 approve what it proposed, because nothing a model can hold is able to approve anything. A
 gated operation in a token's set only lets the token ask for it.
 

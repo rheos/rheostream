@@ -4,8 +4,9 @@ rheoStream is an open framework for agent-assisted work. It is one system you ow
 shell, an MCP door for agents, a durable worker, and Postgres. On top of that small core
 sit four modules. Leads develops opportunities, Current carries active work, Recallatron remembers, and Relationships keeps the people and
 organizations they all share. A fifth, Finance, is an optional personal ledger that a
-workspace has only once its owner installs it. An agent named rheo operates all of it,
-from Claude, from Telegram, or by voice.
+workspace has only once its owner installs it. An agent named rheo operates all of it
+from Claude, through the MCP door. Telegram and voice channels are part of the design and
+not built yet.
 
 > Leads enter the stream. Current carries the work. Recallatron remembers.
 

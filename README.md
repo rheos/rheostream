@@ -42,7 +42,8 @@ One system you own, with your work in it and an agent named rheo to run it. The
 - Finance reads your own bank, card and bill statements into a ledger, tracks what you
   owe, and files due-date reminders in Current. An agent can read it only with a token
   issued for that purpose. ([Finance](modules/finance/README.md))
-- rheo works from Claude, Telegram or voice under one authorization model.
+- rheo works from Claude, through the MCP door, under one authorization model. Telegram
+  and voice channels are designed to share it and are not built yet.
   ([rheo and channels](docs/guide/rheo-and-channels.md))
 - A web shell for people, and a `rheo` command for the operator.
   ([Web shell and CLI](docs/guide/web-shell-and-cli.md))

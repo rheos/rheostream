@@ -193,9 +193,11 @@ extension the loaded modules need. This is documented operator work, not automat
 Every workspace database has a `core` schema plus one schema per installed module, named by the
 module id (`recallatron`, `relationships`, `leads`, `current`, `finance`). Tables are always
 written fully qualified (`leads.opportunity`); the core sets no `search_path`. Finance adds two
-`NOLOGIN` roles of its own, `finance_owner` and `finance_reader`, which its migration environment
-creates and runs every revision as; the other modules use the application role
-([Finance](../../modules/finance/README.md)).
+`NOLOGIN` roles of its own, `finance_owner` and `finance_reader`. Its migration environment
+creates them only when the application role is a superuser; under any other application role an
+operator creates both and grants them to it first, or install refuses with
+`finance_roles_unavailable`. Every Finance revision runs as `finance_owner`; the other modules
+use the application role ([Finance](../../modules/finance/README.md)).
 
 What this buys: a module's storage is a nameable unit. "Writes only to its own storage"
 (FR 11, criterion 26) becomes checkable: the ownership test diffs the live catalog to assert

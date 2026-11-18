@@ -248,12 +248,13 @@ writer that closes on every healthy check therefore adds one record per check.
 The web package is `modules/current/web` (`@rheo-stream/current-web`). It serves the
 `current` surface (`current.<base host>` in subdomain mode, `/current` in path mode)
 and adds one main-nav entry, Current. Routes are exact paths; a record travels as
-`?ref=` in the query string.
+`?ref=` in the query string. Every screen opens with the section tabs (Queue, Projects,
+and Areas for an owner) above its title.
 
 | Path | Screen |
 | --- | --- |
 | `/` | Queue: a find box, Projects and `+`; chips for status, area and priority; overdue and blocked counters only when above zero; a folding Woke up section with Wake all; then active items by priority and last update, with paging. A row shows the area's icon and colour, title, priority, type tag, signals and due date or age. Swipe left for Project and Done, right for Watch and Snooze; a long swipe runs Done or Watch. The tray buttons are reachable by keyboard and screen reader, and show as hover icons with a mouse. |
-| `/item?ref=` | Item (the ref may be the short ID, e.g. `?ref=b50a1e99`): tabs above the title, details, a copyable ID, notes, status controls, snooze picker, comments, blocked-by and blocking links, and origin. A folder icon beside the Project fact opens a modal of projects (the queue row's Project action opens the same one); a pick saves through `current.item.update` and closes it, and "No project" takes the item out. |
+| `/item?ref=` | Item (the ref may be the short ID, e.g. `?ref=b50a1e99`): details, a copyable ID, notes, status controls, snooze picker, comments, blocked-by and blocking links, and origin. A folder icon beside the Project fact opens a modal of projects (the queue row's Project action opens the same one); a pick saves through `current.item.update` and closes it, and "No project" takes the item out. |
 | `/new` | New item. `?project=` preselects a project. |
 | `/projects`, `/project?ref=` | Projects with item counts by status; one project's items, with create and edit. |
 | `/areas` | Areas, owner only: add, rename, retire and restore. |

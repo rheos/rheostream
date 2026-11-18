@@ -91,10 +91,12 @@ collected postings would all look alike.
   it then asks for more characters, as a git short hash does.
 - A record type opts in by declaring a `tail_lookup` in its manifest
   ([owned record types](module-contract.md#owned-record-types)). Without one, a type takes
-  full references only. `leads.opportunity` is the one type that declares it today, so Leads'
-  job links (`/detail?ref=<tail>`), its Copy job ID buttons and every opportunity reference
-  input take short IDs. Lookup is a scan on the tail, which is fine at a workspace's scale; an
-  expression index is a module migration away if it ever is not (#431).
+  full references only. Three types declare it today. `leads.opportunity`: Leads' job links
+  (`/detail?ref=<tail>`), its Copy job ID buttons and every opportunity reference input take
+  short IDs. `current.item` and `current.project`: Current's item links (`/item?ref=<tail>`),
+  its copyable item ID, `current.item.get` and every item or project reference input take
+  them, and its item reads return a `short_id`. Lookup is a scan on the tail, which is fine
+  at a workspace's scale; an expression index is a module migration away if it ever is not (#431).
 - An external provider's own id (a job board's posting id) is a separate field and never a
   short ID.
 

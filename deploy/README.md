@@ -1031,12 +1031,14 @@ The collector writes ten health codes to `last_error`:
 A completed run without a partial result clears the collector's own codes and leaves
 intake's alone.
 
-Every run also writes one row to `leads.jobfeed_run` in the workspace database: when it
-finished, its outcome (`completed`, `partial` or `stopped`), the code it stopped on, the
-nine counts, and the failed detail reads counted by reason (for example
-`tool_error:<code>`, `no_description` or `invitations:<code>`). Rows hold only fixed
-codes and counts, never a posting, a token or provider text, and are deleted after 90
-days. Leads > Scoring > Job feed shows the last 12. Read the reasons there before
+A run that finishes or stops writes one row to `leads.jobfeed_run` in the workspace
+database: when it finished, its outcome (`completed`, `partial` or `stopped`), the code it
+stopped on, the nine counts, and the failed detail reads counted by reason (for example
+`tool_error:<code>`, `no_description` or `invitations:<code>`). A run that ends because
+the connection moved on (revoked or reconnected meanwhile), or on an internal error,
+writes no row, so a gap in the history does not prove no run happened. Rows hold only
+fixed codes and counts, never a posting, a token or provider text, and are deleted after
+90 days. Leads > Scoring > Job feed shows the last 12. Read the reasons there before
 turning on the wire trace below.
 
 ### Schedule, limits and backoff

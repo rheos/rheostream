@@ -167,14 +167,19 @@ run reads best matches, the newest postings, and one page of postings above 50
 proposals to keep tracked jobs current; an owner can replace that list, keyword
 searches included, with the `leads.jobfeed.presets` setting. A posting at or under 50
 proposals that you have not applied to is read in full and delivered; it attaches to
-the opportunity that already holds its posting id, or creates one. Each run also reads
-one page of your pending invitations. An invited job is always delivered, whatever its
-competition, and is tagged Invited in the queue.
+the opportunity that already holds its posting id, or creates one. A run makes at most
+60 full reads. A posting it could not read (that limit, the run's deadline, or a failed
+read) only refreshes an opportunity that already holds it; a later run that finds it
+again can read it then. Each run also reads one page of your pending invitations. An
+invited job is always delivered, whatever its competition, and is tagged Invited in the
+queue.
 
-Each run leaves one row of counts and fixed failure codes, never a posting, in
-`leads.jobfeed_run`, kept 90 days, so a stretch of failed reads can be diagnosed after
-the worker's logs are gone. You can also paste a copied search page or one full posting
-(`leads.jobfeed.paste`); it converges on the same opportunity the feed made.
+A run that finishes or stops leaves one row of counts and fixed failure codes, never a
+posting, in `leads.jobfeed_run`, kept 90 days, so a stretch of failed reads can be
+diagnosed after the worker's logs are gone. A run whose connection was revoked or
+reconnected meanwhile, or that hit an internal error, leaves none. You can also paste a
+copied search page or one full posting (`leads.jobfeed.paste`); it converges on the same
+opportunity the feed made.
 
 ### Job scoring
 
@@ -198,7 +203,9 @@ An owner can promote one (`leads.jobreview.promote`): the override is its own ro
 the next sweep scores the job like one that passed. Leads > Scoring shows what scoring
 is doing: whether a call is running or paused on a usage limit, the queue, recent
 imports by stage, the job feed's last runs, and a log of every model call with its
-tokens, time and outcome but no text and no cost figure.
+tokens, time and outcome but no text and no cost figure. From there an owner can end a
+usage-limit wait early (`leads.jobscoring.retry_waiting`, attempts unchanged) or put
+failed jobs back in line (`leads.jobscoring.retry_failed`).
 
 ### Proposals and pricing
 
