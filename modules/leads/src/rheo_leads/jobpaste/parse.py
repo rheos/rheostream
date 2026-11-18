@@ -29,7 +29,12 @@ from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup, Tag
 
-from rheo_leads.jobfeed.normalize import BANDS, posting_id_valid
+from rheo_leads.jobfeed.normalize import (
+    BANDS,
+    posting_id_valid,
+    stated_body,
+    text_price,
+)
 
 JobType = Literal["fixed", "hourly"]
 
@@ -95,6 +100,9 @@ class PastedJob:
             "client_payment_verified": _flag(self.client_payment_verified),
             "client_spend": _decimal(self.client_spend),
             "client_rating": _decimal(self.client_rating),
+            **stated_body(
+                text_price(self.description, self.budget_min, self.budget_max)
+            ),
             "observed_at": observed_at.isoformat(),
         }
         return {key: value for key, value in values.items() if value is not None}

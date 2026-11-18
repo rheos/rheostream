@@ -53,10 +53,29 @@ const dollars = (n: number) =>
 export function formatBudget(fields: Row): string {
   const min = amount(fields.budget_min);
   const max = amount(fields.budget_max);
-  if (!min && !max) return "No budget listed";
+  if (!min && !max) return formatStated(fields) ?? "No budget listed";
   const rate = str(fields.job_type) === "hourly" ? "/hr" : "";
   if (min && max && min !== max) return `${dollars(min)} - ${dollars(max)}${rate}`;
   return `${dollars((min || max) as number)}${rate}`;
+}
+
+const STATED_UNITS: Record<string, string> = {
+  hour: "/hr",
+  item: " each",
+  total: " total",
+};
+
+/** A price the posting text states, read when the feed gave no budget (#503),
+ * with its unit (per hour, each, or total) and "(in the text)" after it.
+ * Nothing without one. */
+export function formatStated(fields: Row): string | null {
+  const min = amount(fields.stated_price_min);
+  if (!min) return null;
+  const max = amount(fields.stated_price_max);
+  const unit = STATED_UNITS[str(fields.stated_price_unit)] ?? "";
+  const price =
+    max && max !== min ? `${dollars(min)} - ${dollars(max)}` : dollars(min);
+  return `${price}${unit} (in the text)`;
 }
 
 /** "$12,400 spent", or nothing when the spend is unknown or zero. */

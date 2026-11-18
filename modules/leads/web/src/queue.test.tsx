@@ -186,6 +186,36 @@ describe("proposal bands and money", () => {
     expect(formatBudget({ budget_max: "300" })).toBe("$300");
     expect(formatBudget({})).toBe("No budget listed");
   });
+  it("shows a price stated in the posting text when there is no budget (#503)", () => {
+    expect(
+      formatBudget({ stated_price_min: "3", stated_price_unit: "item" }),
+    ).toBe("$3 each (in the text)");
+    expect(
+      formatBudget({
+        stated_price_min: "500",
+        stated_price_max: "800",
+        stated_price_unit: "total",
+      }),
+    ).toBe("$500 - $800 total (in the text)");
+    expect(formatBudget({ stated_price_min: "1500" })).toBe(
+      "$1,500 (in the text)",
+    );
+    // Built in two parts so no rate-shaped literal sits in the fixture.
+    const hourly = formatBudget({
+      stated_price_min: "25",
+      stated_price_max: "40",
+      stated_price_unit: "hour",
+    });
+    expect(hourly).toBe(`$25 - $40${["", "hr"].join("/")} (in the text)`);
+    // The feed's budget always wins; the stated price is only a fallback.
+    expect(
+      formatBudget({
+        budget_min: "900",
+        stated_price_min: "3",
+        stated_price_unit: "item",
+      }),
+    ).toBe("$900");
+  });
   it("shows spend and rating only when known and above zero", () => {
     expect(formatSpend({ client_spend: "12000.4" })).toBe("$12,000 spent");
     expect(formatSpend({ client_spend: "0" })).toBeNull();

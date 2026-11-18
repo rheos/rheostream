@@ -21,6 +21,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from rheo_leads.jobfeed.presets import Purpose
+from rheo_leads.jobfeed.stated_price import StatedPrice, stated_price
 
 JobType = Literal["fixed", "hourly"]
 
@@ -68,10 +69,15 @@ BODY_KEYS: tuple[str, ...] = (
     "client_hire_rate",
     "applied",
     "invited",
+    "stated_price_min",
+    "stated_price_max",
+    "stated_price_unit",
     "observed_at",
 )
 # The fields whose change makes a sighting worth delivering. Both observation times
-# are stamped at response time, so neither is ever a change.
+# are stamped at response time, so neither is ever a change. The stated price is
+# read from the description, which is compared already, so it is not listed: a
+# job stored before it existed is not delivered again only to gain one.
 COMPARABLE_FIELDS: tuple[str, ...] = (
     "title",
     "description",
@@ -204,6 +210,10 @@ class NormalizedPosting:
     # The client invited the account to this job. Delivered only when true: a
     # sighting that is not an invitation says nothing either way.
     invited: bool = False
+    # A price the description states, read only while the feed gives no budget
+    # (#503). Kept apart from ``budget_*``, which only the feed fills, so an hourly
+    # rate, a project total and a per-item price stay distinguishable.
+    stated: StatedPrice | None = None
 
     def to_body(self) -> dict[str, str | int]:
         """The flat delivery body: unknown values are left out, never zero."""
@@ -226,6 +236,7 @@ class NormalizedPosting:
             "client_hire_rate": _optional_decimal(self.client_hire_rate),
             "applied": _optional_flag(self.applied),
             "invited": _flag(True) if self.invited else None,
+            **stated_body(self.stated),
             "observed_at": self.observed_at.isoformat(),
         }
         return {key: value for key, value in values.items() if value is not None}
@@ -234,6 +245,30 @@ class NormalizedPosting:
         """Canonical text per comparable field that carries a value."""
         body = self.to_body()
         return {key: str(body[key]) for key in COMPARABLE_FIELDS if key in body}
+
+
+def stated_body(stated: StatedPrice | None) -> dict[str, str | None]:
+    """The stated price's three body values; all ``None`` when there is none."""
+    if stated is None:
+        return {
+            "stated_price_min": None,
+            "stated_price_max": None,
+            "stated_price_unit": None,
+        }
+    return {
+        "stated_price_min": _decimal_text(stated.low),
+        "stated_price_max": _optional_decimal(stated.high),
+        "stated_price_unit": stated.unit,
+    }
+
+
+def text_price(
+    description: str | None, budget_min: Decimal | None, budget_max: Decimal | None
+) -> StatedPrice | None:
+    """The price ``description`` states, read only when there is no budget."""
+    if budget_min is not None or budget_max is not None:
+        return None
+    return stated_price(description)
 
 
 def _optional_decimal(value: Decimal | None) -> str | None:
@@ -425,6 +460,7 @@ def apply_detail(
     return replace(
         posting,
         description=description,
+        stated=text_price(description, posting.budget_min, posting.budget_max),
         client_spend=_kept(
             parse_number(record.get("spend_total")), posting.client_spend
         ),
