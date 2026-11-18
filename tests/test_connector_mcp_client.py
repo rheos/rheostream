@@ -1586,6 +1586,16 @@ def test_a_long_plain_text_4xx_is_cut_to_the_limit(
     assert tool["error_text"] == '"' + expected + '"'
 
 
+def test_error_text_collapses_every_invisible_run_to_one_space() -> None:
+    """#364: one regex pass, no token list, and the same text the split/join gave."""
+    body = " \t lead\x00\x01tail\r\n caf\u00e9 \u3000end \n".encode()
+    assert mcp_client._error_text(body) == "lead tail caf end"
+    assert mcp_client._error_text(b"") == ""
+    assert mcp_client._error_text(b" \t\n ") == ""
+    large = b"word\t\n  " * 200_000
+    assert mcp_client._error_text(large) == " ".join(["word"] * 200_000)
+
+
 @pytest.mark.parametrize(
     "response",
     [
