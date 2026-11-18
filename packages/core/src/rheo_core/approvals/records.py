@@ -97,7 +97,7 @@ _COLUMNS: Final = (
 reasoning for the same constant."""
 
 
-def _row(row: Row[Any]) -> ApprovalRow:
+def _row(row: Row[*tuple[Any, ...]]) -> ApprovalRow:
     """One selected row as an :class:`ApprovalRow`, field for field.
 
     Written out rather than splatted, for the reason ``operations/records.py``'s own

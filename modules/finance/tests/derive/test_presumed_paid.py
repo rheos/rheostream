@@ -137,7 +137,7 @@ def history(ledger: Ledger, *, landlord_paid_from: str = "") -> None:
     )
 
 
-def rows(ledger: Ledger) -> dict[str, SqlRow[Any]]:
+def rows(ledger: Ledger) -> dict[str, SqlRow[*tuple[Any, ...]]]:
     """Every obligation, as ``<payee slug> <period label>``."""
     found = ledger.conn.execute(
         select(obligation, payee.c.slug).join(
