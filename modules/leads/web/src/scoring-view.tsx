@@ -650,7 +650,7 @@ export function ScoringView(props: ScoringProps) {
     setSyncing(false);
     if (outcome.state === "ok") {
       setNotice(
-        "Sync started. The feed runs within a minute or two; new saved jobs show up here and in the queue.",
+        "Sync requested. The next run should start within a minute or two; reload this tab to see it.",
       );
       return;
     }

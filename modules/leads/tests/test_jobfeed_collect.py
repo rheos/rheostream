@@ -29,6 +29,7 @@ from rheo_leads.jobfeed.collect import (
     read_details,
     saved_reason,
 )
+from rheo_leads.jobfeed.delivery import delivered_posting, discovery_eligible
 from rheo_leads.jobfeed.normalize import NormalizedPosting, normalize_row
 from rheo_leads.jobfeed.presets import DEFAULT_PRESETS, Preset, Purpose
 from rheo_leads.jobfeed.upstream import Upstream, UpstreamFailure
@@ -1071,6 +1072,65 @@ def test_a_saved_discovery_posting_is_read_whatever_its_competition() -> None:
     result = r.details(given)
     assert [params["id"] for _, params in r.session.calls] == ["3901", "3902"]
     assert [s.detail_ok for s in result.sightings] == [True, True, False]
+
+
+def test_an_empty_saved_listing_is_no_rows_not_a_failure() -> None:
+    # Seen live: an empty page leaves the list key out.
+    empty = {"status": "ok", "data": {}, "hasMore": False}
+    result = saved(run(saved_listing([empty])))
+    assert (result.rows, result.failure, result.more) == ((), None, False)
+
+
+LISTED = "Synthetic saved brief, full text as the listing gives it."
+
+
+def listed_saved_job(number: int) -> NormalizedPosting:
+    """A saved discovery posting whose listing carried a wrapped description."""
+    row = saved_job(
+        number,
+        content={
+            "title": f"Synthetic saved build {number}",
+            "description": (
+                f"<untrusted_participant_content>\n{LISTED}\n"
+                "</untrusted_participant_content>"
+            ),
+        },
+    )
+    r = run(saved_listing([saved_page(row)]))
+    (listed,) = saved(r).rows
+    return listed
+
+
+def test_the_listing_description_is_kept_unwrapped_and_never_delivered_alone() -> None:
+    listed = listed_saved_job(3951)
+    assert listed.listed_description == LISTED
+    assert listed.description is None
+    assert "listed_description" not in listed.to_body()
+
+
+def test_a_saved_job_whose_read_failed_is_described_from_its_listing() -> None:
+    refused = McpFailure("tool_error", tool_code="JOB_NOT_VISIBLE")
+    r = run(details_answer(lambda p: refused))
+    (one,) = r.details(sightings(listed_saved_job(3952))).sightings
+    assert one.listed and not one.detail_ok
+    assert one.posting.description == LISTED
+    assert discovery_eligible(one)
+    assert delivered_posting(one).description == LISTED
+
+
+def test_a_saved_job_left_unread_by_the_cap_waits_for_the_next_run() -> None:
+    r = run(details_answer())
+    (one,) = r.details(sightings(listed_saved_job(3953)), max_reads=0).sightings
+    assert not one.listed and not one.detail_ok
+    assert one.posting.description is None
+    assert not discovery_eligible(one)
+
+
+def test_a_search_posting_whose_read_failed_never_uses_a_listing() -> None:
+    refused = McpFailure("tool_error", tool_code="JOB_NOT_VISIBLE")
+    r = run(details_answer(lambda p: refused))
+    (one,) = r.details(sightings(posting(3954, ordinal=0, at=0))).sightings
+    assert not one.listed and one.posting.description is None
 
 
 # --- the daily allowance of detail reads (#377) -----------------------------------

@@ -221,6 +221,11 @@ class NormalizedPosting:
     # whatever its competition. Never delivered, never compared. A saved job
     # already delivered, or one that only appears in a search, is not one.
     saved_discovery: bool = False
+    # The full description the saved-jobs listing carried (unwrapped, #392). Never
+    # delivered, never compared: a saved job not delivered before falls back to it
+    # only when its detail read was made and failed (:func:`from_listing`), so a
+    # saved job that can't be read is still delivered once and never read again.
+    listed_description: str | None = None
     # A price the description states, read only while the feed gives no budget
     # (#503). Kept apart from ``budget_*``, which only the feed fills, so an hourly
     # rate, a project total and a per-item price stay distinguishable.
@@ -501,11 +506,27 @@ def normalize_saved(
     if posting is None:
         return None
     applied = source.get("applied")
+    listed = _mapping(source.get("content")).get("description")
+    listed = unwrapped(listed) if saved and isinstance(listed, str) else ""
     return replace(
         posting,
         applied=applied if isinstance(applied, bool) else None,
         saved=saved,
         saved_discovery=saved,
+        listed_description=listed or None,
+    )
+
+
+def from_listing(posting: NormalizedPosting) -> NormalizedPosting | None:
+    """A saved job described from its listing's own description, or ``None`` when
+    it is not a saved discovery or the listing carried none."""
+    listed = posting.listed_description
+    if not posting.saved_discovery or not listed:
+        return None
+    return replace(
+        posting,
+        description=listed,
+        stated=text_price(listed, posting.budget_min, posting.budget_max),
     )
 
 

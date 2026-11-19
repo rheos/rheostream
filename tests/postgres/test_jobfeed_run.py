@@ -3382,21 +3382,38 @@ def test_a_saved_job_is_delivered_even_when_every_search_failed(
     assert run["read_failures"] == {"searches:unavailable": 3}
 
 
-def test_saved_jobs_past_five_pages_wait_for_a_later_run(
+def test_tracked_saved_jobs_do_not_stop_the_backoff_when_every_search_failed(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """Saved jobs already tracked only refresh, and nearly every run lists some,
+    so they must not stand in for an invitation: a run whose every search failed
+    still backs off."""
+    c = connected_collector(intake, served)
+    mcp.saved = [saved_row(943)]
+    collected(c, clock)
+    assert states(intake, "~02943")["ext.jobsearch.saved"] == "true"
+    for name in ("find_jobs:smart_search", "find_jobs:search"):
+        mcp.script[name] = lambda r: httpx.Response(503)
+    collected(c, clock, hours=2)
+    after = stored(c.owner)
+    assert after.consecutive_failures == 1
+    assert after.not_before == clock.now() + TWO_HOURS
+
+
+def test_saved_jobs_past_ten_pages_wait_for_a_later_run(
     intake: Intake,
     served: FakeAuthorizationServer,
     clock: FakeClock,
     mcp: FakeMcpServer,
 ) -> None:
     c = connected_collector(intake, served)
-    mcp.saved = [saved_row(9500 + n) for n in range(55)]
+    mcp.saved = [saved_row(9500 + n) for n in range(105)]
     collected(c, clock)
     assert [p["offset"] for p in saved_calls(mcp) if p["followed"]] == [
-        0,
-        10,
-        20,
-        30,
-        40,
+        10 * page for page in range(10)
     ]
     (run,) = runs(c)
     assert run["read_failures"].get("saved:more") == 1

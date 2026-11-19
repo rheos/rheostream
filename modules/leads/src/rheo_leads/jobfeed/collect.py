@@ -25,6 +25,7 @@ from typing import Final
 from rheo_leads.jobfeed.normalize import (
     NormalizedPosting,
     apply_detail,
+    from_listing,
     normalize_invitation,
     normalize_row,
     normalize_saved,
@@ -42,9 +43,10 @@ INVITATIONS_MORE: Final = "invitations:more"
 """The run-history reason for a listing that had more than one page."""
 SAVED_LIMIT: Final = 10
 """The saved-jobs page size: the provider's maximum."""
-SAVED_PAGES: Final = 5
-"""The most saved-jobs pages one run reads, so at most 50 saved jobs a run; the
-search row cap does not count them."""
+SAVED_PAGES: Final = 10
+"""The most saved-jobs pages one run reads, so at most 100 saved jobs a run; the
+search row cap does not count them. A page is one listing call, not a detail
+read."""
 UNSAVED_PAGES: Final = 2
 """The most pages of jobs saved and then removed one run reads."""
 SAVED_FAILED: Final = "saved"
@@ -83,6 +85,10 @@ class CollectResult:
 class Sighting:
     posting: NormalizedPosting
     detail_ok: bool = False
+    listed: bool = False
+    """A saved job whose detail read failed, described from its listing instead
+    (:func:`~rheo_leads.jobfeed.normalize.from_listing`): delivered, but without
+    the figures only a detail read supplies."""
 
 
 @dataclass(frozen=True)
@@ -325,16 +331,25 @@ def saved_reason(failure: UpstreamFailure) -> str:
 
 
 def _saved_rows(document: Mapping[str, object]) -> list[object] | None:
-    """A saved-jobs page's rows when it passes the checks, else ``None``."""
+    """A saved-jobs page's rows when it passes the checks, else ``None``.
+
+    An empty listing leaves the key out (``{"data": {}, "hasMore": false}``, seen
+    live 2026-11-19): with ``data`` present and nothing more to come it is a page
+    of no rows, not a failure."""
     if document.get("status") != "ok":
         return None
     data = document.get("data")
     places = [data, document] if isinstance(data, Mapping) else [document]
     for place in places:
         for key in SAVED_LIST_KEYS:
+            if key not in place:
+                continue
             listed = place.get(key)
-            if isinstance(listed, list):
-                return listed if len(listed) <= SAVED_LIMIT else None
+            if not isinstance(listed, list):
+                return None
+            return listed if len(listed) <= SAVED_LIMIT else None
+    if isinstance(data, Mapping) and document.get("hasMore") is False:
+        return []
     return None
 
 
@@ -459,6 +474,14 @@ def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
                     invited=any(row.invited for row in group),
                     saved=_saved(group),
                     saved_discovery=any(row.saved_discovery for row in group),
+                    listed_description=next(
+                        (
+                            row.listed_description
+                            for row in group
+                            if row.listed_description
+                        ),
+                        None,
+                    ),
                     feed_id=preferred.feed_id
                     or next((row.feed_id for row in group if row.feed_id), None),
                     purpose=(
@@ -554,6 +577,8 @@ def read_details(
     cut = False
     skipped_known = 0
     terminal: UpstreamFailure | None = None
+    # Postings whose read was never made: no feed id, the cap or the deadline.
+    unread: set[str] = set()
     for sighting in sightings:
         posting = sighting.posting
         key = posting.posting_id
@@ -601,12 +626,20 @@ def read_details(
             if detail is None:
                 failures += 1
                 reasons[reason or NO_DESCRIPTION] += 1
+                if reason in (NO_FEED_ID, NOT_READ_DEADLINE, NOT_READ_CAP):
+                    unread.add(key)
         found = details[key]
         described = None if found is None else _described(posting, found, job_hosts)
+        if described is not None:
+            updated.append(Sighting(described, detail_ok=True))
+            continue
+        # A saved job whose read was made and failed (refused, or no description)
+        # falls back to its listing's description, so it is delivered once and not
+        # read again every run. One left unread by the cap or the deadline waits for
+        # the next run's read.
+        listed = None if key in unread else from_listing(posting)
         updated.append(
-            _downgraded(posting)
-            if described is None
-            else Sighting(described, detail_ok=True)
+            _downgraded(posting) if listed is None else Sighting(listed, listed=True)
         )
     return DetailResult(
         sightings=tuple(updated),

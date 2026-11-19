@@ -351,7 +351,7 @@ describe("retrying failed jobs", () => {
       button?.click();
     });
     expect(submit).toHaveBeenCalledWith("leads.jobfeed.collect_now", {});
-    expect(notices()).toEqual([expect.stringContaining("Sync started")]);
+    expect(notices()).toEqual([expect.stringContaining("Sync requested")]);
     await act(async () => {
       button?.click();
     });

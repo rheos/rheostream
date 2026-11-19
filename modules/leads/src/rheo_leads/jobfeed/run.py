@@ -297,7 +297,12 @@ def collect_phase(
     if collected.capability_lost:
         return None
     failures = collected.upstream_failures
-    if collected.pages_ok == 0 and failures and not invites.rows and not saved.rows:
+    saved_rows = _known_refresh_only(run, saved.rows)
+    # Only an invitation or a saved job new this run keeps a run whose every search
+    # failed going without a backoff; saved jobs already tracked only refresh, and
+    # nearly every run lists some.
+    fresh = invites.rows or any(row.saved_discovery for row in saved_rows)
+    if collected.pages_ok == 0 and failures and not fresh:
         limited = [f for f in failures if f.code == "rate_limited"]
         return _stopped(limited[0] if limited else failures[0])
     # Invited and saved rows first: merged, they keep their place, so they are read
@@ -305,7 +310,7 @@ def collect_phase(
     merged = merge_sightings(
         [
             *invites.rows,
-            *_known_refresh_only(run, saved.rows),
+            *saved_rows,
             *unsaved.rows,
             *collected.rows,
         ]
@@ -332,17 +337,19 @@ def collect_phase(
         reasons[SAVED_MORE] = 1
     if collected.pages_ok == 0 and collected.search_failures:
         # Every search failed (a failed call, or a page that failed its checks),
-        # and only the invitations or saved jobs kept the run going: the failure is
-        # kept in the history, though without a backoff.
+        # and only the invitations or new saved jobs kept the run going, or no
+        # call failed outright: the failure is kept in the history, though without
+        # a backoff.
         code = read_failure_reason(failures[0]) if failures else "protocol"
         reasons[f"{SEARCHES_FAILED}:{code}"] = collected.search_failures
     return Collected(
         sightings=details.sightings,
+        # Search and invitation rows; the saved-jobs listings, which list mostly
+        # the same tracked jobs every run, are not counted.
         fetched=len(collected.rows)
         + collected.invalid_rows
         + len(invites.rows)
-        + invites.invalid_rows
-        + sum(len(listing.rows) + listing.invalid_rows for listing in listings),
+        + invites.invalid_rows,
         # Search pages only; the invitations and saved-jobs listings are not.
         pages=collected.pages_used,
         detail_reads=details.detail_reads,

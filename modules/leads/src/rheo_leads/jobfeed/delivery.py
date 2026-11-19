@@ -128,9 +128,12 @@ def unchanged(carried: Mapping[str, str], stored: Mapping[str, str] | None) -> b
 
 def delivered_posting(sighting: Sighting) -> NormalizedPosting:
     """The posting as delivered: a description (and the detail-only hire rate) only
-    from a detail read that succeeded in this run, never a feed snippet."""
+    from a detail read that succeeded in this run, never a feed snippet. A saved job
+    described from its listing keeps that full description, without a hire rate."""
     if sighting.detail_ok:
         return sighting.posting
+    if sighting.listed:
+        return replace(sighting.posting, client_hire_rate=None)
     return replace(sighting.posting, description=None, client_hire_rate=None)
 
 
@@ -145,8 +148,9 @@ def _over_cap(posting: NormalizedPosting) -> bool:
 
 
 def _saved_discovery(sighting: Sighting) -> bool:
-    """A saved job the collector has not delivered before, read in full."""
-    return sighting.posting.saved_discovery and sighting.detail_ok
+    """A saved job the collector has not delivered before, read in full or, when
+    its read failed, described from its listing."""
+    return sighting.posting.saved_discovery and (sighting.detail_ok or sighting.listed)
 
 
 def discovery_eligible(sighting: Sighting) -> bool:
@@ -154,8 +158,9 @@ def discovery_eligible(sighting: Sighting) -> bool:
     or invited; or saved and read in full. An invited job is delivered whatever its
     competition, and even when its detail read failed: the client asked, and its
     title and link are known. A saved job is delivered whatever its competition
-    too, since the owner saved it, but only once its detail was read: until then
-    the next run tries again."""
+    too, since the owner saved it, once its detail was read or, when the read was
+    made and failed, from its listing's description; a read the cap or the
+    deadline left unmade waits for the next run."""
     posting = sighting.posting
     return (
         posting.invited
