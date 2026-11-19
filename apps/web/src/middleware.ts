@@ -126,8 +126,9 @@ export const config = {
   // browser is meant to land — without the exclusion it would bounce straight
   // through `/auth/continue` to the provider and never render. `healthz` is
   // excluded so the container health check (#156) reaches its route handler
-  // instead of being redirected to sign in.
+  // instead of being redirected to sign in. The three icon files (#616) are
+  // public brand images, so the sign-in page's tab gets its icon too.
   matcher: [
-    "/((?!login(?:/|$)|healthz$|_next/static|_next/image|favicon.ico).*)",
+    "/((?!login(?:/|$)|healthz$|_next/static|_next/image|favicon\\.ico$|icon\\.svg$|apple-icon\\.png$).*)",
   ],
 };
