@@ -412,13 +412,16 @@ def read_details(
     terminal: UpstreamFailure | None = None
     for sighting in sightings:
         posting = sighting.posting
-        if not _eligible(posting):
-            updated.append(sighting)
-            continue
         key = posting.posting_id
         if key in known:
-            skipped_known += 1
+            # Known postings carry no feed client figures, read or not: the stored
+            # detail figures stand even while a posting is over the cap, applied
+            # to, or seen only by the refresh search, since nothing re-reads it.
+            skipped_known += _eligible(posting)
             updated.append(_unread_known(sighting))
+            continue
+        if not _eligible(posting):
+            updated.append(sighting)
             continue
         if key not in details:
             detail: dict[str, object] | None = None

@@ -906,3 +906,22 @@ def test_a_posting_whose_description_is_stored_is_not_read_again() -> None:
     assert read.detail_ok
     assert (result.detail_reads, result.failures, result.known) == (1, 0, 1)
     assert result.reasons == {}
+
+
+def test_a_known_posting_never_carries_feed_client_figures_eligible_or_not() -> None:
+    """Over the cap, applied to, or seen only by the refresh search, a known
+    posting is not read and keeps its stored detail figures too: the feed row's
+    own figures would overwrite them, and nothing would read them back."""
+    r = run(details_answer())
+    over = posting(2401, ordinal=0, at=0, proposals_tier="50+")
+    refresh = posting(2402, ordinal=0, at=0, purpose="refresh_only")
+    result = r.details(
+        sightings(over, refresh),
+        known=frozenset({over.posting_id, refresh.posting_id}),
+    )
+    assert r.session.calls == []
+    for kept in result.sightings:
+        assert (kept.posting.client_spend, kept.posting.client_rating) == (None, None)
+        assert kept.posting.client_reviews is None
+    # Neither was eligible for a read, so neither counts as a read saved.
+    assert (result.detail_reads, result.failures, result.known) == (0, 0, 0)
