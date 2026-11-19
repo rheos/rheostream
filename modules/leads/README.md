@@ -257,8 +257,9 @@ queue's **Show** filter set to Passed, Lost or All stages, and its card and page
 **Reopen** in place of the stage select. `leads.ui.queue` carries the way back: each
 item's `dismiss` names its `undo` stage (the stage it was dismissed from when the
 preset allows that move, else the first open one), and a closed item's `transitions`
-list its reopen moves; Reopen takes the first. A follow-up the dismiss cancelled stays
-cancelled after a reopen: schedule it again.
+list its reopen moves; Reopen takes the first. A reopen brings back the follow-up the
+dismiss cancelled, with its action and due date; a follow-up cancelled by an earlier
+close stays cancelled.
 
 **Close versus erase.** Closing an opportunity (moving it to hired, lost or passed)
 keeps the posting attached: later sightings refresh the closed opportunity and never

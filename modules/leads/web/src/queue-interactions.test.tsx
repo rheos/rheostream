@@ -188,7 +188,7 @@ describe("the queue card's Undo", () => {
       expect.objectContaining({ revision: 5 }),
     );
   });
-  it("shows no follow-up after Undo: the dismiss cancelled it", async () => {
+  it("shows the follow-up again after Undo: the reopen restores it", async () => {
     const submit = vi
       .fn()
       .mockResolvedValueOnce({ state: "ok", result: { revision: 4 } })
@@ -196,9 +196,10 @@ describe("the queue card's Undo", () => {
     mount(submit, { items: [withFollowup, other] });
     expect(host.textContent).toContain("Send the draft");
     await act(async () => button("Dismiss Example data service").click());
+    expect(host.textContent).not.toContain("Send the draft");
     await act(async () => button("Undo: reopen").click());
     expect(host.textContent).toContain("Example data service");
-    expect(host.textContent).not.toContain("Send the draft");
+    expect(host.textContent).toContain("Send the draft");
   });
   it("waits for the dismiss before Undo can run", async () => {
     let settle: (value: unknown) => void = () => {};
