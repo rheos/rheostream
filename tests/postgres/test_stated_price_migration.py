@@ -24,7 +24,8 @@ from postgres.test_module_upgrade import upgrade
 
 pytestmark = pytest.mark.postgres
 REVISION = "0021_stated_price"
-HEAD = REVISION
+# The package head the upgrade moves to; 0022 follows this file's revision.
+HEAD = "0022_reopen_closed_jobs"
 PREVIOUS = "0020_current_handoff"
 FIELDS = {
     "ext.jobsearch.stated_price_min": ("decimal", [], "/stated_price_min"),
@@ -40,7 +41,7 @@ FIELDS = {
 def rewind(i: Intake) -> None:
     with open_unit_of_work(i.ctx) as uow:
         undone = rewind_leads(uow.connection, PREVIOUS)
-        assert undone == (REVISION,)
+        assert undone == (HEAD, REVISION)
         uow.connection.execute(
             delete(module_schema_version).where(
                 module_schema_version.c.module_id == "leads",
@@ -79,9 +80,10 @@ def test_a_populated_0020_moves_to_preset_v3_and_new_mappings(intake: Intake) ->
     with open_unit_of_work(intake.ctx) as uow:
         c = uow.connection
         (preset,) = rows(c, p.pipeline_preset, id=PRESET)
-        assert preset["current_version"] == 3
+        # 0022 then adds version 4 the same way; version 3 is this file's.
+        assert preset["current_version"] == 4
         (moved,) = rows(c, p.opportunity, id=job["id"])
-        assert moved["preset_version"] == 3
+        assert moved["preset_version"] == 4
         assert {k: v for k, v in moved.items() if k != "preset_version"} == {
             k: v for k, v in job.items() if k != "preset_version"
         }
@@ -186,7 +188,7 @@ def test_a_migrated_feed_connection_stores_a_stated_price(intake: Intake) -> Non
     with open_unit_of_work(intake.ctx) as uow:
         c = uow.connection
         (job,) = rows(c, p.opportunity, title="Stated price example")
-        assert (job["preset_id"], job["preset_version"]) == (PRESET, 3)
+        assert (job["preset_id"], job["preset_version"]) == (PRESET, 4)
         states = {
             r["target"]: r["value_text"]
             for r in rows(c, p.opportunity_field_state, opportunity_id=job["id"])

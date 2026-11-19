@@ -1,5 +1,8 @@
-"""Version-fifteen intake, pipeline, handoff, job feed, job scoring, review, proposal
+"""Version-sixteen intake, pipeline, handoff, job feed, job scoring, review, proposal
 and pricing snapshot; restore preserves identities.
+
+Format 16 carries the Job search preset's fourth version (0022, the moves that
+reopen a passed or lost job); its tables are format 15's.
 
 Format 15 carries the Job search preset's third version (0021, the stated price)
 and the job mappings' third version; its tables are format 14's.
@@ -299,16 +302,16 @@ def import_records(
         intake_connection=1,
         connection_health=1,
         pipeline_preset=2,
-        # Job search has versions 1 to 3 (0018 added ``invited``, 0021 the stated
-        # price); its stages, transitions, fields, rubric and template are seeded
-        # once per version.
-        preset_version=4,
-        preset_stage=30,
-        preset_transition=59,
+        # Job search has versions 1 to 4 (0018 added ``invited``, 0021 the stated
+        # price, 0022 the reopen moves); its stages, transitions, fields, rubric and
+        # template are seeded once per version.
+        preset_version=5,
+        preset_stage=37,
+        preset_transition=77,
         preset_requirement=0,
-        preset_field=53,
-        preset_rubric=4,
-        preset_template=4,
+        preset_field=73,
+        preset_rubric=5,
+        preset_template=5,
     )
     if counts != expected:
         raise OperationRefused(

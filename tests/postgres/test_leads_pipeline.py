@@ -1305,6 +1305,38 @@ JOBSEARCH_TABLES = (
 )
 
 
+def _undo_0022(connection: Any) -> None:
+    """Back to the Job search preset's version 3: version 4 is removed and what
+    0022 moved to it is moved back."""
+    preset = {"preset": str(h.JOBSEARCH_PRESET_ID)}
+    connection.execute(
+        text(
+            "UPDATE leads.opportunity SET preset_version = 3 "
+            "WHERE preset_id = :preset AND preset_version = 4"
+        ),
+        preset,
+    )
+    connection.execute(
+        text("UPDATE leads.pipeline_preset SET current_version = 3 WHERE id = :preset"),
+        preset,
+    )
+    for table in (
+        "preset_requirement",
+        "preset_transition",
+        "preset_field",
+        "preset_rubric",
+        "preset_template",
+        "preset_stage",
+        "preset_version",
+    ):
+        connection.execute(
+            text(
+                f"DELETE FROM leads.{table} WHERE preset_id = :preset AND version = 4"
+            ),
+            preset,
+        )
+
+
 def _undo_0020(connection: Any) -> None:
     connection.execute(text("DROP TABLE leads.current_link_cursor"))
     connection.execute(text("DROP INDEX leads.handoff_nonterminal_scan"))
@@ -1573,6 +1605,7 @@ def _undo_0005(connection: Any) -> None:
 # Newest first. Each step undoes one frozen Leads migration on a disposable
 # workspace that started at head, so a test can rebuild an exact predecessor.
 LEADS_REVISIONS = (
+    ("0022_reopen_closed_jobs", _undo_0022),
     ("0021_stated_price", _undo_0021),
     ("0020_current_handoff", _undo_0020),
     ("0018_invited_jobs", _undo_0018),
@@ -1647,10 +1680,11 @@ def test_jobsearch_preset_is_refused_until_the_capability_is_on(
             .all()
         )
     # Version 1 (16 fields), version 2 (the same plus ``invited``, from 0018) and
-    # version 3 (plus the three stated-price fields, from 0021).
-    assert "ext.jobsearch.posting_id" in fields and len(fields) == 16 + 17 + 20
-    assert fields.count("ext.jobsearch.invited") == 2
-    assert fields.count("ext.jobsearch.stated_price_unit") == 1
+    # version 3 (plus the three stated-price fields, from 0021) and version 4 (the
+    # same as 3, with the reopen moves, from 0022).
+    assert "ext.jobsearch.posting_id" in fields and len(fields) == 16 + 17 + 20 + 20
+    assert fields.count("ext.jobsearch.invited") == 3
+    assert fields.count("ext.jobsearch.stated_price_unit") == 2
 
     ok(intake, "core.settings.set", key="leads.capabilities.jobsearch", value=False)
     again = intake.call("leads.pipeline.create", name="Another", preset="job_search")
@@ -1816,6 +1850,7 @@ def test_attach_by_field_survives_frozen_upgrade(intake: Intake) -> None:
     setup(intake)
     with open_unit_of_work(intake.ctx) as uow:
         assert rewind_leads(uow.connection, "0007_jobsearch_preset") == (
+            "0022_reopen_closed_jobs",
             "0021_stated_price",
             "0020_current_handoff",
             "0018_invited_jobs",
