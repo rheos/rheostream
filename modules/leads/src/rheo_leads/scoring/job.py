@@ -405,8 +405,9 @@ def age_out(uow: UnitOfWork, *, now: datetime, max_age: timedelta | None) -> int
     earlier assessment, if any, stays its current one. Exempt: a promoted job, an
     invited one, and one whose current assessment waited for the full posting (its
     description arrived late, often pasted by the owner, and nothing else could get
-    it scored). A job a sweep holds a claim on is left to that sweep. ``None`` turns
-    the cutoff off."""
+    it scored). A job the owner saved is exempt too, as an invited one is: saving an
+    older job is a request to score it. A job a sweep holds a claim on is left to
+    that sweep. ``None`` turns the cutoff off."""
     if max_age is None:
         return 0
     state, o, field = s.job_score_state, p.opportunity, p.opportunity_field_state
@@ -414,8 +415,8 @@ def age_out(uow: UnitOfWork, *, now: datetime, max_age: timedelta | None) -> int
     old_ids = (
         _open_jobs().with_only_columns(o.c.id).where(o.c.created_at < now - max_age)
     )
-    invited = select(field.c.opportunity_id).where(
-        field.c.target == EXTENSION + "invited",
+    flagged = select(field.c.opportunity_id).where(
+        field.c.target.in_([EXTENSION + "invited", EXTENSION + "saved"]),
         field.c.value_kind == "value",
         field.c.value_text == "true",
         field.c.orphaned.is_(False),
@@ -444,7 +445,7 @@ def age_out(uow: UnitOfWork, *, now: datetime, max_age: timedelta | None) -> int
             unclaimed,
             state.c.opportunity_id.in_(old_ids),
             state.c.opportunity_id.not_in(select(s.job_promotion.c.opportunity_id)),
-            state.c.opportunity_id.not_in(invited),
+            state.c.opportunity_id.not_in(flagged),
             func.coalesce(
                 func.starts_with(latest_explanation, UNDESCRIBED_LINE), False
             ).is_(False),

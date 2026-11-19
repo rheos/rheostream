@@ -272,6 +272,9 @@ export function Meta({
       {detail && isNewClient(fields) ? (
         <span className={styles.flag}>New client</span>
       ) : null}
+      {detail && job && isSaved(fields) ? (
+        <span className={styles.flag}>Saved on Upwork</span>
+      ) : null}
       {party ? <span>{party}</span> : null}
       <span>{age(item, now, zone)}</span>
     </div>

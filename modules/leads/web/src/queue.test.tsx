@@ -560,6 +560,14 @@ describe("queue rendering", () => {
     expect(quiet).not.toContain('role="alert"');
     expect(quiet).not.toContain("Payment verified");
   });
+  it("says a saved job is saved on Upwork in the detail header (#594)", () => {
+    const saved = { ...full, fields: { ...row(full.fields), saved: "true" } };
+    const removed = { ...full, fields: { ...row(full.fields), saved: "false" } };
+    const header = (item: typeof full) =>
+      renderToStaticMarkup(<JobHeader item={item} now={NOW} />);
+    expect(header(saved)).toContain("Saved on Upwork");
+    expect(header(removed)).not.toContain("Saved on Upwork");
+  });
   it("puts the client's hire rate and reviews in the info tip", () => {
     const html = renderToStaticMarkup(
       <JobHeader

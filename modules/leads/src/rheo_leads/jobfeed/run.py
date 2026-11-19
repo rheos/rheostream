@@ -376,21 +376,17 @@ def collect_phase(
 def _known_refresh_only(
     run: _Run, postings: Sequence[NormalizedPosting]
 ) -> list[NormalizedPosting]:
-    """``rows`` with every posting the collector already delivered made
-    refresh-only, read in a short unit of its own that ends at once: a saved job
-    is read in detail once, when it first arrives, and refreshed after that."""
+    """``rows`` with every posting whose description this connection already
+    delivered made refresh-only (:func:`_described_before`): a saved job is read in
+    detail until its description is stored, and refreshed after that. One tracked
+    without a description (its read failed, or it came from a refresh) stays a
+    saved discovery, so it is read, or described from its listing, next time."""
     if not postings:
         return []
-    with open_unit_of_work(run.job_ctx) as short:
-        known = read_postings(
-            short,
-            connection_id=run.connection.connection_id,
-            posting_ids=[posting.posting_id for posting in postings],
-        )
-        short.commit()
+    described = _described_before(run, [posting.posting_id for posting in postings])
     return [
         replace(posting, purpose="refresh_only", saved_discovery=False)
-        if posting.posting_id in known
+        if posting.posting_id in described
         else posting
         for posting in postings
     ]

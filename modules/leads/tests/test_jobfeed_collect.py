@@ -1098,6 +1098,7 @@ def listed_saved_job(number: int) -> NormalizedPosting:
     )
     r = run(saved_listing([saved_page(row)]))
     (listed,) = saved(r).rows
+    assert isinstance(listed, NormalizedPosting)
     return listed
 
 
