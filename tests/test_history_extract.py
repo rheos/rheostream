@@ -1,5 +1,6 @@
 """The history extract is bounded, replay-identifiable, and content-safe on refusal."""
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -85,3 +86,25 @@ def test_refusal_does_not_echo_private_values() -> None:
     with pytest.raises(HistoryExtractRefusal) as error:
         parse_history_extract(lines)
     assert "private-example-value" not in str(error.value)
+
+
+def test_refusal_lists_errors_in_sorted_order() -> None:
+    """The summary is sorted, not in pydantic's own order, so a pydantic upgrade
+    that reorders its errors (2.14 did, for ``extract``) leaves the text alone."""
+    unit = {
+        "external_source_key": "no-separator",
+        "kind": "conversation",
+        "status": "turn",
+        "title": "Turn",
+        "body": " ",
+        "occurred_at": AT.isoformat(),
+    }
+    header = dump_history_extract([], source_sha256=CHECKSUM, unresolved_count=0)[
+        0
+    ].replace('"unit_count":0', '"unit_count":1')
+    with pytest.raises(HistoryExtractRefusal) as error:
+        parse_history_extract([header, json.dumps(unit)])
+    # pydantic reports the fields in declaration order: external_source_key first.
+    assert str(error.value) == (
+        "history_extract_invalid: line 2: body=value_error, external_source_key=value_error"
+    )
