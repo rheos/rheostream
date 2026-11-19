@@ -728,6 +728,15 @@ export function JobQueue(props: QueueProps) {
     }
     if (outcome.state === "ok") {
       const revision = row(outcome.result).revision;
+      // A reopened job that stays in view (All stages) needs its open-stage
+      // actions, which only the server knows: the queue reloads to show them.
+      if (
+        str(item.stage_kind) === "terminal" &&
+        afterMove([item], id, to, props.stage).length
+      ) {
+        window.location.replace(withoutDismissed(window.location.href));
+        return;
+      }
       if (undo) {
         setDismissals((current) => ({
           ...current,

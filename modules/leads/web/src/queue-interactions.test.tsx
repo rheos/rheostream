@@ -258,6 +258,18 @@ describe("the queue card's Undo", () => {
       to_stage_id: "review",
     });
     expect(count()).toBe("0 jobs");
+    expect(replace).not.toHaveBeenCalled();
+  });
+  it("reloads after a reopen that stays in view, so the card gets its open-stage actions", async () => {
+    const submit = vi.fn().mockResolvedValue({ state: "ok", result: { revision: 5 } });
+    mount(submit, { items: [closed], stage: "all" });
+    await act(async () => button("Reopen Example data service (move to Review)").click());
+    expect(submit).toHaveBeenCalledWith("leads.opportunity.transition", {
+      ref: job.ref,
+      revision: 4,
+      to_stage_id: "review",
+    });
+    expect(replace).toHaveBeenCalledWith(PAGE);
   });
 });
 

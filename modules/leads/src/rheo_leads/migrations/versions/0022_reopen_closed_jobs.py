@@ -5,7 +5,8 @@ mistake stayed closed. A preset version is immutable once used, so the moves arr
 in a new version: a full copy of the preset's current version (stages, transitions,
 requirements, fields, rubric, template) plus a move from each closed stage back to
 every open stage that can close into it, so an undo returns a job to the stage it
-left: ``passed`` to review and qualified, ``lost`` to review, qualified, applied and
+left (only from a closed stage into an open one, the moves an edit may make):
+``passed`` to review and qualified, ``lost`` to review, qualified, applied and
 interviewing. ``hired`` stays final. The preset's current version moves to it, and
 every opportunity on the old current version moves with it, as 0021 did. The new
 version is a strict superset with the same stages and outcomes, so each opportunity
@@ -76,11 +77,11 @@ BEGIN
     WHERE EXISTS (
         SELECT 1 FROM leads.preset_stage s
         WHERE s.preset_id = '{PRESET}' AND s.version = from_v
-          AND s.stage_id = pair.start
+          AND s.stage_id = pair.start AND s.kind = 'terminal'
     ) AND EXISTS (
         SELECT 1 FROM leads.preset_stage s
         WHERE s.preset_id = '{PRESET}' AND s.version = from_v
-          AND s.stage_id = pair.finish
+          AND s.stage_id = pair.finish AND s.kind = 'open'
     ) AND NOT EXISTS (
         SELECT 1 FROM leads.preset_transition tr
         WHERE tr.preset_id = '{PRESET}' AND tr.version = from_v
