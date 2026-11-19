@@ -68,6 +68,7 @@ from sqlalchemy.exc import StatementError
 
 from rheo_leads import model_calls
 from rheo_leads import pipeline_common as h
+from rheo_leads.participant_text import unwrapped
 from rheo_leads.proposals import prompts
 from rheo_leads.proposals.pipeline import (
     AnswerUnusable,
@@ -589,7 +590,7 @@ def _job_input(claimed: Claimed) -> JobInput:
     fields = claimed.fields
     return JobInput(
         title=claimed.title,
-        description=fields.get("message", ""),
+        description=unwrapped(fields.get("message", "")),
         platform=fields.get(EXTENSION + "platform") or "upwork",
         budget_min=fields.get(EXTENSION + "budget_min"),
         budget_max=fields.get(EXTENSION + "budget_max"),
