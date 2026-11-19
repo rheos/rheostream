@@ -148,18 +148,21 @@ def parse_history_extract(lines: Iterable[str]) -> HistoryExtract:
         except ValidationError as error:
             # Pydantic messages may contain the actual private input. Field locations
             # and error types are enough to diagnose a malformed extract safely.
+            # Sorted, so the text does not change with pydantic's error order.
             locations = ", ".join(
-                ".".join(
-                    str(part)
-                    for part in (
-                        (*issue["loc"][:-1], "<extra>")
-                        if issue["type"] == "extra_forbidden" and issue["loc"]
-                        else issue["loc"]
+                sorted(
+                    ".".join(
+                        str(part)
+                        for part in (
+                            (*issue["loc"][:-1], "<extra>")
+                            if issue["type"] == "extra_forbidden" and issue["loc"]
+                            else issue["loc"]
+                        )
                     )
+                    + "="
+                    + str(issue["type"])
+                    for issue in error.errors(include_url=False, include_input=False)
                 )
-                + "="
-                + str(issue["type"])
-                for issue in error.errors(include_url=False, include_input=False)
             )
             raise HistoryExtractRefusal(f"line {number}: {locations}") from None
     if header is None:

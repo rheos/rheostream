@@ -53,6 +53,9 @@ importers:
       eslint-config-next:
         specifier: ^16
         version: 16.4.6(@typescript-eslint/parser@8.73.0(eslint@9.39.5)(typescript@5.9.3))(eslint@9.39.5)(typescript@5.9.3)
+      happy-dom:
+        specifier: ^20
+        version: 20.14.6
       openapi-typescript:
         specifier: 7.13.0
         version: 7.13.0(typescript@5.9.3)
