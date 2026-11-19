@@ -19,8 +19,8 @@ has both moves is left alone.
 
 from alembic import op
 
-revision = "0019_reopen_closed_jobs"
-down_revision = "0018_invited_jobs"
+revision = "0022_reopen_closed_jobs"
+down_revision = "0021_stated_price"
 branch_labels = None
 depends_on = None
 # Adds rows and repoints opportunities to a superset of what they had; nothing is

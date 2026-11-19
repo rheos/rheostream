@@ -4,9 +4,9 @@ rheoStream is an open framework for agent-assisted work. It runs agent-accessibl
 workspace operations, background jobs and persistent memory through a FastAPI core,
 MCP facade and Next.js shell.
 
-[![How rheoStream works, by design: the explainer's end card](docs/media/explainer-by-design.jpg)](https://youtu.be/T7i6fdqUPzc)
+[![How rheoStream works, by design: the explainer's end card](docs/media/explainer-by-design.jpg)](https://youtu.be/pFBLNHC59XU)
 
-[Watch the 2:49 explainer](https://youtu.be/T7i6fdqUPzc) (narrated): one website inquiry followed
+[Watch the 2:49 explainer](https://youtu.be/pFBLNHC59XU) (narrated): one website inquiry followed
 through the design, from the signed intake to a workspace that leaves as one file. It shows the
 system as designed; [Status](#status) says what is built today.
 
@@ -15,8 +15,9 @@ system as designed; [Status](#status) says what is built today.
 One system you own, with your work in it and an agent named rheo to run it. The
 [design guide](docs/guide/README.md) walks through every part.
 
-- Each workspace is its own Postgres database, chosen from who you are and never from what
-  a request says. ([Workspaces and storage](docs/guide/workspaces-and-storage.md))
+- Your records live in your own Postgres, and a workspace exports to one file that restores
+  elsewhere with the same identifiers. ([Storage](docs/guide/workspaces-and-storage.md),
+  [export, restore and deploy](docs/guide/export-restore-deploy.md))
 - A change and its events commit together, jobs run under leases, and every long call
   leaves an operation record you can poll. ([Durable work](docs/guide/durable-work.md))
 - Deleting, sending and paying need a person's approval, bound to the exact call. No
@@ -25,19 +26,27 @@ One system you own, with your work in it and an agent named rheo to run it. The
 - Every agent comes in through one MCP server, with scoped tokens, redaction before
   anything reaches a model, and a runtime you can swap.
   ([The MCP door](docs/guide/mcp-and-runtimes.md))
-- Recallatron stores who may read each memory and why, recalls with hybrid search that runs inside the deployment, and erases whatever was derived from erased data. It can save
-  from your Claude Code sessions on its own. ([Recallatron](docs/guide/recallatron.md),
+- Recallatron stores who may read each memory and why, recalls with hybrid search that
+  runs inside the deployment, and erases whatever was derived from erased data. It can
+  save from your Claude Code sessions on its own. ([Recallatron](docs/guide/recallatron.md),
   [the Claude Code bridge](docs/guide/claude-code-bridge.md))
-- Leads takes inquiries from any funnel (signed webhooks, imports, pasted email) and keeps
-  the evidence behind every opportunity. ([Leads](docs/guide/leads.md),
+- Leads takes inquiries from signed website webhooks and pasted email, and keeps the
+  evidence behind every opportunity. An optional job search collects postings from a
+  provider's MCP server, scores them against your profile, and drafts proposals and
+  pricing for you to review. ([Leads](docs/guide/leads.md),
   [Relationships](docs/guide/relationships.md), [Connectors](docs/guide/connectors.md))
-- Current turns repeats of the same alert into one item that wakes up, and takes
-  handoffs from Leads exactly once. ([Current](docs/guide/current.md))
-- rheo works from Claude, Telegram or voice under one authorization model.
+- Current turns repeats of the same alert into one item that wakes up, lets the alert's
+  writer close it by source, and takes handoffs from Leads exactly once, each one approved
+  by a person. Its queue is built for a phone: swipe a row to finish, watch or snooze it.
+  ([Current](docs/guide/current.md))
+- Finance reads your own bank, card and bill statements into a ledger, tracks what you
+  owe, and files due-date reminders in Current. An agent can read it only with a token
+  issued for that purpose. ([Finance](modules/finance/README.md))
+- rheo works from Claude, through the MCP door, under one authorization model. Telegram
+  and voice channels are designed to share it and are not built yet.
   ([rheo and channels](docs/guide/rheo-and-channels.md))
-- A workspace exports to one file and restores elsewhere with the same identifiers.
-  ([Export, restore and deploy](docs/guide/export-restore-deploy.md),
-  [Web shell and CLI](docs/guide/web-shell-and-cli.md))
+- A web shell for people, and a `rheo` command for the operator.
+  ([Web shell and CLI](docs/guide/web-shell-and-cli.md))
 
 ## Mechanisms you can inspect
 
@@ -54,16 +63,16 @@ One system you own, with your work in it and an agent named rheo to run it. The
 
 ## Current status and limits
 
-The core, worker, shell, Recallatron, module install/enable and Claude CLI adapter
-are implemented. Relationships owns shared party identity; Leads supports durable
-intake, configurable opportunity pipelines, permissions and tracked handoffs through
-operations and MCP. Their UI and authenticated intake transports remain separate
-work. Current tracks work items, projects, dependencies and areas through operations
-and MCP; its screens are next. Connectors, channels, packs and module
-disable/remove/purge are unimplemented. Modules are trusted code,
-not sandboxed plugins. Job enqueue spans two databases without a shared transaction:
-a crash between writes can delay discovery until reconciliation. The
-[architecture tour](docs/architecture/code-tour.md) documents recovery and its limits.
+The core, worker, shell, MCP facade, module install, enable and upgrade, and the Claude
+CLI adapter are implemented, with five modules. Recallatron, Leads and Current have
+screens in the shell. Relationships owns shared party identity and has no screens.
+Leads takes signed webhooks, pasted inquiries and an optional job feed; CSV and JSON
+imports and email adapters are not built. Finance has no screens; its owner works it
+from the `finance` command. Channels, packs and module disable/remove/purge are
+unimplemented. Modules are trusted code, not sandboxed plugins. Job enqueue spans two
+databases without a shared transaction: a crash between writes can delay discovery
+until reconciliation. The [architecture tour](docs/architecture/code-tour.md)
+documents recovery and its limits.
 
 ## Try this in 5 minutes
 
@@ -90,17 +99,23 @@ the [workspace guide](docs/workspace-layout.md) defines the public/private layou
 
 ## Status
 
-**Release one is two phases in, and the reference instance is live.** Phase one (the
-walking skeleton) and phase two (Recallatron) are merged. On 2026-09-30 the reference
-instance finished phase two's last piece: the predecessor memory service's data moved into
+**Five modules are built, and the reference instance is live.** Phase one (the walking
+skeleton) and phase two (Recallatron) are merged, with their acceptance matrices in
+[docs/acceptance](docs/acceptance/README.md). On 2026-09-30 the reference instance
+finished phase two's last piece: the predecessor memory service's data moved into
 Recallatron in one accounted transfer, and Recallatron became the only memory writer.
 Automatic memory now saves from enrolled Claude Code sessions, and clients recall through
-the one MCP surface. Phase three (Leads) is next. The license is AGPL-3.0.
+the one MCP surface. Since then Leads (phase three) has landed except its CSV and JSON
+imports, along with most of the optional job-search workflow (phase four), Current
+(phase five) with its screens, and the Leads-to-Current handoff
+([ADR-0001](docs/adr/0001-leads-current-project-link.md)). Finance, a personal ledger,
+came in from a standalone project in November 2026. The license is AGPL-3.0.
 
 **The flagship runs on `rheo.stream`.** One Coolify-managed server hosts it in subdomain
 mode, with a Let's Encrypt wildcard certificate: `circuit.` (the shell), `auth.` (GitHub
-sign-in), `recall.` (Recallatron's screens), `api.` and `mcp.`. The old `recallatron.` host
-301-redirects to `recall.`. A green push to `main` redeploys it once every CI workflow on
+sign-in), `recall.` (Recallatron's screens), `leads.`, `current.`, `api.` and `mcp.`. The
+old `recallatron.` host 301-redirects to `recall.`, and `app.` to `circuit.`. It loads all
+five modules. A green push to `main` redeploys it once every CI workflow on
 that commit has passed. [deploy/README.md](deploy/README.md) covers the topology, rollback,
 the connection budget and the nightly backups.
 
@@ -110,19 +125,28 @@ the connection budget and the nightly backups.
   database per workspace.
 - GitHub OAuth behind a pluggable provider boundary, host-only session cookies with a
   one-time identity-host grant, and core-issued `cli`, `mcp` and `runtime` tokens. A new
-  session opens in the workspace the account used last.
+  session opens in the workspace the account used last. The signed-out panel on a module
+  host links to `/auth/restart`, which clears a dead session cookie there.
 - Path-based and subdomain routing from one configuration.
-- An operator CLI: `rheo account`, `workspace`, `member`, `token`, `routing`, `doctor`.
-- The MCP facade, mounted in core over streamable HTTP.
+- An operator CLI: `rheo migrate`, `module`, `account`, `workspace`, `member`, `token`,
+  `routing`, `doctor`, `evidence`, `connector`, `openapi` and `web`.
+- The MCP facade, mounted in core over streamable HTTP, with optional OAuth sign-in for
+  MCP connector clients. A module can mark itself `explicit_only`: then no routine token
+  set or connector grant reaches its operations, only a token issued for that module.
+- An outbound OAuth client and an allowlisted, read-only MCP client, which the job feed
+  uses.
 - Durable work: leased jobs with retry, cancellation and scheduled jobs; a transactional
   outbox with consumer deduplication; retry, skip and replay for failed deliveries.
 - An operation record with a terminal status for every long-running call, and an audit
   record for every mutating one.
 - Redaction on everything bound for a model, by field sensitivity tier.
-- Module install and enable, a web contribution contract, and a declarative theme
-  contract with one seed dark theme.
+- Module install, enable and upgrade, a web contribution contract, and a declarative theme
+  contract with three selectable themes, one of them light. Screens show times in the
+  viewer's own time zone.
+- An approval page in the shell, where a person reviews and decides each bound call.
 - Workspace export and restore.
-- A Claude CLI runtime adapter.
+- A Claude CLI runtime adapter, and a typed-judgment adapter for the TypeSafe Jev
+  model that Leads can use as a scoring pre-filter ([runtimes](runtimes/README.md)).
 
 **Recallatron** is the first product module. Memory records support `remember`, `derive`,
 `correct` and `supersede`, with audience and purpose rules and opt-in retention. Recall is
@@ -131,11 +155,22 @@ MiniLM-L6-v2) that need no credential or network call. The flagship runs the loc
 embedding provider. Read-only screens cover browse, search, item detail and possible
 duplicates.
 
-**Not built yet.** Current has no screens yet. Module disable, remove and
-purge are designed but not built. Enqueueing a job still spans two databases (the job row
-in the workspace database, its due mark in the control database), so a crash between them
-leaves the job waiting for the reconcile pass. `connectors/`, `channels/` and `packs/` mark
-intended boundaries with no implementation behind them.
+**Relationships, Leads, Current and Finance.** Relationships keeps the people and
+organizations the other modules share, and links incoming contact details to an existing
+party automatically only on authenticated evidence. Leads runs configurable pipelines with
+qualification, dated follow-ups, contact permissions and tracked handoffs; its screens
+are a job queue, an opportunity list and board, a scoring page, a review queue, capture
+and connections. Current carries work items, projects, dependencies and areas, with
+queue, item, project and area screens. Finance keeps a personal ledger with eight
+owner-only agent reads; its 15-minute tick stays off until the workspace sets
+`finance.jobs.enabled` to true. Each module's README under `modules/` has the detail.
+
+**Not built yet.** Module disable, remove and purge are designed but not built. Leads has
+no CSV or JSON import and no email adapter. Enqueueing a job still spans two databases (the
+job row in the workspace database, its due mark in the control database), so a crash
+between them leaves the job waiting for the reconcile pass. `connectors/`, `channels/` and
+`packs/` mark intended boundaries with no implementation behind them; today's connector
+code lives in core and in the modules.
 
 Start with the [idea document](docs/ideas/rheo-stream-idea.md). It sets out the
 product thesis, the architecture direction, and a decision ledger that keeps
@@ -170,7 +205,8 @@ trail.
 
 Agent execution is a replaceable adapter. The Claude Code print-mode adapter is
 built; the OpenRouter API is the next planned runtime, with Codex CLI as a further target; no
-module may assume a particular model or vendor.
+module may assume a particular model or vendor. Typed judgments (numbers for named
+questions, no tools and no prose) go through a separate contract, with one adapter built.
 
 ```text
 apps/                      Application entry points and interface adapters
@@ -180,7 +216,8 @@ modules/
   leads/                   Opportunity development
   current/                 Commitments and active work
   recallatron/             Permission-aware durable memory
-  relationships/           Shared people and organization records (proposed)
+  relationships/           Shared people and organization records
+  finance/                 Personal ledger, bills and reminders
 connectors/                External source and destination adapters
 channels/                  Conversation surfaces such as text and voice
 runtimes/                  Replaceable agent execution adapters

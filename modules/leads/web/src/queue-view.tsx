@@ -46,6 +46,7 @@ import {
   SORTS,
   sourceLabel,
   PREFS_KEY,
+  QUEUE_PREFERENCE,
   type Prefs,
   type Sort,
 } from "./queue";
@@ -85,9 +86,10 @@ function subscribe(listener: () => void) {
 function savedText(): string | null {
   return readPrefsText(storage()) ?? remembered;
 }
-function remember(prefs: Prefs) {
+function remember(prefs: Prefs): string {
   remembered = savePrefs(storage(), prefs);
   for (const listener of listeners) listener();
+  return remembered;
 }
 
 function OpenIcon() {
@@ -243,10 +245,12 @@ function Badges({ item, pipeline }: { item: Row; pipeline?: string }) {
 export function Meta({
   item,
   now,
+  zone = "UTC",
   detail = false,
 }: {
   item: Row;
   now: number;
+  zone?: string;
   detail?: boolean;
 }) {
   const fields = row(item.fields);
@@ -265,13 +269,21 @@ export function Meta({
         <span className={styles.flag}>New client</span>
       ) : null}
       {party ? <span>{party}</span> : null}
-      <span>{age(item, now)}</span>
+      <span>{age(item, now, zone)}</span>
     </div>
   );
 }
 
-function FollowupLine({ item, now }: { item: Row; now: number }) {
-  const followup = followupFor(item, now);
+function FollowupLine({
+  item,
+  now,
+  zone,
+}: {
+  item: Row;
+  now: number;
+  zone: string;
+}) {
+  const followup = followupFor(item, now, zone);
   if (!followup) return null;
   return (
     <p
@@ -450,6 +462,7 @@ function Card({
   item,
   href,
   now,
+  zone,
   pipeline,
   error,
   onMove,
@@ -457,6 +470,7 @@ function Card({
   item: Row;
   href: string;
   now: number;
+  zone: string;
   pipeline?: string;
   error?: string;
   onMove?: (item: Row, to: Move) => void;
@@ -474,8 +488,8 @@ function Card({
         </div>
         <FitPill assessment={item.assessment} />
       </div>
-      <Meta item={item} now={now} />
-      <FollowupLine item={item} now={now} />
+      <Meta item={item} now={now} zone={zone} />
+      <FollowupLine item={item} now={now} zone={zone} />
       {summary ? (
         <p className={`${styles.reason} ${styles.clamped}`} title={summary}>
           {summary}
@@ -500,6 +514,8 @@ export interface QueueProps {
   items: Row[];
   /** Server render time, so every relative time agrees with the markup. */
   now: number;
+  /** The viewer's zone, so "overdue" means before today where they are. */
+  zone: string;
   pipelines: Choice[];
   stages: Choice[];
   /** The effective selections (the URL's, or the defaults). */
@@ -509,6 +525,12 @@ export interface QueueProps {
   sort: Sort;
   /** Whether the URL named any control; if not, saved choices apply. */
   explicit: boolean;
+  /** The server holds a saved view (its preference cookie), so the browser
+   * need not hand its own copy over. */
+  serverSaved?: boolean;
+  /** Saves the choice where the server render reads it (the shell's
+   * preference cookie); absent in hosts that cannot. */
+  savePreference?: ShellApi["savePreference"];
   /** The GET target the controls submit to. */
   action: string;
   hrefs: Record<string, string>;
@@ -548,6 +570,15 @@ function undoFailed(outcome: { state: string; code?: string }, closed: string): 
 }
 
 /** The page's address without the dismissed-job parameters. */
+/** The page's address, or null where it cannot be read as one. */
+function pageUrl(): URL | null {
+  try {
+    return new URL(window.location.href);
+  } catch {
+    return null;
+  }
+}
+
 function withoutDismissed(href: string): string {
   const url = new URL(href);
   for (const name of DISMISSED_PARAMS) url.searchParams.delete(name);
@@ -611,26 +642,35 @@ export function JobQueue(props: QueueProps) {
   };
 
   useEffect(() => {
-    const here = new URL(window.location.href);
+    const here = pageUrl();
+    // Choices saved before the server could read them reach it here, so the
+    // next visit renders them on the server.
+    const text = savedText();
+    if (text !== null && !props.serverSaved)
+      void props.savePreference?.(QUEUE_PREFERENCE, text).catch(() => {});
     // A bare queue URL opens the view chosen last time, once a choice exists.
+    // When the server holds a saved view it rendered from it, and it is the
+    // authority: a browser copy that differs (another device, a refused storage
+    // write) never redirects away from it. The browser applies its own copy only
+    // when the server has none.
     const view =
-      !props.explicit && form.current && savedText() !== null
-        ? savedView(parsePrefs(savedText()), props)
-        : null;
+      props.explicit || props.serverSaved || !form.current || text === null
+        ? null
+        : savedView(parsePrefs(text), props);
     if (view && form.current) {
       const url = new URL(form.current.action);
       for (const [name, value] of Object.entries(view))
         url.searchParams.set(name, value);
       // A job dismissed from its page keeps its Undo through the redirect.
       for (const name of DISMISSED_PARAMS) {
-        const value = here.searchParams.get(name);
+        const value = here?.searchParams.get(name) ?? null;
         if (value !== null) url.searchParams.set(name, value);
       }
       window.location.replace(url.href);
       return;
     }
     // The Undo shows once: a reload or Back does not bring it again.
-    if (DISMISSED_PARAMS.some((name) => here.searchParams.has(name)))
+    if (here && DISMISSED_PARAMS.some((name) => here.searchParams.has(name)))
       window.history.replaceState(window.history.state, "", withoutDismissed(here.href));
     // Runs once: the saved view is applied on arrival, not on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -640,10 +680,24 @@ export function JobQueue(props: QueueProps) {
    * sorts, so the count and the first page always agree with the controls. */
   function choose(changes: Partial<Prefs>) {
     // The whole view the controls now show is saved, so a bare URL reopens it.
-    remember({ ...saved, ...current, ...changes });
+    const text = remember({ ...saved, ...current, ...changes });
     if (changes.hideFull !== undefined && full.current)
       full.current.value = changes.hideFull ? "hide" : "show";
-    form.current?.requestSubmit();
+    const saving = props.savePreference?.(QUEUE_PREFERENCE, text);
+    if (!saving || !form.current) {
+      form.current?.requestSubmit();
+      return;
+    }
+    // The server reads the same choice on the next render (#369), so the view
+    // reloads once it is saved. The selects are controlled: React puts their
+    // old value back as soon as this handler returns, so the form's values are
+    // read now, while they still show the choice, not after the save.
+    const url = new URL(form.current.action);
+    new FormData(form.current).forEach((value, name) => {
+      if (typeof value === "string") url.searchParams.set(name, value);
+    });
+    const go = () => window.location.assign(url.href);
+    void saving.then(go, go);
   }
 
   async function move(item: Row, to: Move) {
@@ -921,6 +975,7 @@ export function JobQueue(props: QueueProps) {
                 item={item}
                 href={props.hrefs[id] ?? ""}
                 now={props.now}
+                zone={props.zone}
                 pipeline={props.pipelineNames?.[str(item.pipeline_id)]}
                 error={errors[id]}
                 onMove={props.submit ? move : undefined}
@@ -945,11 +1000,13 @@ export function JobQueue(props: QueueProps) {
 export function JobHeader({
   item,
   now,
+  zone = "UTC",
   submit,
   back,
 }: {
   item: Row;
   now: number;
+  zone?: string;
   /** Absent on a read-only host: then only the open link shows. */
   submit?: Submit;
   /** Where Dismiss returns to: the job queue. */
@@ -1019,7 +1076,7 @@ export function JobHeader({
             title
           )}
         </h1>
-        <Meta item={item} now={now} detail />
+        <Meta item={item} now={now} zone={zone} detail />
         <div className={styles.verdictRow}>
           {verdict ? <p className={styles.verdict}>{verdict}</p> : null}
           <InfoTip label="Why this score, and the record details" align="start" wide>
@@ -1092,7 +1149,7 @@ export function JobHeader({
           before you spend anything applying.
         </div>
       ) : null}
-      <FollowupLine item={item} now={now} />
+      <FollowupLine item={item} now={now} zone={zone} />
     </header>
   );
 }

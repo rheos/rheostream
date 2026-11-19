@@ -107,17 +107,28 @@ from rheo_core.storage.work_index import (
 from rheo_core.work.backoff import backoff_for
 from rheo_core.work.cancellation import CancellationToken, JobCancelled, JobLeaseLost
 from rheo_core.work.jobs import (
+    FAILED,
     LEASED,
+    SUCCEEDED,
     LeasedJob,
     acquire_lease,
     defer_unready_job,
     earliest_due_at,
     finish_cancelled,
     finish_failed,
+    finish_owned,
     finish_succeeded,
     requeue_for_retry,
 )
-from rheo_core.work.kinds import JobKindRegistry, JobKindUnknown
+from rheo_core.work.kinds import (
+    ContinuationDisposition,
+    ContinuationHandler,
+    ContinuationLease,
+    ContinuationMode,
+    ContinuationResult,
+    JobKindRegistry,
+    JobKindUnknown,
+)
 from rheo_core.work.scheduled_authority import verified_execution_for
 from rheo_core.work.schedules import earliest_schedule_due_at, run_due_schedules
 
@@ -379,8 +390,13 @@ def _run_leased_job(
     now: datetime,
     clock: Callable[[], datetime],
     jitter: random.Random | None,
+    workspace_id: UUID,
 ) -> None:
     """One leased job, from the two pre-handler gates to its terminal write.
+
+    **A core continuation kind is looked up before both gates** and runs through
+    :func:`_run_continuation` instead: it owns what a cancelled or exhausted lease
+    means for its durable rows, so the generic gates must not end it first.
 
     **The gates are ordered, and the order is the rule.** Cancellation wins over
     exhaustion: a job that is both cancelled and out of budget ends ``cancelled``.
@@ -393,6 +409,21 @@ def _run_leased_job(
     state, and a ``long_running`` operation whose job ends here and whose record is not
     moved sits ``pending`` for ever.
     """
+    continuation = kinds.continuation_for(leased.kind)
+    if continuation is not None:
+        _run_continuation(
+            engine,
+            database,
+            workspace_id=workspace_id,
+            leased=leased,
+            handler=continuation,
+            consumers=consumers,
+            owner=owner,
+            clock=clock,
+            jitter=jitter,
+        )
+        return
+
     if leased.cancel_requested:
         applied = _finish_alone(
             engine,
@@ -491,6 +522,176 @@ def _run_leased_job(
         owner=owner,
         clock=clock,
         jitter=jitter,
+    )
+
+
+def _continuation_mode(leased: LeasedJob) -> ContinuationMode:
+    """Cancellation wins over exhaustion, as it does for the generic gates."""
+    if leased.cancel_requested:
+        return ContinuationMode.CANCEL_REQUESTED
+    if leased.attempts > leased.max_attempts:
+        return ContinuationMode.BUDGET_EXHAUSTED_RECOVERY
+    return ContinuationMode.RUN
+
+
+def _finish_continuation_job(
+    conn: Connection,
+    *,
+    leased: LeasedJob,
+    owner: str,
+    mode: ContinuationMode,
+    result: ContinuationResult,
+    now: datetime,
+    jitter: random.Random | None,
+) -> bool:
+    """Apply the one job write a disposition maps to; answer whether it applied.
+
+    Outside cancellation mode every write keeps its ``cancel_requested = false``
+    predicate, so a cancellation that landed during the run loses the finish and rolls
+    the whole transaction back. In cancellation mode the flag was already observed, so
+    success and failure are written on ownership alone.
+    """
+    disposition = result.disposition
+    detail = result.detail
+    if disposition is ContinuationDisposition.CANCELLED_TERMINAL:
+        return finish_cancelled(conn, job_id=leased.id, owner=owner, now=now)
+    if disposition is ContinuationDisposition.RETRY:
+        if mode is ContinuationMode.CANCEL_REQUESTED:
+            return False
+        return requeue_for_retry(
+            conn,
+            job_id=leased.id,
+            owner=owner,
+            now=now,
+            next_run_at=now + backoff_for(leased.attempts, jitter=jitter),
+            error=detail or "external continuation retry",
+        )
+    failed = disposition is ContinuationDisposition.FAILED_TERMINAL
+    if mode is ContinuationMode.CANCEL_REQUESTED:
+        return finish_owned(
+            conn,
+            job_id=leased.id,
+            owner=owner,
+            now=now,
+            state=FAILED if failed else SUCCEEDED,
+            error=detail if failed else None,
+        )
+    if failed:
+        return finish_failed(
+            conn,
+            job_id=leased.id,
+            owner=owner,
+            now=now,
+            error=detail or "external continuation failed",
+        )
+    return finish_succeeded(conn, job_id=leased.id, owner=owner, now=now)
+
+
+def _cancel_requested_and_ours(
+    engine: Engine, database: str, *, job_id: UUID, owner: str
+) -> bool:
+    with UnitOfWork(engine, database) as uow:
+        row = uow.connection.execute(
+            select(t.job.c.state, t.job.c.lease_owner, t.job.c.cancel_requested).where(
+                t.job.c.id == job_id
+            )
+        ).one_or_none()
+    return (
+        row is not None
+        and row.state == LEASED
+        and row.lease_owner == owner
+        and bool(row.cancel_requested)
+    )
+
+
+def _run_continuation(
+    engine: Engine,
+    database: str,
+    *,
+    workspace_id: UUID,
+    leased: LeasedJob,
+    handler: ContinuationHandler,
+    consumers: ConsumerRegistry,
+    owner: str,
+    clock: Callable[[], datetime],
+    jitter: random.Random | None,
+) -> None:
+    """Run one core continuation and its job write in one transaction.
+
+    The continuation settles its own rows; this function owns only the lease, the
+    retry/backoff and the job's final state. Commit happens only when the job write
+    applied, so a lost lease or a cancellation that raced the run rolls back the
+    effect and every settlement together. A cancellation found that way is reconciled
+    once more, immediately, in cancellation mode. A continuation that raises (a
+    storage or programming fault, never a destination outcome) is rolled back and
+    requeued without a terminal write, so its durable rows are never orphaned: a later
+    lease past the budget reconciles them.
+    """
+    mode = _continuation_mode(leased)
+    for _ in range(2):
+        failure: Exception | None = None
+        with UnitOfWork(engine, database) as uow:
+            now = clock()
+            try:
+                result = handler(
+                    uow,
+                    ContinuationLease(
+                        workspace_id=workspace_id,
+                        job_id=leased.id,
+                        owner=owner,
+                        payload=leased.payload,
+                        attempts=leased.attempts,
+                        max_attempts=leased.max_attempts,
+                        mode=mode,
+                        now=now,
+                        consumers=consumers,
+                    ),
+                )
+                applied = _finish_continuation_job(
+                    uow.connection,
+                    leased=leased,
+                    owner=owner,
+                    mode=mode,
+                    result=result,
+                    now=clock(),
+                    jitter=jitter,
+                )
+            except Exception as exc:
+                uow.rollback()
+                failure = exc
+            else:
+                if applied:
+                    uow.commit()
+                    return
+                uow.rollback()
+        if failure is not None:
+            logger.warning(
+                "continuation job %s raised %s; requeued",
+                leased.id,
+                type(failure).__name__,
+            )
+            retry_at = clock()
+            with UnitOfWork(engine, database) as retry_uow:
+                requeued = requeue_for_retry(
+                    retry_uow.connection,
+                    job_id=leased.id,
+                    owner=owner,
+                    now=retry_at,
+                    next_run_at=retry_at + backoff_for(leased.attempts, jitter=jitter),
+                    error=type(failure).__name__,
+                )
+                retry_uow.commit()
+            if requeued:
+                return
+        if mode is not ContinuationMode.CANCEL_REQUESTED and (
+            _cancel_requested_and_ours(engine, database, job_id=leased.id, owner=owner)
+        ):
+            mode = ContinuationMode.CANCEL_REQUESTED
+            continue
+        break
+    logger.warning(
+        "continuation job %s is no longer this worker's to finish; writing nothing",
+        leased.id,
     )
 
 
@@ -1312,6 +1513,7 @@ def visit_workspace(
                 now=now,
                 clock=clock,
                 jitter=jitter,
+                workspace_id=workspace.workspace_id,
             )
 
         deliveries_acquired = 0

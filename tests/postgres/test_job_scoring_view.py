@@ -27,7 +27,14 @@ from rheo_leads.scoring import job as scoring
 from rheo_leads.storage import scoring as s
 from sqlalchemy import select
 
-from postgres.test_job_scoring import FULL, Scoring, answer, failure, final
+from postgres.test_job_scoring import (
+    FULL,
+    Scoring,
+    answer,
+    backdate,
+    failure,
+    final,
+)
 from postgres.test_job_scoring import scored as scored
 from postgres.test_jobfeed_delivery import rows, the_opportunity
 from postgres.test_leads_intake import intake as intake
@@ -128,6 +135,66 @@ def test_a_usage_limit_is_logged_deferred_and_pauses_the_queue(
     assert data["queued_total"] == 0 and data["waiting_total"] == 2
     assert data["calls"][0]["outcome"] == "deferred"
     assert data["summary"][0]["deferred"] == 1
+
+
+def test_an_owner_ends_the_wait_and_a_claimed_job_keeps_its_lease(
+    scored: Scoring,
+) -> None:
+    for posting in ("~02100", "~02101", "~02102"):
+        scored.paste(posting, FULL.format(title=posting, what="pipeline", activity=""))
+    scored.model(failure(FailureKind.USAGE_LIMITED))
+    scored.set_profile()
+    scored.sweep()
+    assert view(scored)["waiting_total"] == 3
+    attempts = {p: scored.state(p)["attempts"] for p in ("~02100", "~02101")}
+
+    # One job is mid-call: claimed rows are pending with a future retry_after
+    # and no failure word.
+    claimed = the_opportunity(scored.i, "~02102")["id"]
+    lease = datetime.now(UTC) + timedelta(minutes=5)
+    with open_unit_of_work(scored.c.owner) as uow:
+        uow.connection.execute(
+            s.job_score_state.update()
+            .where(s.job_score_state.c.opportunity_id == claimed)
+            .values(retry_after=lease, failure_kind=None)
+        )
+        uow.commit()
+
+    member_id = add_member(
+        scored.i.cluster.backend, scored.i.workspace, Role.MEMBER, display_name="m"
+    )
+    member = context_for_harness(scored.i.workspace, member_id, Role.MEMBER)
+    assert isinstance(member, WorkspaceContext)
+    refused = dispatch(
+        member,
+        "leads.jobscoring.retry_waiting",
+        {},
+        registry=scored.i.surfaces.operations,
+        consumers=scored.i.consumers,
+    )
+    assert not refused.ok
+    before = view(scored)
+    assert before["status"]["state"] == "paused"
+    # The job mid-call is not waiting, so no retry is offered for it.
+    assert before["waiting_total"] == 2
+
+    retried = call(scored.i, scored.c.owner, "leads.jobscoring.retry_waiting")
+    assert retried.count == 2
+    for posting, before in attempts.items():
+        state = scored.state(posting)
+        assert state["state"] == "pending" and state["attempts"] == before
+    assert scored.state("~02102")["retry_after"] == lease
+    data = view(scored)
+    assert data["status"]["state"] != "paused"
+    assert data["queued_total"] == 2 and data["waiting_total"] == 0
+    assert call(scored.i, scored.c.owner, "leads.jobscoring.retry_waiting").count == 0
+
+    scored.model(final(7), final(6))
+    scored.sweep()
+    scored.sweep()
+    scores = {j["title"]: j["score"] for j in jobs(view(scored)).values()}
+    assert scores["~02100"] is not None and scores["~02101"] is not None
+    assert scores["~02102"] is None
 
 
 def test_failures_are_logged_and_an_owner_puts_failed_jobs_back_in_line(
@@ -330,3 +397,40 @@ def test_the_job_feed_tab_reads_the_latest_runs_and_old_ones_are_dropped(
     assert [r["finished_at"] for r in runs] == sorted(
         (r["finished_at"] for r in runs), reverse=True
     )
+
+
+def test_a_job_set_aside_as_too_old_reads_too_old_and_is_not_retried(
+    scored: Scoring,
+) -> None:
+    scored.paste("~02100", GOOD)
+    scored.model(final(8))
+    scored.set_profile()
+    scored.sweep(datetime.now(UTC) + timedelta(hours=25))
+    assert scored.state("~02100")["failure_kind"] == scoring.TOO_OLD
+    data = view(scored)
+    assert (data["failed_total"], data["too_old_total"]) == (0, 1)
+    assert jobs(data)["Good job"]["stage"] == "too_old"
+    (batch,) = data["batches"]
+    assert batch["counts"]["too_old"] == 1
+    assert call(scored.i, scored.c.owner, "leads.jobscoring.retry_failed").count == 0
+    assert scored.state("~02100")["state"] == "failed"
+
+
+def test_an_old_job_that_failed_before_its_posting_moved_reads_too_old(
+    scored: Scoring,
+) -> None:
+    scored.paste("~02100", GOOD)
+    scored.model(*[failure(FailureKind.OUTPUT_INVALID)] * scoring.SCORE_ATTEMPTS)
+    scored.set_profile()
+    at = datetime.now(UTC)
+    for _ in range(scoring.SCORE_ATTEMPTS):
+        scored.sweep(at)
+        at = (scored.state("~02100")["retry_after"] or at) + timedelta(seconds=1)
+    assert scored.state("~02100")["state"] == "failed"
+    backdate(scored, "~02100", timedelta(hours=30))
+    scored.paste("~02100", GOOD + "\n\nWe also need an admin page.")
+    scored.sweep()
+    assert scored.state("~02100")["failure_kind"] == scoring.TOO_OLD
+    data = view(scored)
+    assert jobs(data)["Good job"]["stage"] == "too_old"
+    assert data["max_age_hours"] == 24

@@ -1,7 +1,7 @@
 import type { ShellApi } from "@rheo-stream/web-contract/screen";
 
 import { callChecked } from "../../call";
-import { formatUtc } from "../../format";
+import { formatMoment } from "../../format";
 import { isMemoryItem, NOT_FOUND } from "../../guards";
 import { GET } from "../../operations";
 
@@ -45,8 +45,8 @@ export type ItemState =
 
 type Query = Readonly<Record<string, string | undefined>>;
 
-function stamp(iso: string): Stamp {
-  return { text: formatUtc(iso), dateTime: iso };
+function stamp(iso: string, zone: string | undefined): Stamp {
+  return { text: formatMoment(iso, zone), dateTime: iso };
 }
 
 export async function loadItem(shell: ShellApi, query: Query): Promise<ItemState> {
@@ -71,10 +71,10 @@ export async function loadItem(shell: ShellApi, query: Query): Promise<ItemState
       kind: memory.kind,
       title: memory.title,
       body: memory.body,
-      occurred: memory.occurred_at === null ? null : stamp(memory.occurred_at),
-      recorded: stamp(memory.recorded_at),
+      occurred: memory.occurred_at === null ? null : stamp(memory.occurred_at, shell.timeZone),
+      recorded: stamp(memory.recorded_at, shell.timeZone),
       revision: memory.revision,
-      invalidated: memory.invalidated_at === null ? null : stamp(memory.invalidated_at),
+      invalidated: memory.invalidated_at === null ? null : stamp(memory.invalidated_at, shell.timeZone),
       invalidationReason: memory.invalidation_reason,
       successor:
         memory.superseded_by === null

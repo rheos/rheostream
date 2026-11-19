@@ -86,6 +86,7 @@ function mount(submit: ReturnType<typeof vi.fn>, overrides: Partial<QueueProps> 
   const props: QueueProps = {
     items: [job, other],
     now: 0,
+    zone: "UTC",
     pipelines: [{ value: "jobs", label: "Job leads" }],
     stages: [{ value: "review", label: "Review" }],
     pipeline: "jobs",

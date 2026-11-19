@@ -74,6 +74,7 @@ from rheo_core.storage.repositories import list_module_states
 # ``rheo_core.boundary.context`` -- resolves regardless of which package a
 # caller happens to import first.
 from rheo_core.tokens.presentation import resolve_token
+from rheo_core.tokens.sets import effective_operations
 
 if TYPE_CHECKING:
     # Type-only, never at runtime: ``rheo_core.approvals`` and ``rheo_core.operations``
@@ -614,7 +615,8 @@ def context_from_operation(
 
     ACCOUNT uses membership of ``(actor_id, workspace_id)`` and ``ALL_OPERATIONS``.
     TOKEN uses the access-token row for ``actor_id``, membership of that token's
-    account, and the snapshot as the operation set. OPERATOR / SYSTEM / CONNECTION
+    account, and the snapshot narrowed by ``tokens.sets.effective_operations`` as
+    the operation set. OPERATOR / SYSTEM / CONNECTION
     refuse so the job can handshake ``runtime_actor_required``. Audience comes from
     the arguments, not an invented session.
 
@@ -718,7 +720,10 @@ def context_from_operation(
             )
         role = membership.role
         actor = Actor(kind=ActorKind.TOKEN, id=actor_id)
-        operation_set = operations
+        # The same narrowing presentation applies (``tokens/presentation.py``), so a
+        # stored run, continuation or approved execution cannot reach a module that
+        # went ``explicit_only`` after its routine-set token was issued.
+        operation_set = effective_operations(token_row.set_name, operations)
         account_id = token_row.account_id
     else:
         return Refusal(

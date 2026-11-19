@@ -1,14 +1,18 @@
 """Intake steps 4–6: source-authenticated party identity and explicit routing."""
 
-from typing import TYPE_CHECKING, Any
+from datetime import UTC, date, timedelta
+from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
 from rheo_contracts import WorkspaceContext
 from rheo_core.operations.transaction import call_in_transaction
 from rheo_core.refs.resolver import UnitOfWork
+from rheo_core.settings import resolve
+from rheo_core.settings.storage_source import TransactionBoundOverrideSource
 from sqlalchemy import RowMapping, select, update
 
 from rheo_leads import pipeline_common as h
+from rheo_leads.configuration import INQUIRY_FOLLOWUP_KEY
 from rheo_leads.references import ref
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
@@ -180,8 +184,60 @@ def route(ctx: WorkspaceContext, uow: UnitOfWork, state: "DeliveryState") -> Non
                 pipeline_id=rule["pipeline_id"],
             ),
         )
-        _record_route(uow, answer.model_dump()["ref"], obs["id"], decision)
+        created = answer.model_dump()
+        _record_route(uow, created["ref"], obs["id"], decision)
+        _first_followup(ctx, uow, created, rule["pipeline_id"], obs["received_at"])
         return
+
+
+FOLLOWUP_ACTION: Final = "Reply to the inquiry"
+
+
+def business_days_after(start: date, days: int) -> date:
+    """The date ``days`` working days after ``start``, skipping Saturday and Sunday."""
+    current = start
+    while days > 0:
+        current += timedelta(days=1)
+        if current.weekday() < 5:
+            days -= 1
+    return current
+
+
+def _first_followup(
+    ctx: WorkspaceContext,
+    uow: UnitOfWork,
+    created: dict[str, Any],
+    pipeline_id: UUID,
+    received_at: Any,
+) -> None:
+    """Give a new inquiry opportunity its first dated follow-up, when the workspace
+    asks for one. Counted from the UTC date rheoStream received the inquiry. A
+    repeat that attaches to an existing opportunity never reaches here, so it
+    leaves that opportunity's follow-up alone."""
+    days = resolve(
+        workspace_id=ctx.workspace_id,
+        source=TransactionBoundOverrideSource(uow, workspace_id=ctx.workspace_id),
+    ).get_int(INQUIRY_FOLLOWUP_KEY)
+    if days <= 0:
+        return
+    preset: UUID = uow.connection.execute(
+        select(p.pipeline.c.preset_id).where(p.pipeline.c.id == pipeline_id)
+    ).scalar_one()
+    if preset == h.JOBSEARCH_PRESET_ID:
+        return
+    call_in_transaction(
+        ctx,
+        uow,
+        "leads.followup.schedule",
+        dict(
+            ref=created["ref"],
+            revision=created["revision"],
+            action=FOLLOWUP_ACTION,
+            due_on=business_days_after(
+                received_at.astimezone(UTC).date(), days
+            ).isoformat(),
+        ),
+    )
 
 
 def _attach(

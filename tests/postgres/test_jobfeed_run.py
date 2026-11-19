@@ -2419,7 +2419,12 @@ def test_a_default_run_collects_reads_delivers_and_reports_within_its_bounds(
 
     receipts = intake.count(t.delivery_receipt)
     observations = intake.count(t.observation)
+    reads_before = len(gets(mcp))
     collected(c, clock, hours=2)
+    # #377: every eligible posting's description is stored now, so none is read
+    # again, and nothing looks changed: the daily allowance of detail reads goes
+    # only on postings not seen before.
+    assert len(gets(mcp)) == reads_before
     assert counts(c) == {
         "fetched": 70,
         "imported": 0,
@@ -2428,7 +2433,7 @@ def test_a_default_run_collects_reads_delivers_and_reports_within_its_bounds(
         "filtered": 10,
         "skipped_untracked": 10,
         "errors": 0,
-        "detail_reads": 60,
+        "detail_reads": 0,
         "pages": 7,
     }
     assert intake.count(t.delivery_receipt) == receipts
@@ -2486,10 +2491,11 @@ def test_failed_and_omitted_details_downgrade_and_only_refresh_tracked_postings(
 ) -> None:
     """AC 34, AC 37, AC 40, AC 46, I17: the first run creates an opportunity only
     for the eligible posting whose detail read succeeded (not the applied, the
-    over-cap or the failed one). In the second, the tracked posting's detail
-    fails: its count still refreshes, its other fields and the stored description
-    stay, and nothing carries a description; an untracked posting whose detail
-    carried none creates nothing. Both runs complete as ``collection_partial``."""
+    over-cap or the failed one). In the second, the tracked posting is not read
+    again since its description is stored (#377): its count still refreshes, its
+    other fields and the stored description stay, and nothing carries a
+    description; an untracked posting whose detail carried none creates nothing.
+    Both runs complete as ``collection_partial``."""
     c = connected_collector(intake, served)
     mcp.feeds = {
         "best_match": [
@@ -2538,7 +2544,9 @@ def test_failed_and_omitted_details_downgrade_and_only_refresh_tracked_postings(
         "301": answer(503),
         "305": tool_result({"status": "ok", "data": {}}),
     }
+    reads_before = gets(mcp)
     collected(c, clock, hours=2)
+    assert gets(mcp)[len(reads_before) :] == ["305"]
     assert counts(c) == {
         "fetched": 2,
         "imported": 0,
@@ -2546,12 +2554,12 @@ def test_failed_and_omitted_details_downgrade_and_only_refresh_tracked_postings(
         "refreshed": 1,
         "filtered": 0,
         "skipped_untracked": 1,
-        "errors": 2,
-        "detail_reads": 2,
+        "errors": 1,
+        "detail_reads": 1,
         "pages": 3,
     }
     assert last_error(c) == "collection_partial"
-    assert runs(c)[0]["read_failures"] == {"unavailable": 1, "no_description": 1}
+    assert runs(c)[0]["read_failures"] == {"no_description": 1}
     assert len(runs(c)) == 2
     assert len(opportunities(intake, "~02301")) == 1
     assert opportunities(intake, "~02305") == []
@@ -3073,6 +3081,32 @@ def test_a_listed_invitation_becomes_an_invited_opportunity(
     assert INVITATION_LETTER not in delivered and "Pat E." not in delivered
     assert last_error(c) is None
     quietly_succeeded(c)
+
+
+def test_a_job_delivered_without_its_description_is_read_again(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """#377: only a posting whose description is stored skips its read. An invited
+    job is delivered even when its read fails, so it is stored without one; the
+    next run reads it again, and this time its description is delivered."""
+    c = connected_collector(intake, served)
+    mcp.invitations = [invitation_row(821)]
+    mcp.feeds = {}
+    mcp.details = {"821": answer(503)}
+    collected(c, clock)
+    assert gets(mcp) == ["821"]
+    assert len(opportunities(intake, "~02821")) == 1
+    assert "description" not in bodies(c)[-1]
+    mcp.details = {}
+    collected(c, clock, hours=2)
+    assert gets(mcp) == ["821", "821"]
+    assert bodies(c)[-1]["description"] == FEED_DESCRIPTION
+    # Read once with its description stored, it is not read a third time.
+    collected(c, clock, hours=4)
+    assert gets(mcp) == ["821", "821"]
 
 
 def test_a_tracked_job_that_is_later_invited_is_refreshed_as_invited(

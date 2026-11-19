@@ -57,6 +57,8 @@ const VIEW: Row = {
   queued_total: 1,
   waiting_total: 0,
   failed_total: 2,
+  too_old_total: 3,
+  max_age_hours: 24,
   median_call_seconds: 40,
   eta_seconds: 40,
   batches: [
@@ -122,6 +124,7 @@ function markup(tab: ScoringTab, view = VIEW, canRetry = true): string {
     <ScoringView
       view={view}
       now={NOW}
+      zone="UTC"
       tab={tab}
       hrefs={{
         [GOOD]: "/leads/detail?ref=good",
@@ -184,6 +187,10 @@ describe("the Scoring view's words", () => {
       ).title,
     ).toContain("unreadable answer");
     expect(stageChip({ stage: "untracked" }, NOW).mark).toBe("new");
+    expect(stageChip({ stage: "too_old" }, NOW)).toMatchObject({
+      mark: "old",
+      tone: "dim",
+    });
     expect(outcomeLabel({ purpose: "scoring", outcome: "answered" })).toBe(
       "Scored",
     );
@@ -230,6 +237,8 @@ describe("the Scoring view", () => {
     expect(html).toMatch(/<details[^>]*><summary>1 held by the filters/);
     expect(html).toContain('href="/leads/review"');
     expect(html).toContain('aria-label="Put 2 failed jobs back in line"');
+    expect(html).toContain("3 too old to score");
+    expect(html).toMatch(/still waiting 24 hours/);
     expect(html).toContain('aria-current="page"');
     // No posting text and no money anywhere on the page.
     expect(html).not.toContain("$");
@@ -273,6 +282,7 @@ describe("retrying failed jobs", () => {
         <ScoringView
           view={VIEW}
           now={NOW}
+          zone="UTC"
           tab="queue"
           hrefs={{}}
           tabHrefs={{ queue: "/q", calls: "/c", feed: "/f" }}
@@ -292,6 +302,40 @@ describe("retrying failed jobs", () => {
     expect(submit).toHaveBeenCalledWith("leads.jobscoring.retry_failed", {});
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
       "Could not put the failed jobs back in line",
+    );
+  });
+
+  it("lets an owner retry waiting jobs now (#478)", async () => {
+    const waiting = { ...VIEW, waiting_total: 3 };
+    expect(markup("queue", waiting, false)).not.toContain(
+      "Retry 3 waiting jobs now",
+    );
+    const submit = vi.fn().mockResolvedValue({ state: "unavailable" });
+    act(() =>
+      root.render(
+        <ScoringView
+          view={waiting}
+          now={NOW}
+          zone="UTC"
+          tab="queue"
+          hrefs={{}}
+          tabHrefs={{ queue: "/q", calls: "/c", feed: "/f" }}
+          reviewHref="/r"
+          canRetry
+          submit={submit as unknown as ShellApi["submit"]}
+        />,
+      ),
+    );
+    const button = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="Retry 3 waiting jobs now"]',
+    );
+    expect(button).not.toBeNull();
+    await act(async () => {
+      button?.click();
+    });
+    expect(submit).toHaveBeenCalledWith("leads.jobscoring.retry_waiting", {});
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+      "Could not retry the waiting jobs",
     );
   });
 });
@@ -318,6 +362,7 @@ describe("following scoring work (#443)", () => {
         <ScoringView
           view={VIEW}
           now={NOW}
+          zone="UTC"
           tab="queue"
           hrefs={{}}
           tabHrefs={{ queue: "/q", calls: "/c", feed: "/f" }}

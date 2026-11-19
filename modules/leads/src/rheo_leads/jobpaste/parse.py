@@ -29,7 +29,13 @@ from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup, Tag
 
-from rheo_leads.jobfeed.normalize import BANDS, posting_id_valid
+from rheo_leads.jobfeed.normalize import (
+    BANDS,
+    posting_id_valid,
+    stated_body,
+    text_price,
+    without_unknowns,
+)
 
 JobType = Literal["fixed", "hourly"]
 
@@ -75,7 +81,7 @@ class PastedJob:
     client_spend: Decimal | None = None
     client_rating: Decimal | None = None
 
-    def to_body(self, observed_at: datetime) -> dict[str, str | int]:
+    def to_body(self, observed_at: datetime) -> dict[str, str | int | None]:
         """The flat delivery body, in the job feed's keys and value forms."""
         if observed_at.tzinfo is None:
             raise ValueError("observed_at must carry a time zone")
@@ -95,9 +101,12 @@ class PastedJob:
             "client_payment_verified": _flag(self.client_payment_verified),
             "client_spend": _decimal(self.client_spend),
             "client_rating": _decimal(self.client_rating),
+            **stated_body(
+                text_price(self.description, self.budget_min, self.budget_max)
+            ),
             "observed_at": observed_at.isoformat(),
         }
-        return {key: value for key, value in values.items() if value is not None}
+        return without_unknowns(values, read=self.description is not None)
 
 
 @dataclass(frozen=True)

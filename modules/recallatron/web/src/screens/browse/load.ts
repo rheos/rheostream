@@ -2,7 +2,7 @@ import type { ShellApi } from "@rheo-stream/web-contract/screen";
 
 import { callChecked, type Called } from "../../call";
 import { loadCoverage, type CoverageState } from "../../components/coverage";
-import { formatUtc } from "../../format";
+import { formatMoment } from "../../format";
 import {
   isEntityItem,
   isEntityList,
@@ -162,7 +162,7 @@ function windowItems(shell: ShellApi, window: ReadWindow): WindowItem[] {
       ref: item.ref,
       kind: item.kind,
       title: item.title,
-      when: formatUtc(at),
+      when: formatMoment(at, shell.timeZone),
       dateTime: at,
       href: shell.href("item", { ref: item.ref }),
     };

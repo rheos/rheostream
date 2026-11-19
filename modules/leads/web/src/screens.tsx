@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Suspense, use, type ReactNode } from "react";
 import type {
   OperationOutcome,
   ScreenProps,
@@ -14,7 +14,14 @@ import {
 } from "./jobfeed-panel";
 import { JobHeader, JobQueue, type Choice } from "./queue-view";
 import type { Sort } from "./queue";
-import { postingUrl, undoTarget } from "./queue";
+import {
+  cookieText,
+  parsePrefs,
+  postingUrl,
+  prefsQuery,
+  QUEUE_PREFERENCE,
+  undoTarget,
+} from "./queue";
 import type { FinishState } from "./finish-connecting";
 import { PasteCapture } from "./paste-capture";
 import { JobPaste } from "./job-paste";
@@ -22,8 +29,15 @@ import { ProposalWorkflow } from "./proposal-workflow";
 import { ReviewQueue } from "./review-view";
 import { ScoringView } from "./scoring-view";
 import {
+  CurrentHandoffHistory,
+  HandoffStatusSummary,
+  QualificationHandoffEntry,
+  QualificationStaleWarning,
+} from "./handoff";
+import {
   data,
   date,
+  zoneOf,
   detailRef,
   pipelineRef,
   JOBSEARCH_PRESET_ID,
@@ -201,7 +215,11 @@ const MONEY = new Set(["budget_min", "budget_max", "client_spend"]);
 /** A field's value as a person reads it: yes or no for flags, money with its
  * sign, rates as percentages, instants as dates, the original message without
  * the feed's marker tag. Anything else shows as stored. */
-export function fieldValue(target: string, text: string): string {
+export function fieldValue(
+  target: string,
+  text: string,
+  zone = "UTC",
+): string {
   const key = target.replace(/^ext\.[a-z0-9_]+\./, "");
   if (target.endsWith("phone")) return phoneDisplay(text);
   if (target === "message") return unwrapped(text);
@@ -218,7 +236,7 @@ export function fieldValue(target: string, text: string): string {
     /_(on|at)$/.test(key) &&
     /^\d{4}-\d{2}-\d{2}(T[\d:.]+(Z|[+-]\d{2}:\d{2})?)?$/.test(text)
   )
-    return date(text);
+    return date(text, zone);
   if (key === "job_type" || key === "platform") return sentence(text);
   return text;
 }
@@ -390,8 +408,8 @@ export async function overview({ shell, query }: ScreenProps, board: boolean) {
                               </span>
                               <p className={styles.meta}>
                                 {record.followup_due_on
-                                  ? `Follow up ${date(record.followup_due_on)} · ${str(record.followup_action)}`
-                                  : `Updated ${date(record.updated_at)}`}
+                                  ? `Follow up ${date(record.followup_due_on, zoneOf(shell))} · ${str(record.followup_action)}`
+                                  : `Updated ${date(record.updated_at, zoneOf(shell))}`}
                               </p>
                             </a>
                           </li>
@@ -444,7 +462,7 @@ export async function overview({ shell, query }: ScreenProps, board: boolean) {
                       <td>
                         {record.followup_due_on ? (
                           <>
-                            <div>{date(record.followup_due_on)}</div>
+                            <div>{date(record.followup_due_on, zoneOf(shell))}</div>
                             <div className={styles.meta}>
                               {str(record.followup_action)}
                             </div>
@@ -453,7 +471,7 @@ export async function overview({ shell, query }: ScreenProps, board: boolean) {
                           "Not scheduled"
                         )}
                       </td>
-                      <td>{date(record.updated_at)}</td>
+                      <td>{date(record.updated_at, zoneOf(shell))}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -573,7 +591,20 @@ export function queueScope(catalog: Row[], query: ScreenProps["query"]) {
 }
 export async function queue({ shell, query }: ScreenProps) {
   const catalogResult = await read(shell, "leads.ui.catalog");
-  const scope = queueScope(items(catalogResult), query);
+  const explicit = ["pipeline", "stage", "full", "sort"].some(
+    (name) => query[name] !== undefined,
+  );
+  // A bare URL opens the view saved last time, already on this render (#369);
+  // queueScope checks every saved value against the catalog like a URL's. A
+  // URL that names a control wins; the cookie is still read, so the browser
+  // knows not to hand its own copy over again.
+  const saved = shell.preference?.(QUEUE_PREFERENCE);
+  const scope = queueScope(
+    items(catalogResult),
+    saved === undefined || explicit
+      ? query
+      : { ...query, ...prefsQuery(parsePrefs(cookieText(saved))) },
+  );
   const result =
     catalogResult.state === "ok"
       ? await read(shell, "leads.ui.queue", scope.input)
@@ -659,15 +690,16 @@ export async function queue({ shell, query }: ScreenProps) {
         <JobQueue
           items={records}
           now={Date.now()}
+          zone={zoneOf(shell)}
           pipelines={scope.pipelineChoices}
           stages={scope.stageChoices}
           pipeline={scope.pipeline}
           stage={scope.stage}
           hideFull={scope.hideFull}
           sort={scope.sort}
-          explicit={["pipeline", "stage", "full", "sort"].some(
-            (name) => query[name] !== undefined,
-          )}
+          explicit={explicit}
+          serverSaved={saved !== undefined}
+          savePreference={shell.savePreference}
           filtered={
             scope.pipeline !== scope.fallback ||
             scope.stage !== scope.defaultStage
@@ -744,6 +776,7 @@ export async function review({ shell }: ScreenProps) {
         <ReviewQueue
           items={records}
           now={Date.now()}
+          zone={zoneOf(shell)}
           hrefs={hrefs}
           limited={records.length >= REVIEW_LIMIT}
           canPromote={shell.role === "owner"}
@@ -780,6 +813,7 @@ export async function scoring({ shell, query }: ScreenProps) {
         <ScoringView
           view={view}
           now={Date.now()}
+          zone={zoneOf(shell)}
           tab={tab}
           hrefs={hrefs}
           tabHrefs={{
@@ -999,7 +1033,7 @@ function JobRecord({
           notes.map((note) => (
             <article className={styles.jobNote} key={str(note.id)}>
               <p className={styles.note}>{str(note.body)}</p>
-              <p className={styles.meta}>{date(note.created_at)}</p>
+              <p className={styles.meta}>{date(note.created_at, zoneOf(shell))}</p>
             </article>
           ))
         ) : (
@@ -1039,7 +1073,7 @@ function JobRecord({
         {record.followup ? (
           <>
             <p className={styles.note}>{str(followup.action)}</p>
-            <p className={styles.meta}>Due {date(followup.due_on)}</p>
+            <p className={styles.meta}>Due {date(followup.due_on, zoneOf(shell))}</p>
             {submit ? (
               <div className={styles.jobRecordActions}>
                 <ActionForm
@@ -1087,6 +1121,108 @@ function RecordFor({
   return job ? <JobRecord {...props} /> : <>{children}</>;
 }
 
+interface HandoffSnapshot {
+  result: OperationOutcome | null;
+  handoffs: Row[];
+  views: ReadonlyMap<string, OperationOutcome>;
+}
+
+function handoffPageOffset(value: string | undefined): number {
+  const parsed = Number(value ?? 0);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+async function loadHandoffSnapshot(
+  shell: ShellApi,
+  opportunityRef: string | null,
+  offset: number,
+  limit: number,
+  includeViews: boolean,
+): Promise<HandoffSnapshot> {
+  if (!opportunityRef)
+    return { result: null, handoffs: [], views: new Map() };
+  const result = await read(shell, "leads.handoff.list", {
+    ref: opportunityRef,
+    limit,
+    offset,
+  });
+  const handoffs = result.state === "ok" ? items(result) : [];
+  const views = new Map<string, OperationOutcome>(
+    await Promise.all(
+      (includeViews ? handoffs : [])
+        .filter((handoff) => handoff.state === "succeeded")
+        .map(async (handoff) => [
+          str(handoff.ref),
+          await read(shell, "leads.handoff.current_view", {
+            handoff_ref: str(handoff.ref),
+          }),
+        ] as [string, OperationOutcome]),
+    ),
+  );
+  return { result, handoffs, views };
+}
+
+function QualificationHandoffSlot({
+  shell,
+  resource,
+  qualified,
+  opportunityRef,
+  revision,
+  title,
+  stale,
+}: {
+  shell: ShellApi;
+  resource: Promise<HandoffSnapshot>;
+  qualified: boolean;
+  opportunityRef: string;
+  revision: unknown;
+  title: string;
+  stale: boolean;
+}) {
+  const snapshot = use(resource);
+  if (!qualified || snapshot.result?.state !== "ok") return null;
+  const latest = snapshot.handoffs[0];
+  const content = latest ? (
+    <HandoffStatusSummary shell={shell} record={latest} />
+  ) : (
+    <QualificationHandoffEntry
+      shell={shell}
+      opportunityRef={opportunityRef}
+      revision={revision}
+      title={title}
+    />
+  );
+  return (
+    <>
+      {stale ? <QualificationStaleWarning /> : null}
+      {content}
+    </>
+  );
+}
+
+function HandoffHistorySlot({
+  shell,
+  resource,
+  opportunityRef,
+  offset,
+}: {
+  shell: ShellApi;
+  resource: Promise<HandoffSnapshot>;
+  opportunityRef: string;
+  offset: number;
+}) {
+  const snapshot = use(resource);
+  return (
+    <CurrentHandoffHistory
+      shell={shell}
+      result={snapshot.result}
+      views={snapshot.views}
+      opportunityRef={opportunityRef}
+      offset={offset}
+    />
+  );
+}
+
 export async function detail({ shell, query }: ScreenProps) {
   const result = await read(shell, "leads.opportunity.get", {
     ref: query.ref ?? "",
@@ -1108,11 +1244,36 @@ export async function detail({ shell, query }: ScreenProps) {
     result.state === "ok"
       ? await read(shell, "leads.qualification.list", { ref: envelope.ref })
       : null;
+  // Job-search opportunities never hand off to Current, so they read no handoffs.
+  const isJob =
+    result.state === "ok" && record.preset_id === JOBSEARCH_PRESET_ID;
+  const opportunityRef =
+    result.state === "ok" && !isJob ? str(envelope.ref) : null;
+  const handoffOffset = handoffPageOffset(query.handoff_offset);
+  const handoffHistoryResource = loadHandoffSnapshot(
+    shell,
+    opportunityRef,
+    handoffOffset,
+    100,
+    true,
+  );
+  const handoffSummaryResource =
+    handoffOffset === 0
+      ? handoffHistoryResource
+      : loadHandoffSnapshot(
+          shell,
+          opportunityRef,
+          0,
+          1,
+          false,
+        );
+  const qualificationIsStale = record.qualification
+    ? assessmentStale(qualification, record, envelope.revision)
+    : false;
   // A job-search opportunity gets the job header: its card projection, read once.
-  const jobResult =
-    result.state === "ok" && record.preset_id === JOBSEARCH_PRESET_ID
-      ? await read(shell, "leads.ui.queue", { ref: envelope.ref })
-      : null;
+  const jobResult = isJob
+    ? await read(shell, "leads.ui.queue", { ref: envelope.ref })
+    : null;
   const job = jobResult ? items(jobResult)[0] : undefined;
   const proposalResult = job
     ? await read(shell, "leads.jobproposal.get", { ref: envelope.ref })
@@ -1143,7 +1304,7 @@ export async function detail({ shell, query }: ScreenProps) {
       title={str(record.title) || "Opportunity"}
       description={
         result.state === "ok"
-          ? `${str(row(record.stage).label)} · Updated ${date(record.updated_at)}`
+          ? `${str(row(record.stage).label)} · Updated ${date(record.updated_at, zoneOf(shell))}`
           : undefined
       }
       bare={job !== undefined}
@@ -1152,6 +1313,7 @@ export async function detail({ shell, query }: ScreenProps) {
         <JobHeader
           item={job}
           now={Date.now()}
+          zone={zoneOf(shell)}
           submit={shell.submit}
           // Bare, so the queue reopens the view saved when it was last used.
           back={shell.href("queue")}
@@ -1170,14 +1332,15 @@ export async function detail({ shell, query }: ScreenProps) {
       {result.state !== "ok" ? (
         <Failure outcome={result} />
       ) : (
-        <RecordFor
-          job={record.preset_id === JOBSEARCH_PRESET_ID}
-          shell={shell}
-          record={record}
-          base={base}
-          paste={paste && !proposal ? paste : undefined}
-        >
-          <div className={styles.columns}>
+        <>
+          <RecordFor
+            job={isJob}
+            shell={shell}
+            record={record}
+            base={base}
+            paste={paste && !proposal ? paste : undefined}
+          >
+            <div className={styles.columns}>
             <div>
               <section className={styles.section}>
                 <h2>Source evidence</h2>
@@ -1193,7 +1356,7 @@ export async function detail({ shell, query }: ScreenProps) {
                   >
                     <summary>
                       Inquiry ·{" "}
-                      {date(data(source).occurred_at || data(source).created_at)}
+                      {date(data(source).occurred_at || data(source).created_at, zoneOf(shell))}
                     </summary>
                     {source.state !== "ok" ? (
                       <Failure outcome={source} />
@@ -1213,6 +1376,7 @@ export async function detail({ shell, query }: ScreenProps) {
                               {fieldValue(
                                 str(field.target),
                                 str(field.value_text),
+                                zoneOf(shell),
                               ) || label(field.value_kind)}
                             </dd>
                           </div>
@@ -1230,7 +1394,7 @@ export async function detail({ shell, query }: ScreenProps) {
                 {rows(record.opportunity_note).map((note) => (
                   <article key={str(note.id)}>
                     <p className={styles.note}>{str(note.body)}</p>
-                    <p className={styles.meta}>{date(note.created_at)}</p>
+                    <p className={styles.meta}>{date(note.created_at, zoneOf(shell))}</p>
                   </article>
                 ))}
                 <Form
@@ -1260,7 +1424,7 @@ export async function detail({ shell, query }: ScreenProps) {
                     key={str(draft.id)}
                     open={index === 0}
                   >
-                    <summary>Draft · {date(draft.created_at)}</summary>
+                    <summary>Draft · {date(draft.created_at, zoneOf(shell))}</summary>
                     <p className={styles.note}>{str(draft.body)}</p>
                   </details>
                 ))}
@@ -1290,7 +1454,7 @@ export async function detail({ shell, query }: ScreenProps) {
                 {record.followup ? (
                   <>
                     <p className={styles.note}>{str(followup.action)}</p>
-                    <p>Due {date(followup.due_on)}</p>
+                    <p>Due {date(followup.due_on, zoneOf(shell))}</p>
                     <div className={styles.toolbar}>
                       <Form
                         shell={shell}
@@ -1363,8 +1527,8 @@ export async function detail({ shell, query }: ScreenProps) {
                       <article key={str(reminder.id)}>
                         <p className={styles.note}>{str(reminder.action)}</p>
                         <p className={styles.meta}>
-                          {label(reminder.state)} · Due {date(reminder.due_on)} ·
-                          Resolved {date(reminder.resolved_at)}
+                          {label(reminder.state)} · Due {date(reminder.due_on, zoneOf(shell))} ·
+                          Resolved {date(reminder.resolved_at, zoneOf(shell))}
                         </p>
                       </article>
                     ))}
@@ -1442,7 +1606,7 @@ export async function detail({ shell, query }: ScreenProps) {
                     ) : null}
                     <p className={styles.meta}>
                       Assessed at revision {str(qualification.input_revision)} ·{" "}
-                      {assessmentStale(qualification, record, envelope.revision)
+                      {qualificationIsStale
                         ? "Evidence changed since · Reassess after changes"
                         : "Evidence unchanged"}
                     </p>
@@ -1546,7 +1710,7 @@ export async function detail({ shell, query }: ScreenProps) {
                             {str(assessment.objective)}
                           </h3>
                           <p className={styles.meta}>
-                            {date(assessment.created_at)} · Evidence revision{" "}
+                            {date(assessment.created_at, zoneOf(shell))} · Evidence revision{" "}
                             {str(assessment.input_revision)}
                             {assessment.id === qualification.id
                               ? " · Latest assessment"
@@ -1644,8 +1808,44 @@ export async function detail({ shell, query }: ScreenProps) {
                 </details>
               </section>
             </aside>
-          </div>
-        </RecordFor>
+            </div>
+          </RecordFor>
+          {isJob ? null : (
+            // Rarely used, so it stays closed at the foot of the page.
+            <details className={styles.evidence}>
+              <summary>Send to Current</summary>
+              <Suspense fallback={null}>
+                <QualificationHandoffSlot
+                  shell={shell}
+                  resource={handoffSummaryResource}
+                  qualified={Boolean(record.qualification)}
+                  opportunityRef={str(envelope.ref)}
+                  revision={envelope.revision}
+                  title={str(record.title) || "Opportunity"}
+                  stale={qualificationIsStale}
+                />
+              </Suspense>
+              <Suspense
+                fallback={
+                  <CurrentHandoffHistory
+                    shell={shell}
+                    result={null}
+                    views={new Map()}
+                    opportunityRef={str(envelope.ref)}
+                    offset={handoffOffset}
+                  />
+                }
+              >
+                <HandoffHistorySlot
+                  shell={shell}
+                  resource={handoffHistoryResource}
+                  opportunityRef={str(envelope.ref)}
+                  offset={handoffOffset}
+                />
+              </Suspense>
+            </details>
+          )}
+        </>
       )}
     </Frame>
   );
@@ -1718,9 +1918,9 @@ function ConnectionCard({
       ) : (
         <dl className={styles.facts}>
           <dt>Last accepted</dt>
-          <dd>{date(status.last_accepted_at)}</dd>
+          <dd>{date(status.last_accepted_at, zoneOf(shell))}</dd>
           <dt>Last processed</dt>
-          <dd>{date(status.last_processed_at)}</dd>
+          <dd>{date(status.last_processed_at, zoneOf(shell))}</dd>
           <dt>Processing lag</dt>
           <dd>{str(status.lag_seconds)} seconds</dd>
           <dt>Unresolved failures</dt>

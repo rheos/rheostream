@@ -16,8 +16,11 @@ FROM python:3.12-slim
 # only way to tell "correctly unpublished" apart from "never started". A
 # `--no-install-recommends` apt install kept in its own early layer so it
 # caches independently of source changes below.
+#
+# poppler-utils: `pdftotext`, which module statement parsers run on PDF
+# documents. The slim base image has no PDF text extractor.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Claude Code CLI, pinned to one exact version with checksum verification

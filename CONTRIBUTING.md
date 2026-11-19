@@ -1,8 +1,8 @@
 # Contributing
 
-rheoStream is partway through release one: the framework core and the Recallatron
-module are built, and a reference instance runs at `rheo.stream` (see the
-[README](README.md#status)). Start with the
+rheoStream is partway through its build plan: the framework core and five modules
+(Recallatron, Relationships, Leads, Current and Finance) are built, and a reference
+instance runs at `rheo.stream` (see the [README](README.md#status)). Start with the
 [idea document](docs/ideas/rheo-stream-idea.md), then the accepted
 [requirements](docs/requirements/README.md) and [architecture](docs/architecture/README.md).
 Discuss scope in an issue before adding implementations or introducing dependencies.
@@ -37,12 +37,13 @@ python3 scripts/check_repository.py
 ```
 
 `make check` runs that plus the legacy-name, fixture-provenance, search-boundary,
-workspace-scripts and module-web-boundary gates; `make lint`, `make typecheck` and `make test` cover code
-changes. `uv run pytest` needs a reachable Postgres cluster: `make up` starts one, or
-point `RHEO_TEST_CLUSTER_DSN` at your own. For local runs, `make test-fast` is
-quicker: it starts a throwaway test-only cluster on port 5434 (durability off, its
-own disposable data volume) and runs `make test` against it. [tests/README.md](tests/README.md) has
-the details. [scripts/README.md](scripts/README.md) describes each gate.
+workspace-scripts, module-web-boundary and migration-output gates; `make lint` (which
+also runs the routing-literal, theme-token and search-boundary gates), `make typecheck`
+and `make test` cover code changes. `uv run pytest` needs a reachable Postgres cluster:
+`make up` starts one, or point `RHEO_TEST_CLUSTER_DSN` at your own. For local runs,
+`make test-fast` is quicker: it starts a throwaway test-only cluster on port 5434
+(durability off, its own disposable data volume) and runs `make test` against it.
+[tests/README.md](tests/README.md) has the details. [scripts/README.md](scripts/README.md) describes each gate.
 
 Review staged content for private information as well as credentials. Use invented
 people, organizations, and source payloads in examples. Never attach real client

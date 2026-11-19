@@ -320,7 +320,9 @@ def test_an_object_under_a_listed_key_is_still_compared() -> None:
 
 
 @pytest.fixture
-def isolated_process_tables(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def isolated_process_tables(
+    monkeypatch: pytest.MonkeyPatch, fresh_startup_composition: None
+) -> Iterator[None]:
     """A copy of every process-global table the loader, the command and the core
     lifespan write, put back on teardown."""
     monkeypatch.setattr(REGISTRY, "_operations", dict(REGISTRY._operations))
@@ -530,6 +532,7 @@ async def test_a_box_bot_token_lists_and_calls_as_before(
 @pytest.fixture
 def bridge_workspace(
     monkeypatch: pytest.MonkeyPatch,
+    fresh_startup_composition: None,
     cluster: ClusterSession,
     workspace: UUID,
     owner_account_id: UUID,

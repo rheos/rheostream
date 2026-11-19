@@ -339,6 +339,19 @@ def test_the_image_creates_the_data_root_owner_only() -> None:
     )
 
 
+def test_the_image_installs_poppler_utils_for_pdftotext() -> None:
+    """Statement parsers shell out to `pdftotext`, which `python:3.12-slim` does not
+    ship. It comes from Debian's `poppler-utils`, installed in the same early apt
+    layer as curl, without recommended packages."""
+    apt_install = re.search(
+        r"^\s*&& apt-get install -y --no-install-recommends (?P<packages>[^\\\n]+)",
+        DOCKERFILE_TEXT,
+        re.MULTILINE,
+    )
+    assert apt_install is not None
+    assert apt_install.group("packages").split() == ["curl", "poppler-utils"]
+
+
 def _run_entrypoint(tmp_path: Path, root: Path) -> subprocess.CompletedProcess[str]:
     script = ENTRYPOINT_PATH.read_text(encoding="utf-8").replace(
         "root=/var/lib/rheo-stream", f"root={root}"

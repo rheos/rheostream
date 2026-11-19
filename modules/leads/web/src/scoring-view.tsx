@@ -32,6 +32,7 @@ export interface ScoringProps {
   view: Row;
   /** Server render time, so every relative time agrees with the markup. */
   now: number;
+  zone: string;
   tab: ScoringTab;
   /** Job detail links by opportunity reference. */
   hrefs: Record<string, string>;
@@ -63,7 +64,7 @@ function RetryIcon() {
   );
 }
 
-function Chip({ job, now }: { job: Row; now: number }) {
+function Chip({ job, now, zone }: { job: Row; now: number; zone: string }) {
   const score = job.score;
   if (str(job.stage) === "scored" && typeof score === "number") {
     return (
@@ -75,7 +76,7 @@ function Chip({ job, now }: { job: Row; now: number }) {
       </span>
     );
   }
-  const chip = stageChip(job, now);
+  const chip = stageChip(job, now, zone);
   return (
     <span
       className={`${styles.chip} ${styles[`chip_${chip.tone}`] ?? ""}`}
@@ -87,12 +88,22 @@ function Chip({ job, now }: { job: Row; now: number }) {
   );
 }
 
-function JobRow({ job, now, href }: { job: Row; now: number; href?: string }) {
+function JobRow({
+  job,
+  now,
+  zone,
+  href,
+}: {
+  job: Row;
+  now: number;
+  zone: string;
+  href?: string;
+}) {
   const title = str(job.title) || "Untitled job";
   const scored = str(job.stage) === "scored" && job.assessed_at;
   return (
     <li className={styles.row}>
-      <Chip job={job} now={now} />
+      <Chip job={job} now={now} zone={zone} />
       {href ? (
         <a className={styles.rowTitle} href={href}>
           {title}
@@ -112,11 +123,13 @@ function JobRow({ job, now, href }: { job: Row; now: number; href?: string }) {
 function Batch({
   batch,
   now,
+  zone,
   hrefs,
   reviewHref,
 }: {
   batch: Row;
   now: number;
+  zone: string;
   hrefs: Record<string, string>;
   reviewHref: string;
 }) {
@@ -133,11 +146,12 @@ function Batch({
       ["paused", "paused"],
       ["needs_posting", "need the posting"],
       ["failed", "failed"],
+      ["too_old", "too old"],
     ] as const
   )
     .filter(([key]) => typeof counts[key] === "number" && counts[key] > 0)
     .map(([key, words]) => `${str(counts[key])} ${words}`);
-  const heading = `${batchSource(batch.sources)} · ${clock(batch.started_at, now)}`;
+  const heading = `${batchSource(batch.sources)} · ${clock(batch.started_at, now, zone)}`;
   return (
     <section className={styles.batch} aria-label={heading}>
       <header className={styles.batchHead}>
@@ -154,6 +168,7 @@ function Batch({
               key={str(job.id)}
               job={job}
               now={now}
+              zone={zone}
               href={hrefs[str(job.ref)]}
             />
           ))}
@@ -168,6 +183,7 @@ function Batch({
                 key={str(job.id)}
                 job={job}
                 now={now}
+                zone={zone}
                 href={hrefs[str(job.ref)]}
               />
             ))}
@@ -185,11 +201,13 @@ function Batch({
 function Queue({
   view,
   now,
+  zone,
   hrefs,
   reviewHref,
 }: {
   view: Row;
   now: number;
+  zone: string;
   hrefs: Record<string, string>;
   reviewHref: string;
 }) {
@@ -208,6 +226,7 @@ function Queue({
           key={str(batch.started_at)}
           batch={batch}
           now={now}
+          zone={zone}
           hrefs={hrefs}
           reviewHref={reviewHref}
         />
@@ -219,10 +238,12 @@ function Queue({
 function Calls({
   view,
   now,
+  zone,
   hrefs,
 }: {
   view: Row;
   now: number;
+  zone: string;
   hrefs: Record<string, string>;
 }) {
   const summary = rows(view.summary);
@@ -240,9 +261,9 @@ function Calls({
         </h2>
         <InfoTip label="About the model call log" wide>
           <p>
-            One row for each model call Leads makes: scoring a job, the steps of
-            drafting a proposal, and pricing. Tokens and time only; the calls
-            run on your subscription login, not a metered API.
+            One row for each model call Leads makes: pre-filtering, full scoring,
+            drafting a proposal, and pricing. Tokens and time only. Jev uses a
+            metered API; its provider account reports the charges.
           </p>
           <p>
             No posting text, prompt or answer is kept. Rows older than 90 days
@@ -342,7 +363,7 @@ function Calls({
                 const href = hrefs[str(c.ref)];
                 return (
                   <tr key={str(c.id)}>
-                    <td className={styles.dim}>{clock(c.started_at, now)}</td>
+                    <td className={styles.dim}>{clock(c.started_at, now, zone)}</td>
                     <td>{purposeLabel(c.purpose)}</td>
                     <td className={styles.jobCell}>
                       {href ? (
@@ -386,7 +407,7 @@ function Calls({
 
 /** The job feed's recent runs: what each brought in, and why any detail read
  * failed, so a bad stretch can be read after the fact (#377). */
-function FeedRuns({ view, now }: { view: Row; now: number }) {
+function FeedRuns({ view, now, zone }: { view: Row; now: number; zone: string }) {
   const runs = rows(view.feed_runs);
   return (
     <>
@@ -415,7 +436,7 @@ function FeedRuns({ view, now }: { view: Row; now: number }) {
             const stopped = run.outcome === "stopped";
             return (
               <li key={str(run.id) || `${str(run.finished_at)}-${index}`} className={styles.run}>
-                <span className={styles.runWhen}>{clock(run.finished_at, now)}</span>
+                <span className={styles.runWhen}>{clock(run.finished_at, now, zone)}</span>
                 <span className={styles.runWhat}>
                   {stopped ? (
                     <span className={styles.runStopped}>
@@ -449,13 +470,21 @@ function FeedRuns({ view, now }: { view: Row; now: number }) {
 }
 
 /** The status line, with its own one-second clock for the elapsed counter. */
-function Status({ status, now: initial }: { status: Row; now: number }) {
+function Status({
+  status,
+  now: initial,
+  zone,
+}: {
+  status: Row;
+  now: number;
+  zone: string;
+}) {
   const [now, setNow] = useState(initial);
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
-  const line = statusLine(status, now);
+  const line = statusLine(status, now, zone);
   return (
     <p className={`${styles.status} ${styles[`status_${line.tone}`]}`}>
       <span className={styles.dot} aria-hidden="true" />
@@ -469,7 +498,7 @@ function Status({ status, now: initial }: { status: Row; now: number }) {
  * (and slowly otherwise), unless the window is in the background or a panel is
  * open. Looking again renders in place when the shell can, a reload otherwise. */
 export function ScoringView(props: ScoringProps) {
-  const { view, tab, now, refresh } = props;
+  const { view, tab, now, zone, refresh } = props;
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState("");
   const root = useRef<HTMLDivElement | null>(null);
@@ -525,14 +554,14 @@ export function ScoringView(props: ScoringProps) {
     };
   }, [live, refresh]);
 
-  async function retry() {
+  async function retry(operation: string, failure: string) {
     const submit = props.submit;
     if (!submit || retrying) return;
     setRetrying(true);
     setError("");
     let outcome;
     try {
-      outcome = await submit("leads.jobscoring.retry_failed", {});
+      outcome = await submit(operation, {});
     } catch {
       outcome = { state: "unavailable" as const };
     }
@@ -543,13 +572,17 @@ export function ScoringView(props: ScoringProps) {
       return;
     }
     setRetrying(false);
-    setError("Could not put the failed jobs back in line. Try again.");
+    setError(failure);
   }
 
   const queued = typeof view.queued_total === "number" ? view.queued_total : 0;
   const waiting =
     typeof view.waiting_total === "number" ? view.waiting_total : 0;
   const failed = typeof view.failed_total === "number" ? view.failed_total : 0;
+  const tooOld =
+    typeof view.too_old_total === "number" ? view.too_old_total : 0;
+  const maxAge =
+    typeof view.max_age_hours === "number" ? view.max_age_hours : 0;
   const eta = typeof view.eta_seconds === "number" ? view.eta_seconds : null;
   const perJob =
     typeof view.median_call_seconds === "number"
@@ -568,25 +601,57 @@ export function ScoringView(props: ScoringProps) {
         <InfoTip label="About scoring" wide>
           <p>
             New jobs are scored one at a time, newest first. The client filters
-            decide first; a job they let through goes to the model with your
-            profile, and its score lands on the job.
+            decide first. When enabled, Jev pre-filters eligible jobs against your
+            profile before full scoring. Held jobs remain in the Review queue;
+            Promote requests full scoring. A Jev failure falls through to the
+            full scorer. Its final score lands on the job.
           </p>
           <p>
             When the usage limit stops a call, every waiting job pauses and
-            scoring tries again on its own. A job that fails five times is
+            scoring tries again on its own, or when an owner retries the
+            waiting jobs here. A job that fails five times is
             marked failed until its posting changes, or until an owner puts it
             back in line here.
           </p>
+          {maxAge > 0 ? (
+            <p>
+              A job still waiting {maxAge} {maxAge === 1 ? "hour" : "hours"}{" "}
+              after it arrived is set aside unscored, so scoring that resumes
+              after a pause starts with the recent jobs. Promoted and invited
+              jobs are exempt from the age cutoff.
+            </p>
+          ) : null}
         </InfoTip>
       </div>
-      <Status status={row(view.status)} now={now} />
+      <Status status={row(view.status)} now={now} zone={zone} />
       <p className={styles.totals}>
         <span>
           <strong>{queued}</strong> queued
           {eta !== null ? ` · up to about ${span(eta)} to clear` : ""}
         </span>
         {perJob !== null ? <span>{span(perJob)} per job lately</span> : null}
-        {waiting > 0 ? <span>{waiting} waiting to retry</span> : null}
+        {waiting > 0 ? (
+          <span className={styles.waitingTotal}>
+            {waiting} waiting to retry
+            {props.canRetry && props.submit ? (
+              <button
+                type="button"
+                className={styles.iconButton}
+                aria-label={`Retry ${waiting} waiting ${waiting === 1 ? "job" : "jobs"} now`}
+                title={`Retry ${waiting} waiting ${waiting === 1 ? "job" : "jobs"} now`}
+                disabled={retrying}
+                onClick={() =>
+                  retry(
+                    "leads.jobscoring.retry_waiting",
+                    "Could not retry the waiting jobs. Try again.",
+                  )
+                }
+              >
+                <RetryIcon />
+              </button>
+            ) : null}
+          </span>
+        ) : null}
         {failed > 0 ? (
           <span className={styles.failedTotal}>
             <strong>{failed}</strong> failed
@@ -597,13 +662,19 @@ export function ScoringView(props: ScoringProps) {
                 aria-label={`Put ${failed} failed ${failed === 1 ? "job" : "jobs"} back in line`}
                 title={`Put ${failed} failed ${failed === 1 ? "job" : "jobs"} back in line`}
                 disabled={retrying}
-                onClick={retry}
+                onClick={() =>
+                  retry(
+                    "leads.jobscoring.retry_failed",
+                    "Could not put the failed jobs back in line. Try again.",
+                  )
+                }
               >
                 <RetryIcon />
               </button>
             ) : null}
           </span>
         ) : null}
+        {tooOld > 0 ? <span>{tooOld} too old to score</span> : null}
       </p>
       {error ? (
         <p className={styles.error} role="alert">
@@ -623,13 +694,14 @@ export function ScoringView(props: ScoringProps) {
         ))}
       </nav>
       {tab === "calls" ? (
-        <Calls view={view} now={now} hrefs={props.hrefs} />
+        <Calls view={view} now={now} zone={zone} hrefs={props.hrefs} />
       ) : tab === "feed" ? (
-        <FeedRuns view={view} now={now} />
+        <FeedRuns view={view} now={now} zone={zone} />
       ) : (
         <Queue
           view={view}
           now={now}
+          zone={zone}
           hrefs={props.hrefs}
           reviewHref={props.reviewHref}
         />

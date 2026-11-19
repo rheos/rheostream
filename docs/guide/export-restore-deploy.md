@@ -44,6 +44,14 @@ Secret values are absent by construction, because no exporter can resolve one. E
 writes its own rows through a core writer that enforces its schema, reading through a
 sealed snapshot so it cannot slip a second, later view into the same file.
 
+Only modules with an exportable record type are exported. Finance declares none, so
+ledger state never enters a workspace export; it moves with the module's own
+`finance state export` and `finance state import` commands, which write and check a
+directory of per-table files with counts and SHA-256 hashes. Finance's files under the
+workspace's `uploads/finance/` (its settings and manual files, statement archive, inbox
+and keys) are not in a workspace export either; `finance remote push` copies them into a
+host's layout, as the [Finance README](../../modules/finance/README.md) describes.
+
 ### Formats are versioned per module
 
 A module bumps its export format version when its row shape changes, and restore refuses
@@ -72,8 +80,7 @@ owner to reconnect.
 ### The deletion cascade
 
 `core.record.delete` is destructive: per-action approval, never a standing grant. The
-coordinator runs in one transaction against the workspace database, which a database per
-workspace makes possible without a distributed step:
+coordinator runs in one database transaction:
 
 1. Recheck the approval and that the record is still at the approved revision.
 2. The owning module deletes the record and everything it owns for it. Deleting an
@@ -133,15 +140,24 @@ old.
 ### Startup migrates, upgrades are explicit
 
 Startup runs the core migration chain over every active workspace, one at a time. Module
-upgrades are a separate audited operator command that runs only migrations explicitly
-marked non-destructive; a destructive schema change needs an export newer than the
-upgrade's first attempt. While a module is not ready, its jobs and deliveries wait a
-minute without spending a retry.
+upgrades are a separate audited operator command (`rheo module upgrade --workspace <uuid>
+--module <id> --target-version <v> --target-schema <head>`) that runs only migrations
+explicitly marked non-destructive and refuses anything else, with no force option. A
+destructive schema change (designed to need an export newer than the upgrade's first
+attempt) has no supported upgrade path yet. `rheo module check` reports each installed module's
+readiness without changing anything. A deploy that brings a new module migration leaves
+that module not ready until the upgrade runs. While a module is not ready, its jobs and
+deliveries wait a minute without spending a retry.
+
+Which modules a deployment loads is the operator's `modules.installed` list. Loading a
+module only registers it; installing and enabling it in a workspace are the
+`core.module.install` and `core.module.enable` operations (owner or operator), and enabling is what writes the
+module's schedules.
 
 ### Backups are verified before anything old is deleted
 
-A nightly host job dumps every database in the cluster with `pg_dumpall`, because one
-database per workspace means a single-database dump would miss workspaces. It writes to a
+A nightly host job dumps the whole Postgres cluster with `pg_dumpall`, so the control plane
+and every workspace are in one file. It writes to a
 hidden partial file, checks the gzip stream, a minimum size and the dump's closing line,
 and only then renames it. Retention keeps the newest dump from each of the last 14 days
 and the last 8 Sundays, about 20 files, never compares dates with the clock, and never
@@ -155,8 +171,7 @@ into an empty deployment, compare digests.
 
 ## Why it's built this way
 
-A workspace is one database, so it leaves as one artifact, with the same identifiers on
-the other side and a digest to prove the copy matches. Restore is deliberately inert:
+A workspace leaves as one artifact, with the same identifiers on the other side and a digest to prove the copy matches. Restore is deliberately inert:
 approvals, operations and credentials all come back waiting for a person, so moving a
 workspace can never fire off the emails it had queued.
 

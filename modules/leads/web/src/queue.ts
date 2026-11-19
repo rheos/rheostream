@@ -3,7 +3,7 @@
  * becomes a pill, and how filters, sorting, saved preferences and an optimistic
  * dismiss behave. Kept apart from the components so each rule is tested alone.
  */
-import { row, rows, str, type Row } from "./data";
+import { dayIn, row, rows, str, type Row } from "./data";
 
 /** Above this many proposals a posting is crowded: the chip hides it and the
  * detail header warns. */
@@ -53,10 +53,29 @@ const dollars = (n: number) =>
 export function formatBudget(fields: Row): string {
   const min = amount(fields.budget_min);
   const max = amount(fields.budget_max);
-  if (!min && !max) return "No budget listed";
+  if (!min && !max) return formatStated(fields) ?? "No budget listed";
   const rate = str(fields.job_type) === "hourly" ? "/hr" : "";
   if (min && max && min !== max) return `${dollars(min)} - ${dollars(max)}${rate}`;
   return `${dollars((min || max) as number)}${rate}`;
+}
+
+const STATED_UNITS: Record<string, string> = {
+  hour: "/hr",
+  item: " each",
+  total: " total",
+};
+
+/** A price the posting text states, read when the feed gave no budget (#503),
+ * with its unit (per hour, each, or total) and "(in the text)" after it.
+ * Nothing without one. */
+export function formatStated(fields: Row): string | null {
+  const min = amount(fields.stated_price_min);
+  if (!min) return null;
+  const max = amount(fields.stated_price_max);
+  const unit = STATED_UNITS[str(fields.stated_price_unit)] ?? "";
+  const price =
+    max && max !== min ? `${dollars(min)} - ${dollars(max)}` : dollars(min);
+  return `${price}${unit} (in the text)`;
 }
 
 /** "$12,400 spent", or nothing when the spend is unknown or zero. */
@@ -190,19 +209,20 @@ export function timeAgo(value: unknown, now: number): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 /** A posting date has no time, so it reads in days: "posted today", "posted 3d ago". */
-export function postedAgo(value: unknown, now: number): string {
+export function postedAgo(value: unknown, now: number, zone = "UTC"): string {
   const text = str(value);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
   const day = Date.parse(`${text}T00:00:00Z`);
-  const today = Math.floor(now / (24 * HOUR)) * 24 * HOUR;
+  // Today is the viewer's day, so a card's "posted" and "overdue" agree.
+  const today = Date.parse(`${dayIn(now, zone)}T00:00:00Z`);
   const days = Math.round((today - day) / (24 * HOUR));
   if (Number.isNaN(days)) return "";
   return days <= 0 ? "posted today" : `posted ${days}d ago`;
 }
 /** When it was posted, or else when it arrived here. */
-export function age(item: Row, now: number): string {
+export function age(item: Row, now: number, zone = "UTC"): string {
   return (
-    postedAgo(row(item.fields).posted_on, now) ||
+    postedAgo(row(item.fields).posted_on, now, zone) ||
     `arrived ${timeAgo(item.created_at, now)}`
   );
 }
@@ -225,12 +245,12 @@ export interface Followup {
   action: string;
   overdue: boolean;
 }
-/** The pending follow-up, with overdue meaning due before today (UTC). */
-export function followupFor(item: Row, now: number): Followup | null {
+/** The pending follow-up, with overdue meaning due before today in the viewer's zone. */
+export function followupFor(item: Row, now: number, zone = "UTC"): Followup | null {
   const followup = row(item.followup);
   const due = str(followup.due_on);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) return null;
-  const today = new Date(now).toISOString().slice(0, 10);
+  const today = dayIn(now, zone);
   return { due, action: str(followup.action), overdue: due < today };
 }
 
@@ -260,6 +280,29 @@ export const DEFAULT_PREFS: Prefs = {
   sort: "score",
 };
 export const PREFS_KEY = "rheo.leads.queue.v1";
+
+/** The preference the saved view is also kept under as a cookie, so the
+ * server's first render is already the saved view (#369). */
+export const QUEUE_PREFERENCE = "queue";
+/** Saved choices as the queue URL's parameters, the way the controls submit
+ * them; "" values fall back to the defaults when the server checks them. */
+export function prefsQuery(prefs: Prefs): Record<string, string> {
+  return {
+    pipeline: prefs.pipeline,
+    stage: prefs.stage,
+    full: prefs.hideFull ? "hide" : "show",
+    sort: prefs.sort,
+  };
+}
+/** A preference cookie's text, whether or not the host already decoded it. */
+export function cookieText(value: string): string {
+  if (value.startsWith("{")) return value;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
 
 type Store = Pick<Storage, "getItem" | "setItem">;
 /** Saved preferences (JSON text) merged over the defaults; any unreadable part
@@ -393,6 +436,7 @@ export function undoTarget(item: Row, from: string): StageMove | null {
 
 /** A held job's clause, as the review card's badge names it. */
 const HOLD_LABELS: Record<string, string> = {
+  prefilter: "Jev pre-filter",
   payment_unverified: "Payment unverified",
   low_spend: "Low client spend",
   low_rating: "Low client rating",

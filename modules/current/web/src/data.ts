@@ -14,6 +14,8 @@ export type Priority = "critical" | "high" | "normal" | "low";
 
 export interface ItemSummary {
   ref: string;
+  /** The UUID's tail (#587): the item's ID in links and for people to quote. */
+  shortId: string;
   title: string;
   status: Status;
   priority: Priority;
@@ -24,12 +26,15 @@ export interface ItemSummary {
   woke: boolean;
   overdue: boolean;
   blocked: boolean;
+  /** A short label for the row: the item's `Type:` line, else its source kind. */
+  tag: string | null;
   eventCount: number;
   revision: number;
   updatedAt: string;
 }
 export interface Neighbour {
   ref: string;
+  shortId: string;
   title: string;
   status: Status;
 }
@@ -127,6 +132,7 @@ export function itemSummary(value: unknown): ItemSummary {
   const r = row(value);
   return {
     ref: str(r.ref),
+    shortId: shortId(r),
     title: str(r.title),
     status: status(r.status),
     priority: priority(r.priority),
@@ -137,6 +143,7 @@ export function itemSummary(value: unknown): ItemSummary {
     woke: r.woke === true,
     overdue: r.overdue === true,
     blocked: r.blocked === true,
+    tag: optional(r.tag),
     eventCount: int(r.event_count),
     revision: int(r.revision),
     updatedAt: str(r.updated_at),
@@ -144,7 +151,17 @@ export function itemSummary(value: unknown): ItemSummary {
 }
 function neighbour(value: unknown): Neighbour {
   const r = row(value);
-  return { ref: str(r.ref), title: str(r.title), status: status(r.status) };
+  return {
+    ref: str(r.ref),
+    shortId: shortId(r),
+    title: str(r.title),
+    status: status(r.status),
+  };
+}
+/** The short ID, or the full ref from a service that does not send one yet. */
+function shortId(r: Record<string, unknown>): string {
+  const short = str(r.short_id);
+  return /^[0-9a-f]{8,32}$/.test(short) ? short : str(r.ref);
 }
 export function itemDetail(value: unknown): ItemDetail {
   const r = row(value);
@@ -254,9 +271,11 @@ export function read(
 
 // --- labels and dates ---------------------------------------------------------------
 
+/** `waiting` is shown as Watching: a watched item stays out of the queue until
+ * someone moves it (#563). */
 export const STATUS_LABEL: Record<Status, string> = {
   open: "Open",
-  waiting: "Waiting",
+  waiting: "Watching",
   snoozed: "Snoozed",
   done: "Done",
 };
@@ -303,6 +322,64 @@ export function pageOffset(value: string | undefined): number {
   return Number.isInteger(n) && n >= 0 && n <= 100000 ? n : 0;
 }
 
+/** Compact age: "just now", "5m ago", "3h ago", "26d ago", "4mo ago", "2y ago". */
+export function age(iso: string, now: Date): string {
+  const then = new Date(iso).valueOf();
+  if (!iso || Number.isNaN(then)) return "";
+  const minutes = Math.floor((now.valueOf() - then) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
+}
+
+/** The icon and colour each default area wears; any other area gets the plain
+ * tag icon and a palette colour picked from its key, so it stays the same. */
+export const AREA_ICONS = [
+  "hammer",
+  "coins",
+  "piggy",
+  "shield",
+  "cap",
+  "waves",
+  "house",
+  "globe",
+  "tag",
+] as const;
+export type AreaIcon = (typeof AREA_ICONS)[number];
+export const AREA_TONES = [
+  "slate",
+  "gold",
+  "green",
+  "sky",
+  "indigo",
+  "violet",
+  "rose",
+  "teal",
+] as const;
+export type AreaTone = (typeof AREA_TONES)[number];
+const DEFAULT_AREA_LOOK: Record<string, { icon: AreaIcon; tone: AreaTone }> = {
+  work: { icon: "hammer", tone: "slate" },
+  commerce: { icon: "coins", tone: "gold" },
+  bills: { icon: "piggy", tone: "green" },
+  peace: { icon: "shield", tone: "sky" },
+  education: { icon: "cap", tone: "indigo" },
+  dev: { icon: "waves", tone: "violet" },
+  interior: { icon: "house", tone: "rose" },
+  foreign: { icon: "globe", tone: "teal" },
+};
+export function areaLook(key: string | null): { icon: AreaIcon; tone: AreaTone } {
+  if (!key) return { icon: "tag", tone: "slate" };
+  if (Object.hasOwn(DEFAULT_AREA_LOOK, key)) return DEFAULT_AREA_LOOK[key]!;
+  let hash = 0;
+  for (const ch of key) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return { icon: "tag", tone: AREA_TONES[hash % AREA_TONES.length] ?? "slate" };
+}
+
 /** Labels by area key, retired areas included, so a retired area stays readable. */
 export function areaLabels(areas: readonly Area[]): Map<string, string> {
   return new Map(areas.map((a) => [a.key, a.label]));
@@ -339,46 +416,94 @@ export const SNOOZE_PICKS = [
 ] as const;
 export type SnoozePick = (typeof SNOOZE_PICKS)[number]["id"];
 
-function at(now: Date, addDays: number, hour: number): Date {
-  const d = new Date(now);
-  d.setDate(d.getDate() + addDays);
-  d.setHours(hour, 0, 0, 0);
-  return d;
+/** The runtime's own zone: the browser's, where the snooze controls run. */
+function ownZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
-function next(now: Date, weekday: number, hour: number): Date {
+/** The wall clock an instant shows in a zone. */
+function wall(ms: number, zone: string) {
+  const parts = new Intl.DateTimeFormat("en", {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    hourCycle: "h23",
+    timeZone: zone,
+  }).formatToParts(ms);
+  const n = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((part) => part.type === type)?.value);
+  return { y: n("year"), m: n("month"), d: n("day"), h: n("hour"), min: n("minute") };
+}
+/** How far a zone's clock is ahead of UTC at an instant, in ms. */
+function offset(ms: number, zone: string): number {
+  const w = wall(ms, zone);
+  return Date.UTC(w.y, w.m - 1, w.d, w.h, w.min) - (ms - (ms % 60000));
+}
+/** The instant a wall-clock time names in a zone (days and hours may overflow,
+ * as with `Date.UTC`). A time the clocks fall back over means its first
+ * occurrence; a time a spring-forward skips moves past the gap by its length
+ * (2:30 becomes 3:30), so a snooze never wakes before the time asked for. */
+function zoned(y: number, m: number, d: number, h: number, min: number, zone: string): Date {
+  const target = Date.UTC(y, m - 1, d, h, min);
+  const day = 24 * 60 * 60 * 1000;
+  const before = offset(target - day, zone);
+  const after = offset(target + day, zone);
+  const fits = [target - before, target - after]
+    .filter((t) => target - t === offset(t, zone))
+    .sort((a, b) => a - b);
+  return new Date(fits[0] ?? target - before);
+}
+function at(now: Date, addDays: number, hour: number, zone: string): Date {
+  const w = wall(now.getTime(), zone);
+  return zoned(w.y, w.m, w.d + addDays, hour, 0, zone);
+}
+function next(now: Date, weekday: number, hour: number, zone: string): Date {
+  const w = wall(now.getTime(), zone);
   for (let add = 0; add <= 7; add += 1) {
-    const d = at(now, add, hour);
-    if (d.getDay() === weekday && d > now) return d;
+    const d = at(now, add, hour, zone);
+    if (new Date(Date.UTC(w.y, w.m - 1, w.d + add)).getUTCDay() === weekday && d > now)
+      return d;
   }
-  return at(now, 7, hour);
+  return at(now, 7, hour, zone);
 }
 /**
- * The wake time a quick pick means, in the viewer's own clock: `now` is read in the
- * browser, never on the server, whose time zone is not the viewer's. "This evening"
- * has no answer once 7pm has passed, and the control hides it then.
+ * The wake time a quick pick means on the viewer's clock, in `zone` (the shell's,
+ * the one times are shown in; the browser's own when none is given). `now` is read
+ * in the browser. "This evening" has no answer once 7pm has passed, and the
+ * control hides it then.
  */
-export function snoozeAt(pick: SnoozePick, now: Date): Date | null {
+export function snoozeAt(pick: SnoozePick, now: Date, zone = ownZone()): Date | null {
   switch (pick) {
     case "hour":
       return new Date(now.getTime() + 60 * 60 * 1000);
     case "evening": {
-      const evening = at(now, 0, 19);
+      const evening = at(now, 0, 19, zone);
       return evening > now ? evening : null;
     }
     case "tomorrow":
-      return at(now, 1, 9);
+      return at(now, 1, 9, zone);
     case "saturday":
-      return next(now, 6, 9);
+      return next(now, 6, 9, zone);
     case "monday":
-      return next(now, 1, 9);
+      return next(now, 1, 9, zone);
   }
 }
-/** A `datetime-local` value read as the viewer's local time; null unless it is a
- * real time after `now`. */
-export function customSnooze(value: string, now: Date): Date | null {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) return null;
-  const d = new Date(value);
-  return Number.isNaN(d.valueOf()) || d <= now ? null : d;
+/** A `datetime-local` value read as a wall-clock time in `zone`; null unless it is
+ * a real time after `now`. */
+export function customSnooze(value: string, now: Date, zone = ownZone()): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value);
+  if (!m) return null;
+  const [y, mo, d, h, min] = [m[1], m[2], m[3], m[4], m[5]].map(Number) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || min > 59) return null;
+  const when = zoned(y, mo, d, h, min, zone);
+  return Number.isNaN(when.valueOf()) || when <= now ? null : when;
 }
 
 /** A key for a new area derived from its label, in the service's key grammar. */

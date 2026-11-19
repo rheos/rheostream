@@ -584,3 +584,142 @@ def test_without_a_profile_nothing_is_scored(scored: Scoring) -> None:
     scored.sweep()
     assert adapter.starts == []
     assert rows(scored.i, select(s.job_score_state)) == []
+
+
+def backdate(scored: Scoring, posting: str, by: timedelta) -> None:
+    """Move a job's import time into the past, as a long pause leaves it."""
+    identifier = the_opportunity(scored.i, posting)["id"]
+    with open_unit_of_work(scored.c.owner) as uow:
+        uow.connection.execute(
+            update(p.opportunity)
+            .where(p.opportunity.c.id == identifier)
+            .values(created_at=p.opportunity.c.created_at - by)
+        )
+        uow.commit()
+
+
+def invite(scored: Scoring, posting: str) -> None:
+    """Flag a job invited, as the job feed's invitation listing does."""
+    with open_unit_of_work(scored.c.owner) as uow:
+        uow.connection.execute(
+            p.opportunity_field_state.insert().values(
+                opportunity_id=the_opportunity(scored.i, posting)["id"],
+                target="ext.jobsearch.invited",
+                value_kind="value",
+                value_text="true",
+                owner="source",
+                orphaned=False,
+            )
+        )
+        uow.commit()
+
+
+def test_a_sweep_resuming_after_a_pause_sets_aside_jobs_past_the_cutoff(
+    scored: Scoring,
+) -> None:
+    for posting in ("~02100", "~02101", "~02102"):
+        scored.paste(posting, FULL.format(title=posting, what="pipeline", activity=""))
+    scored.model(failure(FailureKind.USAGE_LIMITED))
+    scored.set_profile()
+    now = datetime.now(UTC)
+    scored.sweep(now)
+    assert scored.state("~02100")["failure_kind"] == "usage_limited"
+    # The pause runs long: two of the waiting jobs are now two days old, and the
+    # client invited the owner to one of them.
+    backdate(scored, "~02100", timedelta(days=2))
+    backdate(scored, "~02102", timedelta(days=2))
+    invite(scored, "~02102")
+
+    adapter = scored.model(final(7), final(6))
+    scored.sweep(now + scoring.USAGE_DEFER + timedelta(seconds=1))
+    old = scored.state("~02100")
+    assert (old["state"], old["failure_kind"], old["attempts"]) == (
+        "failed",
+        scoring.TOO_OLD,
+        0,
+    )
+    assert scored.assessments("~02100") == []
+    assert [a["score"] for a in scored.assessments("~02101")] == [70]
+    assert [a["score"] for a in scored.assessments("~02102")] == [60]
+    assert len(adapter.starts) == 2
+
+    # A new profile re-queues failures, but not a job set aside as too old.
+    scored.set_profile(goals=["A changed goal."])
+    assert scored.state("~02100")["failure_kind"] == scoring.TOO_OLD
+    scored.sweep(now + timedelta(hours=1))
+    assert scored.state("~02100")["state"] == "failed"
+    assert len(adapter.starts) == 2
+
+
+def test_an_old_job_with_a_score_keeps_it_when_its_posting_moves(
+    scored: Scoring,
+) -> None:
+    scored.paste("~02100", FULL.format(title="Job", what="pipeline", activity=""))
+    scored.model(final(8))
+    scored.set_profile()
+    scored.sweep()
+    backdate(scored, "~02100", timedelta(days=2))
+    scored.paste(
+        "~02100", FULL.format(title="Job", what="pipeline", activity="And an admin.")
+    )
+    adapter = scored.model(final(3))
+    scored.sweep()
+    assert scored.state("~02100")["failure_kind"] == scoring.TOO_OLD
+    assert [a["score"] for a in scored.assessments("~02100")] == [80]
+    assert adapter.starts == []
+
+
+def test_a_max_age_of_zero_scores_every_waiting_job(
+    scored: Scoring, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RHEO__leads__scoring__max_age_hours", "0")
+    scored.paste("~02100", FULL.format(title="Job", what="pipeline", activity=""))
+    backdate(scored, "~02100", timedelta(days=30))
+    scored.model(final(5))
+    scored.set_profile()
+    scored.sweep()
+    assert [a["score"] for a in scored.assessments("~02100")] == [50]
+
+
+def test_a_posting_pasted_onto_an_old_job_still_gets_it_scored(
+    scored: Scoring,
+) -> None:
+    call(
+        scored.i,
+        scored.c.owner,
+        "leads.jobfeed.paste",
+        pipeline_ref=ref("pipeline", scored.c.pipeline_id),
+        kind="search_page",
+        content=SEARCH_TILE,
+    )
+    scored.drain()
+    scored.model(final(8))
+    scored.set_profile()
+    scored.sweep()
+    (waiting,) = scored.assessments("~02300")
+    assert waiting["explanation"].startswith(scoring.UNDESCRIBED_LINE)
+    # The owner pastes the full posting two days later.
+    backdate(scored, "~02300", timedelta(days=2))
+    scored.paste("~02300", FULL.format(title="Example tile", what="app", activity=""))
+    adapter = scored.model(final(7))
+    scored.sweep()
+    assert scored.assessments("~02300")[-1]["score"] == 70
+    assert len(adapter.starts) == 1
+
+
+def test_a_job_a_sweep_has_claimed_is_left_to_that_sweep(scored: Scoring) -> None:
+    scored.paste("~02100", FULL.format(title="Job", what="pipeline", activity=""))
+    scored.model(final(8))
+    scored.set_profile()
+    now = datetime.now(UTC)
+    with open_unit_of_work(scored.c.owner) as uow:
+        scoring.refresh(uow, cap=50, now=now)
+        claimed = scoring.claim(uow, now=now, window=timedelta(hours=1))
+        uow.commit()
+    assert claimed is not None
+    backdate(scored, "~02100", timedelta(days=2))
+    with open_unit_of_work(scored.c.owner) as uow:
+        aged = scoring.age_out(uow, now=now, max_age=timedelta(hours=24))
+        uow.commit()
+    assert aged == 0
+    assert scored.state("~02100")["state"] == "pending"

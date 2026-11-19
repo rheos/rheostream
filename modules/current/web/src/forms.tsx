@@ -1,10 +1,12 @@
 "use client";
 import {
+  useEffect,
   useId,
+  useRef,
   useState,
-  useSyncExternalStore,
   useTransition,
   type FormEvent,
+  type ReactNode,
 } from "react";
 import type {
   OperationOutcome,
@@ -85,7 +87,64 @@ function createdRef(result: unknown): string {
   if (typeof result !== "object" || result === null) return "";
   const r = result as Record<string, unknown>;
   const item = r.item as Record<string, unknown> | undefined;
-  return str(item?.ref) || str(r.ref);
+  return str(item?.short_id) || str(item?.ref) || str(r.ref);
+}
+
+/** The item's short ID with a one-click copy (#587); a check shows for a moment. */
+export function CopyId({ id }: { id: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(id);
+      setCopied(true);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard refused (permissions or an insecure page): nothing to undo.
+    }
+  }
+  const label = `Copy item ID ${id}`;
+  return (
+    <>
+      <button
+        type="button"
+        className={styles.copyId}
+        onClick={copy}
+        aria-label={label}
+        title={label}
+      >
+        <code>{id}</code>
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={copied ? 2.2 : 1.9}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          {copied ? (
+            <path d="M20 6 9 17l-5-5" />
+          ) : (
+            <>
+              <rect width="13" height="13" x="9" y="9" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </>
+          )}
+        </svg>
+      </button>
+      <span className={styles.visuallyHidden} aria-live="polite">
+        {copied ? `Copied ${id}` : ""}
+      </span>
+    </>
+  );
 }
 
 export interface FormProps {
@@ -215,7 +274,9 @@ export function ActionForm({
                   {...common}
                   type={f.type ?? "text"}
                   onChange={(e) => change(e.target.value)}
-                  maxLength={f.type === "date" ? undefined : (f.maxLength ?? 500)}
+                  maxLength={
+                    f.type === "date" ? undefined : (f.maxLength ?? 500)
+                  }
                 />
               )}
               {f.hint ? (
@@ -242,9 +303,7 @@ export function ActionForm({
             {created && createdHref ? (
               <>
                 {" "}
-                <a
-                  href={`${createdHref}?ref=${encodeURIComponent(created)}`}
-                >
+                <a href={`${createdHref}?ref=${encodeURIComponent(created)}`}>
                   {createdLabel}
                 </a>
               </>
@@ -270,6 +329,246 @@ export function ActionForm({
         ) : null}
       </div>
     </form>
+  );
+}
+
+/** A project the picker offers. */
+export interface PickableProject {
+  ref: string;
+  title: string;
+  status: string;
+}
+
+/**
+ * The projects an item can move to: live ones, paused marked as such, and a
+ * done one only when the item already sits in it.
+ */
+export function pickableProjects<T extends PickableProject>(
+  projects: readonly T[],
+  held: string | null,
+): T[] {
+  return projects.filter((p) => p.status !== "done" || p.ref === held);
+}
+
+/** The update a pick makes, or null when it names the project already held. */
+export function projectInput(
+  itemRef: string,
+  revision: number,
+  held: string | null,
+  picked: string | null,
+): Record<string, unknown> | null {
+  if (picked === held) return null;
+  return picked === null
+    ? { ref: itemRef, revision, clear: ["project_ref"] }
+    : { ref: itemRef, revision, project_ref: picked };
+}
+
+function FolderIcon({ plus }: { plus: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+      {plus ? <path d="M12 10v6M9 13h6" /> : null}
+    </svg>
+  );
+}
+
+/**
+ * The project control for one item: an icon that opens a modal list of
+ * projects. Picking one saves and closes; "No project" takes the item out.
+ * A native modal dialog, like the Leads edit dialogs: focus moves in, Escape
+ * closes, the page behind is inert.
+ */
+export function ProjectPicker({
+  submit,
+  itemRef,
+  revision,
+  subject,
+  held,
+  projects,
+  reloadHref,
+  buttonClass,
+  buttonText,
+}: {
+  /** The trigger's look where a row draws it as a swipe tray button. */
+  buttonClass?: string;
+  /** A visible label beside the icon, for the tray. */
+  buttonText?: string;
+  submit: Submit;
+  itemRef: string;
+  revision: number;
+  /** The item's title, for the button's accessible name in a list. */
+  subject: string;
+  /** The project the item is in now. */
+  held: string | null;
+  projects: readonly PickableProject[];
+  reloadHref?: string;
+}) {
+  const dialog = useRef<HTMLDialogElement | null>(null);
+  const heading = useId();
+  const [result, setResult] = useState<OperationOutcome | null>(null);
+  // The list renders only while open: a queue has a picker on every row.
+  const [isOpen, setIsOpen] = useState(false);
+  const [pending, startTransition] = useTransition();
+  // The opening a save belongs to, so a slow save cannot touch a later one.
+  const opening = useRef(0);
+  const offered = pickableProjects(projects, held);
+  const verb = held ? "Change project" : "Add to project";
+  // Once the list is in, straight to it, on the project held if any, not Close.
+  // By class, not "li button": a selector matches against the whole page, and a
+  // row's dialog sits inside the row's <li>, so Close would match first.
+  useEffect(() => {
+    if (!isOpen) return;
+    const box = dialog.current;
+    (
+      box?.querySelector<HTMLElement>('[aria-current="true"]') ??
+      box?.querySelector<HTMLElement>(`.${styles.choice}`)
+    )?.focus();
+  }, [isOpen]);
+  function open() {
+    opening.current += 1;
+    setResult(null);
+    setIsOpen(true);
+    if (!dialog.current?.open) dialog.current?.showModal();
+  }
+  function pick(picked: string | null) {
+    const input = projectInput(itemRef, revision, held, picked);
+    if (input === null) {
+      dialog.current?.close();
+      return;
+    }
+    const mine = opening.current;
+    startTransition(async () => {
+      let outcome: OperationOutcome;
+      try {
+        outcome = await submit("current.item.update", input);
+      } catch {
+        outcome = { state: "unavailable" };
+      }
+      if (mine !== opening.current) return;
+      setResult(outcome);
+      if (outcome.state === "ok") dialog.current?.close();
+    });
+  }
+  return (
+    <>
+      <button
+        type="button"
+        className={buttonClass ?? styles.iconButton}
+        aria-label={`${verb}: ${subject}`}
+        title={verb}
+        aria-haspopup="dialog"
+        onClick={open}
+      >
+        <FolderIcon plus={!held} />
+        {buttonText ? <span aria-hidden="true">{buttonText}</span> : null}
+      </button>
+      <dialog
+        ref={dialog}
+        className={styles.modal}
+        aria-labelledby={heading}
+        onClose={() => setIsOpen(false)}
+        // Escape while a save is in flight would hide its outcome.
+        onCancel={(e) => {
+          if (pending) e.preventDefault();
+        }}
+      >
+        <div className={styles.modalHead}>
+          <h2 id={heading} className={styles.modalTitle}>
+            {verb}
+          </h2>
+          <button
+            type="button"
+            className={styles.modalClose}
+            aria-label="Close"
+            disabled={pending}
+            onClick={() => dialog.current?.close()}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <p className={styles.modalSubject}>{subject}</p>
+        {!isOpen ? null : offered.length || held ? (
+          <ul className={styles.choices} aria-busy={pending}>
+            {offered.map((p) => (
+              <li key={p.ref}>
+                <button
+                  type="button"
+                  className={styles.choice}
+                  aria-current={p.ref === held ? "true" : undefined}
+                  disabled={pending}
+                  onClick={() => pick(p.ref)}
+                >
+                  <span>{p.title}</span>
+                  {p.ref === held ? (
+                    <span className={styles.choiceNote}>Now in</span>
+                  ) : p.status !== "active" ? (
+                    <span className={styles.choiceNote}>
+                      {p.status === "paused" ? "Paused" : "Done"}
+                    </span>
+                  ) : null}
+                </button>
+              </li>
+            ))}
+            {held ? (
+              <li>
+                <button
+                  type="button"
+                  className={`${styles.choice} ${styles.choiceNone}`}
+                  disabled={pending}
+                  onClick={() => pick(null)}
+                >
+                  No project
+                </button>
+              </li>
+            ) : null}
+          </ul>
+        ) : (
+          <p className={styles.meta}>
+            No projects yet. Create one under Projects.
+          </p>
+        )}
+        <div aria-live="polite" aria-atomic="true">
+          {pending ? <p className={styles.meta}>Saving…</p> : null}
+          {result?.state === "refused" ? (
+            <p className={styles.error} role="alert">
+              {result.code === "record_stale"
+                ? "This item changed since the page loaded. Reload, then pick again."
+                : refusalText(result.code, result.text)}
+              {result.code === "record_stale" && reloadHref ? (
+                <>
+                  {" "}
+                  <a href={reloadHref}>Reload</a>
+                </>
+              ) : null}
+            </p>
+          ) : null}
+          {result?.state === "unavailable" ? (
+            <p className={styles.error} role="alert">
+              We could not confirm the change. Reload to check the item.
+            </p>
+          ) : null}
+        </div>
+      </dialog>
+    </>
   );
 }
 
@@ -325,35 +624,25 @@ export function ActionButton({
   );
 }
 
-const subscribe = () => () => {};
-/** False while rendering on the server and during hydration, true afterwards. */
-function useHydrated(): boolean {
-  return useSyncExternalStore(
-    subscribe,
-    () => true,
-    () => false,
-  );
-}
-
 /**
- * A moment shown in the viewer's own time zone. The server does not know it, so the
- * server render shows UTC, labelled, and the browser replaces it once hydrated.
+ * A moment in the viewer's time zone, which the shell learns from the browser
+ * (#465). With no zone it shows UTC, labelled.
  */
-export function LocalTime({ iso }: { iso: string }) {
-  const hydrated = useHydrated();
+export function LocalTime({
+  iso,
+  zone = "UTC",
+}: {
+  iso: string;
+  zone?: string;
+}) {
   const d = new Date(iso);
   if (!iso || Number.isNaN(d.valueOf())) return null;
-  const text = hydrated
-    ? new Intl.DateTimeFormat(undefined, {
-        dateStyle: "medium",
-        timeStyle: "short",
-      }).format(d)
-    : `${new Intl.DateTimeFormat("en", {
-        dateStyle: "medium",
-        timeStyle: "short",
-        timeZone: "UTC",
-      }).format(d)} UTC`;
-  return <time dateTime={iso}>{text}</time>;
+  const text = new Intl.DateTimeFormat("en", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: zone,
+  }).format(d);
+  return <time dateTime={iso}>{zone === "UTC" ? `${text} UTC` : text}</time>;
 }
 
 function savedStatus(result: unknown): string {
@@ -368,7 +657,7 @@ function savedStatus(result: unknown): string {
 
 const VERB: Record<Status, string> = {
   open: "Open",
-  waiting: "Wait",
+  waiting: "Watch",
   snoozed: "Snooze",
   done: "Done",
 };
@@ -381,7 +670,7 @@ function verb(from: Status, to: Status): string {
  * The status controls for one item: only the moves the service allows from its
  * current status, so no button leads to a refusal by construction. Snoozing opens
  * a picker whose quick picks are computed in the browser at the moment of the
- * click, in the viewer's time zone.
+ * click, in the zone times are shown in (the browser's own when none is given).
  */
 export function StatusActions({
   submit,
@@ -391,15 +680,21 @@ export function StatusActions({
   subject,
   compact = false,
   reloadHref,
+  zone,
+  extra,
 }: {
   submit: Submit;
   itemRef: string;
   revision: number;
   status: Status;
+  /** One more control at the end of the button row (the row's project icon). */
+  extra?: ReactNode;
   /** The item's title, for accessible names on repeated row controls. */
   subject: string;
   compact?: boolean;
   reloadHref?: string;
+  /** The viewer's zone from the shell (#465). */
+  zone?: string;
 }) {
   const id = useId();
   const [result, setResult] = useState<OperationOutcome | null>(null);
@@ -434,11 +729,11 @@ export function StatusActions({
     });
   }
   function pick(choice: SnoozePick) {
-    const until = snoozeAt(choice, new Date());
+    const until = snoozeAt(choice, new Date(), zone);
     if (until) move("snoozed", until);
   }
   function snoozeCustom() {
-    const until = customSnooze(custom, new Date());
+    const until = customSnooze(custom, new Date(), zone);
     if (until) move("snoozed", until);
     else setCustomError(true);
   }
@@ -458,7 +753,9 @@ export function StatusActions({
               className={styles.quiet}
               aria-expanded={pickerOpenedAt !== null}
               aria-controls={pickerId}
-              aria-label={named(status === "snoozed" ? "Snooze again" : "Snooze")}
+              aria-label={named(
+                status === "snoozed" ? "Snooze again" : "Snooze",
+              )}
               disabled={pending}
               onClick={() =>
                 setPickerOpenedAt((open) => (open ? null : new Date()))
@@ -479,6 +776,7 @@ export function StatusActions({
             </button>
           ),
         )}
+        {extra}
       </div>
       {pickerOpenedAt ? (
         <div
@@ -489,7 +787,7 @@ export function StatusActions({
         >
           <div className={styles.picks}>
             {SNOOZE_PICKS.filter(
-              (p) => snoozeAt(p.id, pickerOpenedAt) !== null,
+              (p) => snoozeAt(p.id, pickerOpenedAt, zone) !== null,
             ).map((p) => (
               <button
                 key={p.id}
@@ -511,7 +809,9 @@ export function StatusActions({
                 value={custom}
                 onChange={(e) => setCustom(e.target.value)}
                 aria-invalid={customError}
-                aria-describedby={customError ? `${id}-custom-error` : undefined}
+                aria-describedby={
+                  customError ? `${id}-custom-error` : undefined
+                }
               />
             </div>
             <button
@@ -547,7 +847,8 @@ export function StatusActions({
         ) : null}
         {result?.state === "unavailable" ? (
           <p className={styles.error} role="alert">
-            We could not confirm the change. Reload to see the item&apos;s status.
+            We could not confirm the change. Reload to see the item&apos;s
+            status.
           </p>
         ) : null}
       </div>

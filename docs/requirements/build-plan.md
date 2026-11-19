@@ -20,7 +20,7 @@ inspection or by a test. None is a judgement about quality. A
 [functional-requirement coverage table](#functional-requirement-coverage) at the end of this
 document maps every FR from 1 to 53 to the criteria that test it.
 
-Release one is phases one to three. Phases four onward follow it.
+Release one is phases one to three; phases four onward follow it. [Build status](#build-status) says what has merged.
 
 ---
 
@@ -778,6 +778,17 @@ regression**: email, search result, and full posting enrich one opportunity whil
 proposals and user decisions. It must also re-satisfy **Business-only installation** with the
 capability enabled but unconfigured.
 
+**Landed.** Built inside Leads, as the shape says; the pull requests are under
+[Build status](#build-status) and the behaviour is in the
+[Leads README](../../modules/leads/README.md#job-search-capability). The capability is the
+workspace setting `leads.capabilities.jobsearch`, and migration `0007_jobsearch_preset` seeds
+the Job search preset with its `ext.jobsearch.*` fields. The first job source is a collector
+that calls a provider's remote MCP server every two hours, not an email poller; no email
+transport or durable poll cursor was built. A copied search page or a full posting
+(`leads.jobfeed.paste`) converges on the same opportunity as the feed, by posting id. Job
+scoring, the review queue, proposal drafting with an answer library, and milestone pricing
+are built; submitting an application stays with the person, on the platform.
+
 **Answers on landing.** Idea-doc question 5 (which proposal-generation capabilities belong in the
 initial job-search release).
 
@@ -798,6 +809,42 @@ project. Leads displays a linked work item's state rather than keeping a second 
 never asserts a domain outcome that another module owns. The acceptance scenario this phase must
 satisfy is **Crash during handoff**: a retry recovers the same created work, and an uncertain
 external outcome stays visible until reconciled.
+
+**Landed.** Current is in [`modules/current/`](../../modules/current/README.md); the pull
+requests are under [Build status](#build-status). Its first destination differs from the
+shape in one way: a handoff creates one standalone work item, not a project, and the person
+sets a project later in Current's own editor
+([ADR-0001](../adr/0001-leads-current-project-link.md)). `leads.handoff.request` stages
+core's keyed `current.item.create_external`, a person approves it in the shell, and core's
+retained keyed result plus Current's source link keep a retry to the same item. Leads keeps
+only a projection of that link (the project ref and state), not a copy of the item. Current
+also takes alert items from outside services that hold an `alert_writer` token
+(`current.item.create` and `current.item.close_by_source`).
+
+**Leads-to-Current acceptance fixture.** The AC 1–18 automation/manual mapping and
+the catalog of all 27 named states are maintained in
+`tests/fixtures/leads-current-handoff.json`. Each state names its own automated
+tests and how a reviewer reaches it: a seeded URL (generic and job-search Leads
+variants), a normal interaction, a scripted step on the disposable stack, or, for
+two states, restricted-token evidence. The seed runs every worker visit itself and
+the stack starts no worker, so approved-and-queued and in-progress handoffs stay
+put for review. The two scripted steps restart that stack's core without Current
+(both Current branches unavailable) or stop it briefly (approval temporarily
+unavailable); neither uses a fault proxy. The seed also creates a second workspace
+for the same synthetic person, and `tests/postgres/test_prompt14_seed.py` runs it
+against disposable test databases. A test-only Compose override and helper
+under `tests/harness/` resolve unique source-head image tags and project-owned
+disposable volumes, keep Core port 8100 private, and use the incumbent local
+same-host session path without a session grant; see
+[the acceptance stack](../testing/leads-current-acceptance.md). This authored fixture
+checkpoint does not replace the later manual browser, accessibility, responsive, and
+visual review, and does not claim that review has passed.
+All 27 named cases remain automated requirements. Only the two asymmetric Current
+sibling-denial cases are manual-not-applicable by approved audit contract; they use
+restricted-token PostgreSQL authorization plus authored UI render evidence. The
+approval denied/missing row remains a real same-human browser flow using the
+unchanged workspace-A approval URL after a normal A-to-B switch and an A return
+control.
 
 ---
 
@@ -935,3 +982,37 @@ tests part of a requirement, the row says which part and names what is left unte
 | FR 51 | 65 | Confirmed per action, cascading to derivatives and to held export artifacts, cancelling dependents, leaving a content-free deletion record and a payload-free receipt. |
 | FR 52 | 21, 25, 36, 67 | Export and restore on an empty workspace with a pending approved fixture action restored unapproved, then re-asserted with a module populated and again with the opportunity core populated; the module export format is declared in the manifest and exercised by the phase-two re-assertion. |
 | FR 53 | 32 | Count-and-sample verification before switchover, with the report kept in private workspace storage. |
+
+---
+
+## Build status
+
+Checked against `main` on 2026-11-14. The phase sections above are the plan as ratified and
+are not rewritten as work lands; this section says what has merged, with the main pull
+requests. Phases four and five were planned from their sketches when they started, so their
+sections stay short. Acceptance records for phases one and two are in
+[docs/acceptance](../acceptance/README.md); phase three has no acceptance matrix yet.
+
+| Phase | State on `main` | Main pull requests |
+| --- | --- | --- |
+| 1. Walking skeleton | Built. | Bootstrap #9; storage, workspaces, configuration and secrets #17; identity, sessions, tokens and routing #25; durable work #61, #64, #70; phase acceptance #79; runtime gate and Claude CLI adapter #90; flagship deployment #144. |
+| 2. Memory module | Built, with the one-time transfer from the predecessor and the cutover to one memory writer finished on 2026-09-30. | Module contract #98; Recallatron records #105, retrieval #107, screens and theme contract #111; automatic memory #189, #198; one-time transfer #194; enrolled local bridge #241, #246. |
+| 3. Opportunity core | Built: Relationships, Leads intake and manual capture, pipelines, qualification, follow-ups and signed website intake. CSV/JSON file import is not built (only its `leads.intake.max_import_rows` setting exists), and connecting a live form remains an operator step. | Relationships #300; intake and manual capture #303; opportunities and pipelines #310; browser workflow #312; agent contact creation #314; signed website intake #318; qualification #320; follow-ups #322; module upgrade and readiness #324. |
+| 4. Job search | Built inside Leads as an optional capability (see [Phase 4](#phase-4--the-optional-job-search-workflow)). | Capability setting and Job search preset #340; attach by field #343; MCP job feed collector #346, #356, #367; job queue #368; pasted postings #382; scoring #384; proposals #394, #400; pricing #403; review queue and promote #409; Scoring view #424; feed run history #428; short job IDs #430; feed search presets #434; proposal MCP tools #455; invited jobs #461; Jev pre-filter #522. |
+| 5. Current | Built, with the approved Leads handoff as its first destination (see [Phase 5](#phase-5--the-work-in-motion-module)). | Module #348 and screens #349; project picker #487, #491; close by source and the `alert_writer` token set #438; approved external execution and the Leads handoff #482, #494, #495, #496; restricted service writes #536; phone-first desk queue #564. |
+| 6. Channels and second runtime | Not started. The Jev adapter (#522) answers typed questions for Leads scoring; it is not the second agent runtime this phase needs. | None. |
+| 7. Framework proof | Partly. Modules gained `rheo module upgrade` and `rheo module check` (#324) and the `explicit_only` package-set opt-out with `module_read:<module>` tokens (#538). Disable, remove, purge, restore, packs and the invitation flow are not built. | #324, #538. |
+| 8. Hosted edition | Not started. | None. |
+
+**Outside the phases: Finance.** A personal ledger and reminder module that no phase names,
+built from 2026-11-10 and documented in [its README](../../modules/finance/README.md). Core
+loads it like any other module, and a workspace installs and enables it through the ordinary
+lifecycle. Its eight read operations are owner-only and `explicit_only`: a token reaches
+them only when it is a `module_read:finance` token or lists them, and an owner's web
+session reaches them by role. Its `tick` schedule enqueues only once a workspace
+sets `finance.jobs.enabled` to true. It files its reminders as Current items in process. It
+is not the invoicing or accounting product phase five rules out for Current. Pull requests:
+`pdftotext` in the core image #534; module import #542; wiring #544; in-process Current
+client #549; remote push and pull over SSH #553; tick lease renewal and refused-key isolation
+#560; the package-set opt-out it relies on #538; read operations and MCP tools #571; loaded
+on the flagship #573; fixes #575, #577.

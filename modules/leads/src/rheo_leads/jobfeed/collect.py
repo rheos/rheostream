@@ -76,6 +76,8 @@ class DetailResult:
     """Discovery postings downgraded because their read failed or was not made."""
     cut: bool
     reasons: Mapping[str, int] = field(default_factory=dict)
+    known: int = 0
+    """Postings not read because their description is already stored (#377)."""
     """Why each of the ``failures`` happened, as fixed codes and their counts
     (:func:`read_failure_reason`): the run history keeps these, content-free."""
 
@@ -361,6 +363,23 @@ def _downgraded(posting: NormalizedPosting) -> Sighting:
     return Sighting(replace(posting, purpose="refresh_only", description=None))
 
 
+def _unread_known(sighting: Sighting) -> Sighting:
+    """A posting not read again because its description is stored, without the
+    client figures a detail read supplies (spend, rating, reviews, hire rate).
+    The feed row's own versions of those differ from the detail's, so carrying
+    them would make every known posting look changed and overwrite the stored
+    detail figures each run; left out, the stored ones stand."""
+    return Sighting(
+        replace(
+            sighting.posting,
+            client_spend=None,
+            client_rating=None,
+            client_reviews=None,
+            client_hire_rate=None,
+        )
+    )
+
+
 def read_details(
     upstream: Upstream,
     sightings: Sequence[Sighting],
@@ -369,25 +388,41 @@ def read_details(
     *,
     deadline: float,
     max_reads: int = MAX_DETAIL_READS,
+    known: frozenset[str] = frozenset(),
 ) -> DetailResult:
     """One ``find_jobs get`` per unique eligible posting, at most ``max_reads``,
     none starting with the ``deadline`` too close. A ``get`` sends the feed row's
     own id; a posting whose row carried none gets no read. A discovery posting
     whose read failed or was not made is downgraded to refresh-only with no
-    description and counts one failure; other sightings pass through unchanged."""
+    description and counts one failure; other sightings pass through unchanged.
+
+    A posting in ``known`` already has its description stored, so it is not read
+    again (#377): the job service allows each account only so many detail reads a
+    day (about 400 since Nov 6 2026, reset at 00:00 UTC), and re-reading every
+    posting every run spent them by mid-morning. It passes through as a refresh,
+    its stored description kept, and the allowance goes on postings not seen
+    before."""
     # Each posting id's one read: its detail document when it succeeded, else None.
     details: dict[str, dict[str, object] | None] = {}
     updated: list[Sighting] = []
     reads = failures = 0
     reasons: Counter[str] = Counter()
     cut = False
+    skipped_known = 0
     terminal: UpstreamFailure | None = None
     for sighting in sightings:
         posting = sighting.posting
+        key = posting.posting_id
+        if key in known:
+            # Known postings carry no feed client figures, read or not: the stored
+            # detail figures stand even while a posting is over the cap, applied
+            # to, or seen only by the refresh search, since nothing re-reads it.
+            skipped_known += _eligible(posting)
+            updated.append(_unread_known(sighting))
+            continue
         if not _eligible(posting):
             updated.append(sighting)
             continue
-        key = posting.posting_id
         if key not in details:
             detail: dict[str, object] | None = None
             reason: str | None = None
@@ -435,4 +470,5 @@ def read_details(
         failures=failures,
         cut=cut,
         reasons=dict(reasons),
+        known=skipped_known,
     )

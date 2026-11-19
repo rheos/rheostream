@@ -15,6 +15,33 @@ export interface ShellApi {
    * hosts that cannot; a screen then falls back to reloading the page. */
   refresh?: () => Promise<void>;
   href(routeId: string, query?: Record<string, string | undefined>): string;
+  /** Resolve a provider-published route for one canonical record reference. */
+  recordHref?: (ref: string) => string | null;
+  /** Resolve the shell-owned review route for one approval id. */
+  approvalHref?: (approvalId: string) => string | null;
+  /** The viewer's IANA time zone (#465), for formatting moments. Absent in hosts
+   * that do not know it; a screen then formats in UTC and labels it so. */
+  timeZone?: string;
+  /** A preference this module saved with `savePreference` (a cookie, see
+   * `preferenceCookie`), so a server render can start from it instead of
+   * redirecting after the first paint (#369). The shell reads only the owning
+   * module's own preference cookies. Absent in hosts that cannot read them; a
+   * screen then falls back to whatever the browser applies. */
+  preference?: (name: string) => string | undefined;
+  /** Server action that saves one of this module's preferences for
+   * `preference` to read on later renders. Absent in hosts that cannot. */
+  savePreference?: (name: string, value: string) => Promise<void>;
+}
+
+/** A preference name: short, lower case, letters, digits and hyphens. */
+export const PREFERENCE_NAME = /^[a-z0-9-]{1,40}$/;
+
+/** The cookie a module's preference lives in, or null for a name that is not
+ * one. Scoped by module id, so one module never reads another's. */
+export function preferenceCookie(moduleId: string, name: string): string | null {
+  return PREFERENCE_NAME.test(moduleId) && PREFERENCE_NAME.test(name)
+    ? `rheo-pref-${moduleId}-${name}`
+    : null;
 }
 
 /**
@@ -60,6 +87,7 @@ export interface ComposedModule {
   surface: string;
   navigation: readonly { id: string; label: string; path: string; roles: readonly string[] }[];
   routes: readonly { id: string; path: string; screen: Screen }[];
+  recordRoutes: readonly { recordType: string; routeId: string; refQuery: string }[];
   recordViews: readonly { recordType: string; component: unknown }[];
   forms: readonly { operation: string; component: unknown }[];
   searchProviders: readonly { id: string; operation: string }[];

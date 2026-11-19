@@ -41,6 +41,7 @@ export const refusesMissingScreen = [
       // @ts-expect-error the generator's property access fails when the export is missing
       { id: "home", path: "/", screen: probeWeb.screens.missing },
     ],
+    recordRoutes: [],
     recordViews: [],
     forms: [],
     searchProviders: [],

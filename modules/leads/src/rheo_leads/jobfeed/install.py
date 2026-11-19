@@ -25,9 +25,10 @@ from rheo_leads.storage import jobfeed as j
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 
-MAPPING_VERSION = 2
-"""The job mapping's version. 2 adds ``invited``; migration ``0018_invited_jobs``
-moves every installed job feed and job paste mapping from 1 to 2."""
+MAPPING_VERSION = 3
+"""The job mapping's version. 2 adds ``invited`` (migration ``0018_invited_jobs``
+moves installed job feed and job paste mappings from 1 to 2); 3 adds the stated
+price (``0021_stated_price`` moves them on to 3)."""
 POSTING_ID = JOBSEARCH_TARGET_PREFIX + "posting_id"
 # The const value is the Job search preset's existing platform enum value.
 PLATFORM = "upwork"
@@ -53,6 +54,9 @@ class MappingRule:
     transform: str | None = None
     transform_arg: str | None = None
     required: bool = False
+    # An explicit null clears the field: only the stated price, which a later
+    # read of the description can take back.
+    clear_on_null: bool = False
 
 
 # Values arrive flat (canonical strings, integers, "true"/"false", ISO dates), so no
@@ -82,6 +86,10 @@ RULES: tuple[MappingRule, ...] = (
             "applied",
             "invited",
         )
+    ),
+    *(
+        MappingRule(JOBSEARCH_TARGET_PREFIX + name, "/" + name, clear_on_null=True)
+        for name in ("stated_price_min", "stated_price_max", "stated_price_unit")
     ),
 )
 
@@ -264,7 +272,7 @@ def write_job_mapping(uow: UnitOfWork, *, name: str) -> UUID:
                 "transform": rule.transform,
                 "transform_arg": rule.transform_arg,
                 "required": rule.required,
-                "clear_on_null": False,
+                "clear_on_null": rule.clear_on_null,
             }
             for rule in RULES
         ],

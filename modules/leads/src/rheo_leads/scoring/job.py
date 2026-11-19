@@ -9,10 +9,15 @@ minute). A sweep with nothing to do reads two small tables and ends.
 **What it does.** First a refresh: each open Job search opportunity's scoring inputs
 are digested (:func:`input_digest`), and an opportunity seen for the first time, or
 whose description, competition band or client metrics moved, becomes ``pending``
-with a fresh attempt count. Then up to ``leads.scoring.max_per_run`` pending jobs,
-newest first, one at a time: claim it (count the attempt, hold it for the claim
-window) in a short unit that commits at once; decide tier 1; ask the model when tier
-1 lets it through and the description is there; record the result as a
+with a fresh attempt count. Then the age cutoff (:func:`age_out`): a pending job
+imported more than ``leads.scoring.max_age_hours`` ago is set aside as ``failed``
+with the word :data:`TOO_OLD`, with no model call and no attempt counted, so a sweep
+that resumes after a long pause scores the recent jobs and not the whole backlog. A
+job the owner promoted or the client invited the owner to is never too old, and a
+job that already had a score keeps it. Then up to ``leads.scoring.max_per_run``
+pending jobs, newest first, one at a time: claim it (count the attempt, hold it for
+the claim window) in a short unit that commits at once; decide tier 1; ask the model
+when tier 1 lets it through and the description is there; record the result as a
 qualification in another short unit. No unit is open while the model runs, and the
 cancellation token's heartbeat keeps the lease.
 
@@ -23,7 +28,8 @@ timed-out run) gives the attempt back and makes every waiting job wait
 the job or the answer (:data:`JOB_FAILURES`) counts: it waits the job substrate's
 backoff, and the fifth attempt records a ``needs_information`` assessment that says
 scoring failed. Setting the profile again puts failed and unscored jobs back in line
-(:func:`repend_unscored`). A job never simply disappears from the queue.
+(:func:`repend_unscored`), except the ones set aside as too old. A job never simply
+disappears from the queue.
 
 **Promoted jobs.** A job the owner promoted from the review queue
 (``job_promotion``) is not held by tier 1: it goes to the model like a job that
@@ -51,10 +57,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 from rheo_contracts import ContextPurpose, Role, WorkspaceContext
+from rheo_contracts.judgment import JudgmentFailed
 from rheo_core.boundary.context import Refusal
 from rheo_core.boundary.factories import context_for_scheduled_job
 from rheo_core.log_config import content_free_extra
 from rheo_core.refs import uuid7
+from rheo_core.runtime.judgment import JudgmentRunner, judgment_runner
 from rheo_core.runtime.oneshot import (
     ADAPTER_UNAVAILABLE,
     OneShotCredentialNotOwned,
@@ -72,14 +80,14 @@ from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.work.backoff import backoff_for
 from rheo_core.work.cancellation import CancellationToken
 from rheo_core.work.jobs import enqueue_job
-from sqlalchemy import and_, func, insert, select, update
+from sqlalchemy import and_, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import StatementError
 
 from rheo_leads import model_calls
 from rheo_leads import pipeline_common as h
 from rheo_leads.references import ref
-from rheo_leads.scoring import tier2
+from rheo_leads.scoring import prefilter, tier2
 from rheo_leads.scoring.profile import StoredProfile, read_profile
 from rheo_leads.scoring.tier1 import EXTENSION, JobFacts, Tier1Result, run_tier1
 from rheo_leads.storage import pipeline as p
@@ -93,6 +101,10 @@ SCORE_JOB_MAX_ATTEMPTS: Final = 8
 SCORE_INTERVAL_SECONDS: Final = 1800
 MODEL_ID_KEY: Final = "leads.scoring.model_id"
 MAX_PER_RUN_KEY: Final = "leads.scoring.max_per_run"
+MAX_AGE_KEY: Final = "leads.scoring.max_age_hours"
+TOO_OLD: Final = "too_old"
+"""The failure word of a job set aside unscored because it was imported before the
+age cutoff."""
 SCRATCH_SUBDIR: Final = "jobscore"
 SCORE_ATTEMPTS: Final = 5
 """The attempt that records a failed assessment instead of backing off again."""
@@ -204,6 +216,8 @@ class Outcome:
     deferred: str | None = None
     """Why scoring paused for every job: no attempt is counted."""
     failure: str | None = None
+    prefilter_model: str | None = None
+    prefilter_version: str | None = None
 
 
 def _now() -> datetime:
@@ -220,6 +234,7 @@ class Hooks:
 
     clock: Callable[[], datetime] = _now
     runner: Callable[[], OneShotRunner | None] = _runner
+    judgment: Callable[[], JudgmentRunner | None] = judgment_runner
 
 
 HOOKS = Hooks()
@@ -378,6 +393,68 @@ def refresh(uow: UnitOfWork, *, cap: int, now: datetime) -> int:
     return changed
 
 
+def age_out(uow: UnitOfWork, *, now: datetime, max_age: timedelta | None) -> int:
+    """Set aside every pending open job imported before ``now - max_age``; the count.
+
+    No model call and no attempt: the job is ``failed`` with :data:`TOO_OLD`, and an
+    earlier assessment, if any, stays its current one. Exempt: a promoted job, an
+    invited one, and one whose current assessment waited for the full posting (its
+    description arrived late, often pasted by the owner, and nothing else could get
+    it scored). A job a sweep holds a claim on is left to that sweep. ``None`` turns
+    the cutoff off."""
+    if max_age is None:
+        return 0
+    state, o, field = s.job_score_state, p.opportunity, p.opportunity_field_state
+    qual = p.qualification
+    old_ids = (
+        _open_jobs().with_only_columns(o.c.id).where(o.c.created_at < now - max_age)
+    )
+    invited = select(field.c.opportunity_id).where(
+        field.c.target == EXTENSION + "invited",
+        field.c.value_kind == "value",
+        field.c.value_text == "true",
+        field.c.orphaned.is_(False),
+    )
+    # The current assessment's explanation, picked as the queue picks it.
+    latest_explanation = (
+        select(qual.c.explanation)
+        .where(qual.c.opportunity_id == state.c.opportunity_id)
+        .order_by(
+            qual.c.input_revision.desc(), qual.c.created_at.desc(), qual.c.id.desc()
+        )
+        .limit(1)
+        .scalar_subquery()
+    )
+    # A claim leaves the row pending with no failure word and a future retry_after;
+    # a usage deferral sets a word, so a paused job still ages out.
+    unclaimed = or_(
+        state.c.retry_after.is_(None),
+        state.c.retry_after <= now,
+        state.c.failure_kind.is_not(None),
+    )
+    count: int = uow.connection.execute(
+        update(state)
+        .where(
+            state.c.state == "pending",
+            unclaimed,
+            state.c.opportunity_id.in_(old_ids),
+            state.c.opportunity_id.not_in(select(s.job_promotion.c.opportunity_id)),
+            state.c.opportunity_id.not_in(invited),
+            func.coalesce(
+                func.starts_with(latest_explanation, UNDESCRIBED_LINE), False
+            ).is_(False),
+        )
+        .values(
+            state="failed",
+            attempts=0,
+            retry_after=None,
+            failure_kind=TOO_OLD,
+            updated_at=now,
+        )
+    ).rowcount
+    return count
+
+
 def _claimable(now: datetime) -> Any:
     state = s.job_score_state
     return and_(
@@ -520,9 +597,11 @@ def assess(
     heartbeat: Callable[[], None],
     promoted: bool = False,
     track: model_calls.CallTracker = model_calls.NO_TRACKING,
+    filter_config: prefilter.Config = prefilter.DISABLED,
+    filter_runner: JudgmentRunner | None = None,
 ) -> Outcome:
-    """Tier 1, then the model for a job tier 1 lets through (or the owner promoted)
-    with a description. ``track`` records the model call in the call log."""
+    """Tier 1, optional typed pre-filter, then full scoring of described jobs.
+    Invited/promoted jobs bypass both gates. ``track`` records each model call."""
     decided = run_tier1(job, profile.policy.tier1)
     if not decided.passed and not promoted:
         return _held(job, decided)
@@ -533,6 +612,10 @@ def assess(
         )
     if job.description is None:
         return _undescribed(job)
+    if filter_config.enabled and not promoted and not job.invited:
+        held = _prefilter(job, profile, filter_config, filter_runner, heartbeat, track)
+        if held is not None:
+            return held
     if runner is None:
         return Outcome(deferred=ADAPTER_UNAVAILABLE)
     text = tier2.source_text(job)
@@ -592,6 +675,100 @@ def assess(
         uncertainty=uncertainty,
         completeness=_completeness(job),
         model=True,
+    )
+
+
+def _prefilter(
+    job: JobFacts,
+    profile: StoredProfile,
+    config: prefilter.Config,
+    runner: JudgmentRunner | None,
+    heartbeat: Callable[[], None],
+    track: model_calls.CallTracker,
+) -> Outcome | None:
+    """Provider failures are logged, then the existing full scorer takes over."""
+    request = prefilter.request(job, profile, config.model)
+    with track.call(model_calls.PREFILTER, prefilter.MODEL_KEY) as call:
+        try:
+            if runner is None:
+                raise JudgmentFailed("adapter_unavailable")
+            result = runner.run(request, heartbeat=heartbeat, on_usage=call.usage)
+        except JudgmentFailed as exc:
+            call.unusable(exc.kind)
+            return None
+        decision = prefilter.decide(
+            result, has_economics=bool(profile.policy.economics)
+        )
+        if not decision.holds(config.threshold):
+            return None
+        return Outcome(
+            fit="low",
+            lines=(
+                prefilter.HELD_LINE,
+                f"Pre-filter estimate {decision.score}/100 is below the "
+                f"{config.threshold}/100 threshold; this is not a final score.",
+                *decision.reasons,
+                "Promote this job from the Review queue to request full scoring.",
+            ),
+            uncertainty="high",
+            completeness=_completeness(job),
+            prefilter_model="jev:" + result.model,
+            prefilter_version=prefilter.config_version(config)
+            + "/"
+            + prefilter.version_for(request),
+        )
+
+
+def refresh_prefilter_holds(
+    uow: UnitOfWork, config: prefilter.Config, *, profile_version: int, now: datetime
+) -> None:
+    """Release old holds when disabled or when the model, threshold or rubric moves.
+
+    Only terminal holds are requeued; never disturb a claim another sweep owns.
+    Profile changes requeue unscored jobs; the version check also recovers a hold
+    recorded by an in-flight call after that requeue.
+    """
+    state, qual = s.job_score_state, p.qualification
+    latest = (
+        select(qual.c.id)
+        .where(qual.c.opportunity_id == state.c.opportunity_id)
+        .correlate(state)
+        .order_by(
+            qual.c.input_revision.desc(), qual.c.created_at.desc(), qual.c.id.desc()
+        )
+        .limit(1)
+        .scalar_subquery()
+    )
+    held = (
+        select(qual.c.id)
+        .where(
+            qual.c.id == latest,
+            qual.c.score.is_(None),
+            qual.c.explanation.startswith(prefilter.HELD_LINE),
+        )
+        .correlate(state)
+    )
+    if config.enabled:
+        held = held.where(
+            (~qual.c.prompt_version.startswith(prefilter.config_version(config) + "/"))
+            | (~qual.c.prompt_version.endswith(f"/profile.{profile_version}"))
+        )
+    uow.connection.execute(
+        update(state)
+        .where(
+            state.c.state == "scored",
+            state.c.opportunity_id.in_(
+                _open_jobs().with_only_columns(p.opportunity.c.id)
+            ),
+            held.exists(),
+        )
+        .values(
+            state="pending",
+            attempts=0,
+            retry_after=None,
+            failure_kind=None,
+            updated_at=now,
+        )
     )
 
 
@@ -683,10 +860,14 @@ def record(
             evidence_completeness=outcome.completeness,
             explanation="\n".join(outcome.lines),
             uncertainty=outcome.uncertainty,
-            model_id=_model_id(ctx.workspace_id, uow) if outcome.model else None,
+            model_id=_model_id(ctx.workspace_id, uow)
+            if outcome.model
+            else outcome.prefilter_model,
             prompt_version=(
                 f"{tier2.PROMPT_VERSION}/profile.{profile_version}"
                 if outcome.model
+                else f"{outcome.prefilter_version}/profile.{profile_version}"
+                if outcome.prefilter_version
                 else None
             ),
             score=outcome.score,
@@ -720,7 +901,7 @@ def repend_unscored(uow: UnitOfWork, *, now: datetime) -> None:
     has no model score (held by the filters, or waiting for its description), goes
     back to
     pending, so the new thresholds and evidence apply. Scored jobs keep their score
-    until their posting changes."""
+    until their posting changes, and a job set aside as too old stays aside."""
     state, qual = s.job_score_state, p.qualification
     # The current assessment's score, ordered as the queue picks the latest; an
     # older score does not count once a later assessment held the job back.
@@ -735,7 +916,10 @@ def repend_unscored(uow: UnitOfWork, *, now: datetime) -> None:
     )
     uow.connection.execute(
         update(state)
-        .where((state.c.state == "failed") | latest_score.is_(None))
+        .where(
+            (state.c.state == "failed") | latest_score.is_(None),
+            state.c.failure_kind.is_distinct_from(TOO_OLD),
+        )
         .values(
             state="pending",
             attempts=0,
@@ -808,13 +992,28 @@ def _sweep(
             # Its text would quote the policy; the owner sets the profile again.
             profile = None
             _log.warning(PROFILE_INVALID_LOG)
-        if profile is not None:
-            refresh(short, cap=profile.policy.tier1.max_proposals, now=now)
         settings = resolve(
             workspace_id=ctx.workspace_id,
             source=TransactionBoundOverrideSource(short, workspace_id=ctx.workspace_id),
         )
+        if profile is not None:
+            refresh(short, cap=profile.policy.tier1.max_proposals, now=now)
+            hours = settings.get_int(MAX_AGE_KEY)
+            age_out(short, now=now, max_age=timedelta(hours=hours) if hours else None)
         budget = settings.get_int(MAX_PER_RUN_KEY)
+        filter_config = prefilter.Config(
+            enabled=(
+                settings.get_bool("runtime.jev.enabled")
+                and settings.set_by_workspace(prefilter.ENABLED_KEY)
+                and settings.get_bool(prefilter.ENABLED_KEY)
+            ),
+            threshold=settings.get_int(prefilter.THRESHOLD_KEY),
+            model=settings.get_str(prefilter.MODEL_KEY),
+        )
+        if profile is not None:
+            refresh_prefilter_holds(
+                short, filter_config, profile_version=profile.version, now=now
+            )
         window = (
             timedelta(
                 seconds=min(settings.get_int(DEADLINE_KEY), HARD_DEADLINE_SECONDS)
@@ -850,6 +1049,8 @@ def _sweep(
             heartbeat=token.checkpoint,
             promoted=claimed.promoted,
             track=model_calls.Tracker(ctx, claimed.opportunity_id, hooks.clock),
+            filter_config=filter_config,
+            filter_runner=hooks.judgment() if filter_config.enabled else None,
         )
         token.checkpoint(force=True)
         now = hooks.clock()

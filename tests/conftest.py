@@ -98,9 +98,16 @@ _test_model_cache.mkdir(parents=True, exist_ok=True)
 from harness.settings_keys import register_harness_keys  # noqa: E402
 from rheo_core.audit import CORE_AUDIT_SINK, install_sink  # noqa: E402
 from rheo_core.migrations.orchestrator import migrate_control  # noqa: E402
-from rheo_core.operations import CORE_MODULE_ID, HARNESS_MODULE_ID  # noqa: E402
+from rheo_core.modules import DESTINATIONS  # noqa: E402
+from rheo_core.operations import (  # noqa: E402
+    CORE_MODULE_ID,
+    HARNESS_MODULE_ID,
+    REGISTRY,
+)
+from rheo_core.operations.idempotency import KEYED_COMPATIBILITY  # noqa: E402
 from rheo_core.refs import uuid7  # noqa: E402
 from rheo_core.settings import current_profile, resolve  # noqa: E402
+from rheo_core.storage.backend import UnitOfWork  # noqa: E402
 from rheo_core.storage.control_plane import (  # noqa: E402
     WorkspaceRow,
     get_workspace,
@@ -512,6 +519,22 @@ def drop_test_databases(cluster: ClusterSession) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def database_assertion(
+    cluster: ClusterSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Start every test with ``UnitOfWork.verify_database`` as the session backend
+    resolved it, and put it back afterwards (#602).
+
+    Building a ``PostgresBackend`` publishes its ``verify_database`` to the class, so
+    every unit of work in the process sees it. A test that builds one outside the
+    ``test`` profile (the doctor budget tests, a production-profile composition)
+    turns the database assertion off for whichever tests the same worker runs after
+    it, and which tests those are depends on the CI shard partition.
+    """
+    monkeypatch.setattr(UnitOfWork, "verify_database", cluster.backend.verify_database)
+
+
+@pytest.fixture(autouse=True)
 def forget_oauth_clients(cluster: ClusterSession) -> Iterator[None]:
     """Delete the grant-less ``oauth_client`` rows a test created, when it finishes.
 
@@ -562,6 +585,23 @@ def audit_sinks() -> None:
 def harness_keys() -> None:
     """The seven harness settings keys, registered (idempotent) under profile test."""
     register_harness_keys()
+
+
+@pytest.fixture
+def fresh_startup_composition(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give a real startup-root test a composition uncontaminated by earlier tests.
+
+    The three process registries intentionally publish no unregister operation. Tests
+    exercising dispatch and module loading populate them for the rest of a pytest
+    process, including with the deliberately forbidden harness EXTERNAL operation.
+    A test of an actual startup root must therefore start from the same empty final
+    composition a new process gets. The startup under test installs its own built-ins
+    and selected modules; a test may then add only the safe probe declarations it owns.
+    """
+    monkeypatch.setattr(REGISTRY, "_operations", {})
+    monkeypatch.setattr(DESTINATIONS, "_destinations", {})
+    monkeypatch.setattr(KEYED_COMPATIBILITY, "_request", {})
+    monkeypatch.setattr(KEYED_COMPATIBILITY, "_result", {})
 
 
 @pytest.fixture

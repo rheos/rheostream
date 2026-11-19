@@ -191,8 +191,13 @@ extension the loaded modules need. This is documented operator work, not automat
 ### A3. One Postgres schema per module
 
 Every workspace database has a `core` schema plus one schema per installed module, named by the
-module id (`recallatron`, `relationships`, `leads`). Tables are always written fully qualified
-(`leads.opportunity`); the core sets no `search_path`.
+module id (`recallatron`, `relationships`, `leads`, `current`, `finance`). Tables are always
+written fully qualified (`leads.opportunity`); the core sets no `search_path`. Finance adds two
+`NOLOGIN` roles of its own, `finance_owner` and `finance_reader`. Its migration environment
+creates them only when the application role is a superuser; under any other application role an
+operator creates both and grants them to it first, or install refuses with
+`finance_roles_unavailable`. Every Finance revision runs as `finance_owner`; the other modules
+use the application role ([Finance](../../modules/finance/README.md)).
 
 What this buys: a module's storage is a nameable unit. "Writes only to its own storage"
 (FR 11, criterion 26) becomes checkable: the ownership test diffs the live catalog to assert
@@ -212,11 +217,11 @@ this is the inventory.
 | --- | --- |
 | `workspace_composition`, `module_state`, `module_schema_version` | this document, [composition](#composition-and-schema-versions-fr-9) |
 | `workspace_setting`, `member_setting`, `member_credential` | this document, [configuration](#a5-configuration-precedence-and-the-policy-floor-fr-12) |
-| `outbox_event`, `event_delivery`, `consumer_processed`, `job`, `schedule`, `operation`, `audit_record` | [intake and events](intake-and-events.md) |
-| `approval`, `approval_payload`, `standing_grant`, `standing_grant_operation`, `external_action` (not built yet) | [confirmation and safety](confirmation-and-safety.md) |
+| `outbox_event`, `event_delivery`, `consumer_processed`, `outbox_retention`, `job`, `schedule`, `operation`, `audit_record` | [intake and events](intake-and-events.md) |
+| `approval`, `approval_payload`, `standing_grant`, `standing_grant_operation`, `idempotency_result`, `external_action` | [confirmation and safety](confirmation-and-safety.md), [idempotency](intake-and-events.md#idempotency) |
 | `runtime_request`, `runtime_request_context`, `runtime_session`, `runtime_transcript` | [runtime and MCP](runtime-and-mcp.md) |
 | `tool_telemetry` | [runtime and MCP](runtime-and-mcp.md#the-mcp-facade) |
-| `evidence_unit` | [runtime and MCP](runtime-and-mcp.md) |
+| `evidence_unit`, `evidence_enrollment` | [runtime and MCP](runtime-and-mcp.md) |
 | `deletion_record`, `export_record`, `export_record_ref`, `migration_verification` (the last not built yet) | [deletion, export, migration](deletion-export-migration.md) |
 
 ### Composition and schema versions (FR 9)
@@ -250,22 +255,28 @@ rule exists so that cannot happen by habit. The orchestrator:
   cannot interleave. (Session-level locking was rejected: on a pooled connection it would
   survive a failed migration and hang the next migrator.)
 - **Two doors.** Startup and `rheo migrate` run the core chain over every `active` workspace,
-  serially. A module's chain runs only through `core.module.install` (and restore), on the
-  caller's own connection, raising to that caller rather than marking the workspace
-  unavailable. Install refuses a module whose dependencies are not installed
+  serially. A module's chain runs only through `core.module.install`, `core.module.upgrade`
+  (the operator's `rheo module upgrade`) and restore, on the caller's own connection,
+  raising to that caller rather than marking the workspace unavailable. Install refuses a module whose dependencies are not installed
   (`dependency_missing`), and a dependency cycle is refused when the modules load.
 - **When:** the core chain runs at provisioning and at every startup or `rheo migrate`, where it
-  is a no-op unless the running code carries a newer revision. A module's chain runs at install;
-  module upgrade is a later milestone.
+  is a no-op unless the running code carries a newer revision. A module's chain runs at install,
+  and again only when an operator upgrades it: `rheo module upgrade --workspace <id> --module
+  <module> --target-version <v> --target-schema <head>` (`rheo_core/modules/upgrade.py`).
+  Startup does not upgrade an installed module, so a deploy that carries a new module revision
+  leaves that module unavailable in each workspace until the upgrade runs; `rheo module check
+  --all` lists the incompatible ones ([deploy](../../deploy/README.md#upgrading-installed-modules)).
 - **On failure** (core chain): the workspace row goes `unavailable` with the error in
   `state_detail`; the orchestrator continues to the next workspace; startup completes; the
   failed workspace is refused at the boundary with an explicit unavailable state rather than
   served half-migrated.
 - **Downgrade:** not supported in release one. A destructive schema change in a module migration
-  must be preceded by a tested export (FR 52); the lifecycle contract says so, and the migration
-  runner is to enforce the weaker rule it can check: a migration flagged `destructive = true` in
-  its header refuses to run unless the workspace has an export record newer than the migration's
-  first attempt. That flag is not built yet; no shipped migration is destructive.
+  must be preceded by a tested export (FR 52); the lifecycle contract says so. What is built is
+  stricter and simpler: `rheo module upgrade` runs only pending revisions that declare
+  `non_destructive_upgrade = True` and refuses any with a destructive marker, with no force
+  option, so a destructive module upgrade cannot run at all yet. The export-gated rule (a
+  `destructive = true` revision runs only after an export newer than its first attempt) is not
+  built; no shipped migration is destructive.
 - **Ahead-of-code:** a workspace whose recorded version is newer than the running code is refused
   as `unavailable` (detail `schema_ahead`) rather than served by code that does not know its
   shape.
@@ -298,7 +309,9 @@ columns, vector distance ordering, and `ON CONFLICT` semantics, each as a named 
 future SQLite adapter has a contract to fail against rather than a vague promise. As built, the
 suite is not yet written against a `backend` fixture: several of these cases exist as named
 Postgres tests (concurrent compare-and-set, concurrent job leasing, the migration advisory
-lock), and the receipt case waits for intake. The compare-and-set case is
+lock, and concurrent receipt insert as
+`test_concurrent_duplicate_acceptance_writes_one_receipt` in
+`tests/postgres/test_leads_intake.py`). The compare-and-set case is
 `test_of_two_racing_compare_and_set_writers_exactly_one_wins` in
 `tests/postgres/test_memory_lifecycle.py`: two real connections write the same memory
 expecting the same revision, with either, both or neither taking the lifecycle lock, and
@@ -399,7 +412,7 @@ any lexeme that 15% or more of the workspace's memories contain once the query h
 three lexemes (`LEXICAL_MIN_TERMS_FOR_DF`), keeps the five rarest when that filter would drop
 them all, matches a double-quoted phrase as a phrase, and joins what survives with OR, not AND.
 It ranks by `ts_rank_cd`, which has no inverse-document-frequency term; IDF-aware lexical
-ranking is run 1b's. [Memory](memory.md#retrieval-fr-27-fr-30-criteria-27-and-31) has the
+ranking is not built. [Memory](memory.md#retrieval-fr-27-fr-30-criteria-27-and-31) has the
 detail.
 
 Filtering by audience, purpose, and state happens in SQL **before** ranking, inside `search`:
@@ -445,12 +458,17 @@ workspace's directory for a purpose from a closed set (`uploads`, `exports`, `sc
 through `model_cache_dir(component)`, the one deployment-level accessor, which returns
 `<data_root>/models/<component>` for a single lowercase segment and is published to modules as
 `rheo_core.modules.model_cache_dir`; a module cannot name a path. `workspace_dir` lives in
-`rheo_core.storage.data_root` and is not yet published to modules, because no module stores
-files yet.
+`rheo_core.storage.data_root` and is not yet published through `rheo_core.modules`. Finance is
+the one module that stores files: its core wiring calls `workspace_dir(ctx, Purpose.UPLOADS)`
+directly and keeps its statements, archive, inbox and key files under
+`<data_root>/workspaces/<id>/uploads/finance/`, created by `finance init-data`
+(`rheo_finance/wiring/core.py`). They are outside the workspace export, like the rest of
+Finance's state.
 
-Workspace files are referenced from workspace tables by a `file_ref` (`uuid` plus a relative path
-under the workspace directory); no URL is ever stored, and the web tier streams a file only after
-the owning module's permission check. Not built yet, for the same reason.
+Workspace files are to be referenced from workspace tables by a `file_ref` (`uuid` plus a
+relative path under the workspace directory); no URL is ever stored, and the web tier streams a
+file only after the owning module's permission check. Not built yet: Finance tracks its own
+paths and serves no file through the web tier.
 
 ## A5. Configuration precedence and the policy floor (FR 12)
 

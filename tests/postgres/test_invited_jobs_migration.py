@@ -18,7 +18,7 @@ from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 from sqlalchemy import Connection, delete, insert, select, update
 
-from postgres.test_jobfeed_migration import HEAD, connector
+from postgres.test_jobfeed_migration import connector
 from postgres.test_leads_intake import Intake
 from postgres.test_leads_intake import intake as intake
 from postgres.test_leads_pipeline import capture, ok, rewind_leads, setup
@@ -27,6 +27,8 @@ from postgres.test_module_upgrade import upgrade
 
 pytestmark = pytest.mark.postgres
 REVISION = "0018_invited_jobs"
+# The package head the upgrade moves to; 0020 to 0022 follow this file's revision.
+HEAD = "0022_reopen_closed_jobs"
 PREVIOUS = "0017_proposal_separate_answers"
 FIELD = "ext.jobsearch.invited"
 PRESET = h.JOBSEARCH_PRESET_ID
@@ -110,7 +112,7 @@ def test_a_populated_0017_gets_preset_v2_and_mapping_v2(intake: Intake) -> None:
     pasted = job_mapping(intake, "job_paste", "manual")
     with open_unit_of_work(intake.ctx) as uow:
         undone = rewind_leads(uow.connection, PREVIOUS)
-        assert undone == ("0019_reopen_closed_jobs", REVISION)
+        assert undone == (HEAD, "0021_stated_price", "0020_current_handoff", REVISION)
         uow.connection.execute(
             delete(module_schema_version).where(
                 module_schema_version.c.module_id == "leads",
@@ -133,16 +135,18 @@ def test_a_populated_0017_gets_preset_v2_and_mapping_v2(intake: Intake) -> None:
         uow.commit()
     assert connections_before[feed][1] == connections_before[pasted][1] == 1
 
-    # The operator path upgrades to the loaded head only, which 0019 follows.
+    # The operator path upgrades to the loaded head only.
     result = upgrade(intake, target_schema=HEAD)
     assert result.ok and result.result.changed, result
 
     with open_unit_of_work(intake.ctx) as uow:
         c = uow.connection
         (preset,) = rows(c, p.pipeline_preset, id=PRESET)
-        assert preset["current_version"] == 3
+        # 0021 and 0022 then add versions 3 and 4 the same way; version 2 is this
+        # file's.
+        assert preset["current_version"] == 4
         (moved,) = rows(c, p.opportunity, id=job["id"])
-        assert moved["preset_version"] == 3
+        assert moved["preset_version"] == 4
         assert {k: v for k, v in moved.items() if k != "preset_version"} == {
             k: v for k, v in job.items() if k != "preset_version"
         }
@@ -163,8 +167,9 @@ def test_a_populated_0017_gets_preset_v2_and_mapping_v2(intake: Intake) -> None:
             for r in rows(c, t.intake_connection)
         }
         mapping_id, _ = connections_before[feed]
-        assert connections[feed] == (mapping_id, 2)
-        assert connections[pasted] == (connections_before[pasted][0], 2)
+        # 0021 moves both on to version 3; version 2 is this file's.
+        assert connections[feed] == (mapping_id, 3)
+        assert connections[pasted] == (connections_before[pasted][0], 3)
         moved_ids = {feed, pasted}
         assert {k: v for k, v in connections.items() if k not in moved_ids} == {
             k: v for k, v in connections_before.items() if k not in moved_ids
@@ -232,7 +237,7 @@ def test_a_migrated_feed_connection_delivers_an_invited_job(intake: Intake) -> N
     with open_unit_of_work(intake.ctx) as uow:
         c = uow.connection
         (job,) = rows(c, p.opportunity, title="Invited example")
-        assert (job["preset_id"], job["preset_version"]) == (PRESET, 3)
+        assert (job["preset_id"], job["preset_version"]) == (PRESET, 4)
         states = {
             r["target"]: r["value_text"]
             for r in rows(c, p.opportunity_field_state, opportunity_id=job["id"])

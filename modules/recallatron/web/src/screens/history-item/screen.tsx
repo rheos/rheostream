@@ -4,13 +4,13 @@ import type { ScreenProps, ShellApi } from "@rheo-stream/web-contract/screen";
 
 import { callChecked } from "../../call";
 import { GenericError, StateMessage } from "../../components/state-message";
-import { formatUtc } from "../../format";
+import { formatMoment } from "../../format";
 import { isHistoryItem, NOT_FOUND, type HistoryItem } from "../../guards";
 import { HISTORY_GET } from "../../operations";
 import styles from "./screen.module.css";
 
 type HistoryItemState =
-  | { state: "item"; item: HistoryItem; backHref: string }
+  | { state: "item"; item: HistoryItem; backHref: string; zone?: string }
   | { state: "not-found" | "error"; backHref: string };
 
 export async function loadHistoryItem(
@@ -25,7 +25,7 @@ export async function loadHistoryItem(
     return { state: "not-found", backHref };
   }
   if (called.state !== "ok") return { state: "error", backHref };
-  return { state: "item", item: called.value, backHref };
+  return { state: "item", item: called.value, backHref, zone: shell.timeZone };
 }
 
 export function HistoryItemView({ state }: { state: HistoryItemState }) {
@@ -57,7 +57,7 @@ export function HistoryItemView({ state }: { state: HistoryItemState }) {
         <dd>{item.kind.replaceAll("_", " ")}</dd>
         <dt>Occurred</dt>
         <dd>
-          <time dateTime={item.occurred_at}>{formatUtc(item.occurred_at)}</time>
+          <time dateTime={item.occurred_at}>{formatMoment(item.occurred_at, state.zone)}</time>
         </dd>
         {item.source_role === null ? null : (
           <>

@@ -12,6 +12,7 @@ export interface ReviewProps {
   items: Row[];
   /** Server render time, so every relative time agrees with the markup. */
   now: number;
+  zone?: string;
   hrefs: Record<string, string>;
   /** The server's answer had as many items as it may send. */
   limited: boolean;
@@ -42,6 +43,7 @@ function ReviewCard({
   item,
   href,
   now,
+  zone,
   busy,
   error,
   onPromote,
@@ -50,6 +52,7 @@ function ReviewCard({
   item: Row;
   href: string;
   now: number;
+  zone?: string;
   busy: boolean;
   error?: string;
   onPromote?: (item: Row) => void;
@@ -79,7 +82,7 @@ function ReviewCard({
           ) : null}
         </div>
       </div>
-      <Meta item={item} now={now} />
+      <Meta item={item} now={now} zone={zone} />
       {holds.length ? (
         <ul className={styles.holdReasons} aria-label="Why the filters held it">
           {holds.map((hold, index) => (
@@ -205,7 +208,7 @@ export function ReviewQueue(props: ReviewProps) {
         </span>
       </div>
       <p className={styles.reviewIntro}>
-        Jobs the client filters held back before scoring.{" "}
+        Jobs held by the client filters or the Jev pre-filter before full scoring.{" "}
         {props.canPromote
           ? "Promote one to have it scored and drafted like any other job; the clauses that held it stay on its assessment as things to check."
           : "A workspace owner can promote one to have it scored like any other job."}
@@ -227,6 +230,7 @@ export function ReviewQueue(props: ReviewProps) {
                 item={item}
                 href={props.hrefs[id] ?? ""}
                 now={props.now}
+                zone={props.zone}
                 busy={busy[id] === true}
                 error={errors[id]}
                 onPromote={props.submit && props.canPromote ? promote : undefined}

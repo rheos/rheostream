@@ -1,11 +1,12 @@
 # How rheoStream works, by design
 
 rheoStream is an open framework for agent-assisted work. It is one system you own: a web
-shell, an MCP door for agents, a durable worker, and a Postgres database for each
-workspace. On top of that small core sit four modules. Leads develops opportunities,
-Current carries active work, Recallatron remembers, and Relationships keeps the people and
-organizations they all share. An agent named rheo operates all of it, from Claude, from
-Telegram, or by voice.
+shell, an MCP door for agents, a durable worker, and Postgres. On top of that small core
+sit four modules. Leads develops opportunities, Current carries active work, Recallatron remembers, and Relationships keeps the people and
+organizations they all share. A fifth, Finance, is an optional personal ledger that a
+workspace has only once its owner installs it. An agent named rheo operates all of it
+from Claude, through the MCP door. Telegram and voice channels are part of the design and
+not built yet.
 
 > Leads enter the stream. Current carries the work. Recallatron remembers.
 
@@ -43,7 +44,7 @@ there months later.
                                          │
              modules: Leads · Current · Recallatron · Relationships
                                          │
-              one Postgres database per workspace + a control plane
+                       Postgres + one data directory
                                          │
                    worker: jobs, event delivery, schedules
 ```
@@ -89,11 +90,11 @@ Follow a single website inquiry through the system and every part shows up once.
 
 ## The ideas that run through everything
 
-### The workspace is the unit
+### Your data stays yours
 
-Each workspace is its own Postgres database. A connection opened for one workspace cannot
-read another's rows, and export, backup and deletion all act on that one unit.
-([Workspaces and storage](workspaces-and-storage.md))
+Records live in your Postgres, settings and secrets in one data directory beside it, and
+the whole workspace exports to one file that restores elsewhere with the same
+identifiers. ([Storage](workspaces-and-storage.md), [export](export-restore-deploy.md))
 
 ### Every surface uses the same door
 
@@ -128,26 +129,33 @@ installed.
 ### Models are replaceable
 
 A runtime adapter runs the model's conversation loop; rheoStream keeps identity,
-permissions, data, audit and durable state. Claude CLI, OpenRouter and Codex CLI fit the
-same contract. ([The MCP door](mcp-and-runtimes.md))
+permissions, data, audit and durable state. Claude CLI is the adapter built today;
+OpenRouter and Codex CLI are designed to fit the same contract. A separate, tool-free
+judgment provider (Jev) answers typed questions for Leads scoring when a workspace opts
+in. ([The MCP door](mcp-and-runtimes.md))
 
 ## The pages
 
 | Page | What it covers |
 | --- | --- |
-| [Workspaces and storage](workspaces-and-storage.md) | A database per workspace, the control plane, routing from authenticated context, settings and secrets |
+| [Storage, settings and secrets](workspaces-and-storage.md) | Where data lives, module schemas, revisions, layered settings, secret references, identifiers, and running more than one workspace and secrets |
 | [Durable work](durable-work.md) | Leased jobs, the transactional outbox, operation records, audit |
 | [Safety classes and approvals](safety-and-approvals.md) | The six classes, approvals bound to one call, guards, standing grants |
 | [The MCP door and replaceable runtimes](mcp-and-runtimes.md) | One MCP surface, scoped tokens, redaction, connector sign-in, runtime adapters |
 | [Recallatron](recallatron.md) | Memory with audience and purposes, hybrid recall, correction and supersession |
-| [Leads](leads.md) | Intake from any funnel, observations, pipelines, qualification, handoffs, contact permission |
-| [Current](current.md) | Work items, projects, dependencies, snooze, source dedup, handoffs in |
+| [Leads](leads.md) | Intake from any funnel, observations, pipelines, qualification, handoffs, contact permission, the optional job search (feed, scoring, proposals) |
+| [Current](current.md) | Work items, projects, dependencies, snooze, source dedup, alerts, handoffs in, the phone queue |
+| [Email intake](email-intake.md) | The rules an agent follows to file email into Current: the action gate, priority tiers, fingerprints |
 | [Relationships](relationships.md) | Shared parties, authenticated matching, reversible merges |
 | [The rheo agent and channels](rheo-and-channels.md) | One agent across Claude, Telegram and voice, one authorization model |
 | [Connectors](connectors.md) | Intake transports, outbound MCP connectors, destinations |
 | [The Claude Code bridge](claude-code-bridge.md) | Automatic memory from your Claude Code sessions, and recall on the first prompt |
 | [Web shell and CLI](web-shell-and-cli.md) | The composed shell, sessions across hosts, themes, the `rheo` operator command |
 | [Export, restore and deploy](export-restore-deploy.md) | The workspace artifact, erasure, backups, the four-container deployment |
+
+Finance has no page here yet. Its [module guide](../../modules/finance/README.md) covers
+what it is, how it is installed per workspace, its owner-only agent reads, the laptop
+push and pull, and its reminders into Current.
 
 ## Where to look
 

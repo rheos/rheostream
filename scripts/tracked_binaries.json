@@ -1,4 +1,7 @@
 {
   "apps/web/src/theme/fonts/geist-latin-wght-normal.woff2": "the vendored Geist web font, a compressed binary; the licence beside it (OFL.txt) is text and is still searched",
-  "docs/media/explainer-by-design.jpg": "README thumbnail for the explainer video, a JPEG still of its end card; the README text beside it is searched"
+  "docs/media/explainer-by-design.jpg": "README thumbnail for the explainer video, a JPEG still of its end card; the README text beside it is searched",
+  "docs/review/images/email-expected.png": "review-package diagram, a PNG screenshot of rheo.stream/review/?export=email-expected; its text is in docs/review/README.md beside it and in the rheo-stream-site repo, which are searched",
+  "docs/review/images/email-schema.png": "review-package diagram, a PNG screenshot of rheo.stream/review/?export=email-schema; its text is in docs/review/README.md beside it and in the rheo-stream-site repo, which are searched",
+  "docs/review/images/email-flow.png": "review-package diagram, a PNG screenshot of rheo.stream/review/?export=email-flow; its text is in docs/review/README.md beside it and in the rheo-stream-site repo, which are searched"
 }

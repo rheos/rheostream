@@ -5,7 +5,33 @@ one, written to show that the release-one decisions do not foreclose them. These
 each phase is planned when its predecessor lands, as the [build plan](../requirements/build-plan.md)
 says.
 
+**What has landed.** Phases 4 and 5 are built; each section below opens with a **Built** note
+saying what shipped, where it lives, and where the build differs from the sketch. Phases 6 to 8
+are still sketches. One module arrived outside this list: Finance
+([`modules/finance/`](../../modules/finance/README.md)), a personal ledger and reminder module
+that core loads like any other. Its eight read operations are owner-only and
+`package_sets = "explicit_only"`, so only a `module_read:finance` token reaches them, and its
+`tick` schedule enqueues only once a workspace sets `finance.jobs.enabled` to true. It is not
+the invoicing or accounting product phase 5 rules out.
+
 ## Phase 4: the optional job-search workflow
+
+**Built.** Job search is a capability inside Leads, documented in the
+[Leads README](../../modules/leads/README.md#job-search-capability). Migration
+`0007_jobsearch_preset` seeds the Job search preset with sixteen `ext.jobsearch.*` fields, and
+`leads.capabilities.jobsearch` gates it. Jobs arrive three ways, all through ordinary intake
+and all converging on one opportunity per posting id: the job feed collector, which calls a
+provider's remote MCP server on a schedule (`leads.jobfeed.presets` replaces its default
+searches, each run writes one content-free `leads.jobfeed_run` row, and invited jobs carry
+`ext.jobsearch.invited`); pasted search pages and full postings (`leads.jobfeed.paste`); and
+the other release-one transports. On top sit job scoring (a deterministic tier-one filter, an
+optional Jev pre-filter, then the model score), the review queue with owner-only
+`leads.jobreview.promote`, proposal drafting with its answer library, and pricing with
+milestones. Where the build differs from the sketch: proposals have their own tables
+(`job_proposal`, `proposal_section`, `answer_library`, `job_pricing`, `proposal_milestone`)
+rather than a `proposal` kind in `preset_template`, and no email poller or
+`intake_connection.cursor` column was built, because the first job source is the MCP
+collector.
 
 **What it adds.** A capability bundle, not a module: pipeline presets for job search, extension
 fields under `ext.jobsearch.*` (candidate fit, application questions), job-source connectors, the
@@ -30,6 +56,17 @@ second safety class. Provider licensing is reviewed per source before any hosted
 
 ## Phase 5: the work-in-motion module
 
+**Built.** Current is in [`modules/current/`](../../modules/current/README.md) and the handoff
+works as sketched: `leads.handoff.request` stages `current.item.create_external`, which
+creates one standalone Current item (a project is set later, only through Current's own
+editor), and `current.source_item_link` keeps the source-to-item-to-project relation. Keyed
+idempotency arrived with it: `Idempotency.KEYED`, the `core.idempotency_result` table (core
+migration `0014_external_actions`), and the `work.idempotency_retention_days` setting
+(default 90, never below 30). Criterion 18's check became an explicit allow list,
+`PRODUCTION_EXTERNAL_ALLOWLIST` in `rheo_core/modules/production.py`, whose one entry is
+`current.item.create_external`. No `preset_handoff` table was needed: Current is the only
+destination.
+
 **What it adds.** `current`: projects, tasks, next actions, status, priority, due dates,
 dependencies, commitments. Ported from the predecessor's Next.js screens and moved from a local
 SQLite file to the `current` schema of the workspace database.
@@ -38,10 +75,15 @@ SQLite file to the `current` schema of the workspace database.
 optional. The handoff operation from phase three
 ([handoffs](confirmation-and-safety.md#the-handoff-operation-fr-45-criterion-64)) gains its first
 registered destination: `leads.handoff.request` writes the record `pending` instead of
-`unavailable` and calls `current.work.create_from_handoff(handoff_ref, snapshot)`, the
-`EXTERNAL`-class execution with its own approval, `DestinationGuard`, and `external_action`
-record. That operation is the first in the system that must return a *created* reference on a
-retry whose natural key does not already carry the answer, so **keyed idempotency arrives
+`unavailable` and stages `current.item.create_external`, the `EXTERNAL`-class execution with
+its own approval, `DestinationGuard`, and `external_action` record. Current keeps the lasting
+source-to-item-to-project relation itself: one `current.source_item_link` row per approved
+source that survives item deletion as a tombstone, updated only by `current.item.update` and
+approved item or project deletion, read by `current.item.link_state` and announced by one
+`current.source_item_link.changed` event per change
+([ADR-0001](../adr/0001-leads-current-project-link.md),
+[Current](../../modules/current/README.md)). The external create is the first operation in the
+system that must return a *created* reference on a retry whose natural key does not already carry the answer, so **keyed idempotency arrives
 here**: the `Idempotency` enum gains `KEYED(field)` (additive within contract version 1), the
 core gains `core.idempotency_result(operation_name, key, output, recorded_at, retained_until)`
 with its retention setting in a core migration, and the dispatcher stores and returns the output
@@ -67,6 +109,11 @@ integration's.
 
 ## Phase 6: channels and the second runtime
 
+**Not built.** `channels/` holds only a placeholder package, and the OpenRouter and Codex CLI
+adapters do not exist. The Jev provider in `runtimes/` (`rheo_runtimes.jev`) is not the second
+runtime: it is a tool-free typed-judgment call that Leads scoring uses as a pre-filter, with no
+agent loop ([runtimes](../../runtimes/README.md#jev-typed-judgments)).
+
 **What it adds.** The OpenRouter adapter ([shape](runtime-and-mcp.md#the-openrouter-adapter-phase-six-shape-only))
 and a Telegram channel.
 
@@ -87,6 +134,11 @@ latest session. Codex CLI stays a validation target: if its adapter is attempted
 same capability gate and contract suite before it is called supported, and no phase schedules it.
 
 ## Phase 7: framework proof and a v0.1 release
+
+**Not built.** Core's module operations are `core.module.install`, `core.module.enable` and
+`core.module.upgrade`; disable, remove, purge and restore do not exist. `packs/` holds one
+placeholder directory with no pack schema, and there is no invitation flow. The licence is
+settled (AGPL-3.0, see the build plan).
 
 **What it adds.** The rest of the module lifecycle (disable, re-enable, remove, purge, restore)
 as written in the [module contract](module-contract.md#upgrade-disable-re-enable-remove-purge-restore-on-paper-d5);

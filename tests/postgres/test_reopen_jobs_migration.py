@@ -1,6 +1,6 @@
-"""Migration 0019: a passed or lost job reopens to Review.
+"""Migration 0022: a passed or lost job reopens to Review.
 
-A populated workspace is rebuilt at 0018 (a Job search pipeline with an open job and
+A populated workspace is rebuilt at 0021 (a Job search pipeline with an open job and
 a passed one) and upgraded through the audited operator path production uses. Then,
 at head, a dismissed job is reopened through the ordinary transition operation, and
 the queue says where an undo goes.
@@ -27,8 +27,8 @@ pytestmark = [
     pytest.mark.postgres,
     pytest.mark.parametrize("intake", [False], indirect=True),
 ]
-REVISION = "0019_reopen_closed_jobs"
-PREVIOUS = "0018_invited_jobs"
+REVISION = "0022_reopen_closed_jobs"
+PREVIOUS = "0021_stated_price"
 PRESET = h.JOBSEARCH_PRESET_ID
 REOPEN = sorted(
     (PRESET, start, end)
@@ -56,7 +56,7 @@ def transitions(c: Connection, version: int) -> list[tuple[Any, ...]]:
     return preset_rows(c, version)["preset_transition"]
 
 
-def test_a_populated_0018_moves_to_preset_v3_with_the_reopen_moves(
+def test_a_populated_0021_moves_to_preset_v4_with_the_reopen_moves(
     intake: Intake,
 ) -> None:
     setup(intake)
@@ -74,15 +74,15 @@ def test_a_populated_0018_moves_to_preset_v3_with_the_reopen_moves(
             )
         )
         c = uow.connection
-        # Positive control: the predecessor's current version is 2, with no move
+        # Positive control: the predecessor's current version is 3, with no move
         # out of a closed stage.
         (preset,) = rows(c, p.pipeline_preset, id=PRESET)
-        assert preset["current_version"] == 2
+        assert preset["current_version"] == 3
         jobs = {r["title"]: r for r in rows(c, p.opportunity, preset_id=PRESET)}
-        assert {r["preset_version"] for r in jobs.values()} == {2}
+        assert {r["preset_version"] for r in jobs.values()} == {3}
         assert jobs["Passed posting"]["disposition_outcome"] == "disqualified"
-        v2_before = preset_rows(c, 2)
-        assert not [r for r in transitions(c, 2) if r[1] in {"passed", "lost"}]
+        v3_before = preset_rows(c, 3)
+        assert not [r for r in transitions(c, 3) if r[1] in {"passed", "lost"}]
         uow.commit()
 
     result = upgrade(intake, target_schema=REVISION)
@@ -91,23 +91,23 @@ def test_a_populated_0018_moves_to_preset_v3_with_the_reopen_moves(
     with open_unit_of_work(intake.ctx) as uow:
         c = uow.connection
         (preset,) = rows(c, p.pipeline_preset, id=PRESET)
-        assert preset["current_version"] == 3
+        assert preset["current_version"] == 4
         for title, before in jobs.items():
             (after,) = rows(c, p.opportunity, id=before["id"])
-            assert after["preset_version"] == 3, title
+            assert after["preset_version"] == 4, title
             # Stage, disposition and revision are kept: nothing an owner sees moves.
             assert {k: v for k, v in after.items() if k != "preset_version"} == {
                 k: v for k, v in before.items() if k != "preset_version"
             }
-        # Version 2 is untouched; version 3 is a copy of it plus the two moves.
-        assert preset_rows(c, 2) == v2_before
-        v3 = preset_rows(c, 3)
+        # Version 3 is untouched; version 4 is a copy of it plus the reopen moves.
+        assert preset_rows(c, 3) == v3_before
+        v4 = preset_rows(c, 4)
         added = sorted(
-            set(v3["preset_transition"]) - set(v2_before["preset_transition"])
+            set(v4["preset_transition"]) - set(v3_before["preset_transition"])
         )
         assert added == REOPEN
-        v3["preset_transition"] = [r for r in v3["preset_transition"] if r not in added]
-        assert v3 == v2_before
+        v4["preset_transition"] = [r for r in v4["preset_transition"] if r not in added]
+        assert v4 == v3_before
 
 
 def test_the_migration_is_declared_non_destructive(intake: Intake) -> None:

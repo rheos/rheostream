@@ -21,7 +21,7 @@ against the *operation's* input model, which is the wider of the two: a tool tha
 advertises a narrow schema to a client restricted nothing about a crafted call.
 :func:`call_registered_tool` validates against the tool's own declared
 ``input_model`` first, refusing every argument name that model does not declare,
-and dispatches the validated dump — so ``recallatron_forget`` handed a reference
+and dispatches the fields the caller set — so ``recallatron_forget`` handed a reference
 to somebody else's record answers ``input_invalid`` before any approval work is
 created, rather than reaching the deletion coordinator to be refused there.
 
@@ -638,10 +638,15 @@ def _call(
         # ``ToolRegistry.register`` refuses any other tool naming the grant.
         assert not _meta(registered), registered
         model = validated
+        # Only what the caller sent. A full dump writes every left-out field as its
+        # default, so a handler that reads ``model_fields_set`` for "fields left out
+        # keep their value" sees them all as set: an amount-only milestone edit was
+        # refused for a null title (#477), and a leads_update without a value
+        # cleared the opportunity's value. This is what the HTTP API already passes.
         outcome = dispatch(
             ctx,
             declaration.operation,
-            validated.model_dump(),
+            validated.model_dump(exclude_unset=True),
             registry=registry,
             consumers=consumers,
         )

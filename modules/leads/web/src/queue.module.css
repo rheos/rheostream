@@ -1,8 +1,8 @@
 /* The job queue and the job detail header. Density and order follow the
    triage list it replaces; every value is a theme token. */
+/* Starts on the module tabs' edge; only the Leads frame is centred. */
 .queue {
   max-width: calc(var(--rs-space-6) * 28);
-  margin-inline: auto;
 }
 .heading {
   display: flex;
@@ -210,11 +210,14 @@
 .score_mid {
   color: var(--rs-color-accent);
 }
+/* A low fit is the usual outcome, not an alarm: danger is kept for failures. */
 .score_low {
-  color: var(--rs-color-danger);
+  color: var(--rs-color-ink-dim);
 }
+/* Not yet known: the low colour, with a dashed edge so it never reads as low. */
 .score_dim {
   color: var(--rs-color-ink-dim);
+  border-style: dashed;
 }
 .meta {
   display: flex;

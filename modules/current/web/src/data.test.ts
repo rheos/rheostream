@@ -1,15 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
+  age,
   allowedTargets,
+  areaLook,
   areaKey,
   customSnooze,
   day,
   itemDetail,
+  itemSummary,
   refusalText,
   snoozeAt,
   TRANSITIONS,
 } from "./data";
-import { formInput, type Field } from "./forms";
+import {
+  formInput,
+  pickableProjects,
+  projectInput,
+  type Field,
+} from "./forms";
 import { queueFilters } from "./screens";
 
 // Local wall-clock dates, so every case reads the same in any time zone.
@@ -121,6 +129,32 @@ describe("update forms", () => {
   });
 });
 
+describe("moving an item between projects", () => {
+  const ITEM = "current.item:sample";
+  const A = "current.project:a";
+  const B = "current.project:b";
+  it("puts the item in the picked project at the revision it was read at", () => {
+    expect(projectInput(ITEM, 5, null, A)).toEqual({ ref: ITEM, revision: 5, project_ref: A });
+    expect(projectInput(ITEM, 5, A, B)).toEqual({ ref: ITEM, revision: 5, project_ref: B });
+  });
+  it("takes it out through clear, since a null project_ref means leave it", () => {
+    expect(projectInput(ITEM, 5, A, null)).toEqual({ ref: ITEM, revision: 5, clear: ["project_ref"] });
+  });
+  it("sends nothing when the pick is the project it already has", () => {
+    expect(projectInput(ITEM, 5, A, A)).toBeNull();
+    expect(projectInput(ITEM, 5, null, null)).toBeNull();
+  });
+  it("offers live and paused projects, and a done one only when already held", () => {
+    const projects = [
+      { ref: A, title: "Studio move", status: "active" },
+      { ref: B, title: "Tax season", status: "paused" },
+      { ref: "current.project:c", title: "Old launch", status: "done" },
+    ];
+    expect(pickableProjects(projects, null).map((p) => p.ref)).toEqual([A, B]);
+    expect(pickableProjects(projects, "current.project:c")).toHaveLength(3);
+  });
+});
+
 describe("helpers", () => {
   it("makes area keys in the service's grammar", () => {
     expect(areaKey("Foreign affairs")).toBe("foreign_affairs");
@@ -150,5 +184,81 @@ describe("helpers", () => {
     expect(
       queueFilters({ status: "done", area: "bills", overdue: "1", blocked: "0" }),
     ).toMatchObject({ status: "done", area: "bills", overdue: true, blocked: null });
+  });
+});
+
+describe("snooze picks in the shell's zone (#465)", () => {
+  // 3 pm Friday 9 October 2026 in Vancouver (PDT) is 22:00Z.
+  const vanFriday3pm = new Date("2026-10-09T22:00:00Z");
+  it("computes each pick on the shown zone's clock, whatever the browser's", () => {
+    expect(snoozeAt("tomorrow", vanFriday3pm, "America/Vancouver")?.toISOString()).toBe(
+      "2026-10-10T16:00:00.000Z",
+    );
+    expect(snoozeAt("evening", vanFriday3pm, "America/Vancouver")?.toISOString()).toBe(
+      "2026-10-10T02:00:00.000Z",
+    );
+    // Already 11 pm in London, so no evening, and tomorrow is 9 am BST.
+    expect(snoozeAt("evening", vanFriday3pm, "Europe/London")).toBeNull();
+    expect(snoozeAt("tomorrow", vanFriday3pm, "Europe/London")?.toISOString()).toBe(
+      "2026-10-10T08:00:00.000Z",
+    );
+    expect(snoozeAt("monday", vanFriday3pm, "America/Vancouver")?.toISOString()).toBe(
+      "2026-10-12T16:00:00.000Z",
+    );
+  });
+  it("crosses a clock change on the zone's clock", () => {
+    // Los Angeles: BC no longer falls back from Nov 2026 (tzdata 2026b).
+    const saturday = new Date("2026-10-31T22:00:00Z"); // 3 pm PDT
+    expect(snoozeAt("monday", saturday, "America/Los_Angeles")?.toISOString()).toBe(
+      "2026-11-02T17:00:00.000Z", // 9 am PST
+    );
+  });
+  it("reads a custom time on the zone's clock", () => {
+    expect(customSnooze("2026-10-10T09:00", vanFriday3pm, "America/Vancouver")?.toISOString()).toBe(
+      "2026-10-10T16:00:00.000Z",
+    );
+    expect(customSnooze("2026-10-09T14:00", vanFriday3pm, "America/Vancouver")).toBeNull();
+    expect(customSnooze("2026-13-01T09:00", vanFriday3pm, "America/Vancouver")).toBeNull();
+  });
+  it("moves a time the clocks skip past the gap, and takes a repeated time's first pass", () => {
+    const LA = "America/Los_Angeles";
+    const early = new Date("2026-03-01T00:00:00Z");
+    // 2:30 am on Mar 8 does not exist in Los Angeles: 3:30 am PDT.
+    expect(customSnooze("2026-03-08T02:30", early, LA)?.toISOString()).toBe(
+      "2026-03-08T10:30:00.000Z",
+    );
+    // 1:30 am on Nov 1 happens twice: the PDT one.
+    expect(customSnooze("2026-11-01T01:30", early, LA)?.toISOString()).toBe(
+      "2026-11-01T08:30:00.000Z",
+    );
+  });
+});
+
+describe("desk helpers", () => {
+  it("writes ages the compact way", () => {
+    const now = new Date("2026-11-12T12:00:00Z");
+    const ago = (ms: number) => age(new Date(now.valueOf() - ms).toISOString(), now);
+    expect(ago(20_000)).toBe("just now");
+    expect(ago(5 * 60_000)).toBe("5m ago");
+    expect(ago(3 * 3600_000)).toBe("3h ago");
+    expect(ago(26 * 86400_000)).toBe("26d ago");
+    expect(ago(95 * 86400_000)).toBe("3mo ago");
+    expect(ago(800 * 86400_000)).toBe("2y ago");
+    expect(age("", now)).toBe("");
+  });
+  it("gives default areas their own look and others a stable one", () => {
+    expect(areaLook("bills")).toEqual({ icon: "piggy", tone: "green" });
+    expect(areaLook("dev")).toEqual({ icon: "waves", tone: "violet" });
+    expect(areaLook(null)).toEqual({ icon: "tag", tone: "slate" });
+    const garden = areaLook("garden");
+    expect(garden.icon).toBe("tag");
+    expect(areaLook("garden")).toEqual(garden);
+    for (const inherited of ["constructor", "toString", "__proto__"]) {
+      expect(areaLook(inherited).icon).toBe("tag");
+    }
+  });
+  it("reads the row tag from a summary", () => {
+    expect(itemSummary({ tag: "bill-due" }).tag).toBe("bill-due");
+    expect(itemSummary({}).tag).toBeNull();
   });
 });

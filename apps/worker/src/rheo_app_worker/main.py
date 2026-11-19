@@ -41,6 +41,13 @@ from rheo_core.modules.operations import (
     ModuleInstallPayload,
     run_module_install_job,
 )
+from rheo_core.modules.production import assert_production_external_composition
+from rheo_core.operations.continuation import (
+    EXTERNAL_ACTION_EXECUTE,
+    run_external_continuation,
+)
+from rheo_core.operations.idempotency import check_keyed_replay_compatibility
+from rheo_core.operations.registry import REGISTRY
 from rheo_core.runtime import (
     ACCOUNT_BOUND_CREDENTIAL_KINDS,
     RUNTIME_RUN,
@@ -49,6 +56,7 @@ from rheo_core.runtime import (
     make_run_runtime_job,
 )
 from rheo_core.runtime.extraction import register_claude_cli_extraction
+from rheo_core.runtime.judgment import JudgmentRunner, set_judgment_runner
 from rheo_core.runtime.oneshot import register_oneshot_adapters
 from rheo_core.settings import resolve
 from rheo_core.storage.postgres import get_backend, reset_backend
@@ -60,6 +68,7 @@ from rheo_core.work.schedules import (
     run_retention_sweep,
 )
 from rheo_runtimes import ClaudeCliRuntime
+from rheo_runtimes.jev import JevProvider
 
 from rheo_app_worker.heartbeat import heartbeat_from_env
 
@@ -77,6 +86,8 @@ JOB_KINDS.register(EXPORT_JOB_KIND, ExportJobPayload, run_export_job)
 JOB_KINDS.register(RESTORE_JOB_KIND, RestoreJobPayload, run_restore_job)
 JOB_KINDS.register(RETENTION_SWEEP, RetentionSweepPayload, run_retention_sweep)
 JOB_KINDS.register(MODULE_INSTALL, ModuleInstallPayload, run_module_install_job)
+# The one core continuation kind: an approved external action's grant-bound effect.
+JOB_KINDS.register_continuation(EXTERNAL_ACTION_EXECUTE, run_external_continuation)
 
 ADAPTERS = AdapterRegistry()
 """Process-wide adapter registry. Production registers ``claude_cli`` here."""
@@ -159,6 +170,7 @@ def register_modules() -> None:
     about the production kinds could read it.
     """
     load_modules(kinds=JOB_KINDS, consumers=CONSUMERS)
+    assert_production_external_composition()
 
 
 def main() -> None:
@@ -179,8 +191,10 @@ def main() -> None:
     register_claude_cli_extraction(ADAPTERS)
     # The same adapters for a module job's one-shot structured run (job scoring).
     register_oneshot_adapters(ADAPTERS)
+    set_judgment_runner(JudgmentRunner(JevProvider()))
     register_modules()
     backend = get_backend()
+    check_keyed_replay_compatibility(backend, REGISTRY)
     stop = threading.Event()
     install_stop_signals(stop)
     try:
