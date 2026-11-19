@@ -1,6 +1,8 @@
 # rheoStream
 
 rheoStream is an open framework for agent-assisted work. It runs agent-accessible
+
+[![Rheostream on StartupScores](https://startupscores.com/badge/rheostream.svg?style=shield&v=combo&theme=dark)](https://startupscores.com/open-source/rheostream)
 workspace operations, background jobs and persistent memory through a FastAPI core,
 MCP facade and Next.js shell.
 
