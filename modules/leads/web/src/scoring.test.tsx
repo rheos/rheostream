@@ -153,6 +153,10 @@ describe("the Scoring view's words", () => {
     expect(readFailureLabel("tool_error:PERMISSION")).toBe(
       "refused by the job service (PERMISSION)",
     );
+    // #377: the run stopped reading once refusals came in a row.
+    expect(readFailureLabel("not_read_refused")).toBe(
+      "not read: daily allowance spent",
+    );
   });
   it("says what scoring is doing", () => {
     expect(statusLine(VIEW.status as Row, NOW).text).toBe(

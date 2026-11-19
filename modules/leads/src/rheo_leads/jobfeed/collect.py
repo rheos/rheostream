@@ -40,6 +40,12 @@ SEARCHES_FAILED: Final = "searches"
 """The run-history reason prefix for searches that all failed in a run that still
 delivered an invitation."""
 MAX_DETAIL_READS: Final = 60
+# The job service refuses ``find_jobs get`` once the account's daily allowance of
+# detail reads is spent (#377: about 400 a day since Nov 6 2026, resetting at
+# 00:00 UTC), and with PERMISSION alone for the odd private job. This many
+# refusals in a row means the allowance is spent: the run reads nothing more.
+REFUSED_TOOL_CODES: Final = frozenset({"PERMISSION", "JOB_BROWSE_COOLDOWN"})
+STOP_AFTER_REFUSALS: Final = 5
 OVER_CAP_BAND: Final = "50+"
 
 
@@ -76,6 +82,8 @@ class DetailResult:
     """Discovery postings downgraded because their read failed or was not made."""
     cut: bool
     reasons: Mapping[str, int] = field(default_factory=dict)
+    known: int = 0
+    """Postings not read because their description is already stored (#377)."""
     """Why each of the ``failures`` happened, as fixed codes and their counts
     (:func:`read_failure_reason`): the run history keeps these, content-free."""
 
@@ -85,6 +93,8 @@ class DetailResult:
 NO_FEED_ID: Final = "no_feed_id"
 NOT_READ_DEADLINE: Final = "not_read_deadline"
 NOT_READ_CAP: Final = "not_read_cap"
+NOT_READ_REFUSED: Final = "not_read_refused"
+"""Not read: the run stopped reading after ``STOP_AFTER_REFUSALS`` refusals in a row."""
 NO_DESCRIPTION: Final = "no_description"
 
 
@@ -361,6 +371,23 @@ def _downgraded(posting: NormalizedPosting) -> Sighting:
     return Sighting(replace(posting, purpose="refresh_only", description=None))
 
 
+def _unread_known(sighting: Sighting) -> Sighting:
+    """A posting not read again because its description is stored, without the
+    client figures a detail read supplies (spend, rating, reviews, hire rate).
+    The feed row's own versions of those differ from the detail's, so carrying
+    them would make every known posting look changed and overwrite the stored
+    detail figures each run; left out, the stored ones stand."""
+    return Sighting(
+        replace(
+            sighting.posting,
+            client_spend=None,
+            client_rating=None,
+            client_reviews=None,
+            client_hire_rate=None,
+        )
+    )
+
+
 def read_details(
     upstream: Upstream,
     sightings: Sequence[Sighting],
@@ -369,18 +396,26 @@ def read_details(
     *,
     deadline: float,
     max_reads: int = MAX_DETAIL_READS,
+    known: frozenset[str] = frozenset(),
 ) -> DetailResult:
     """One ``find_jobs get`` per unique eligible posting, at most ``max_reads``,
     none starting with the ``deadline`` too close. A ``get`` sends the feed row's
     own id; a posting whose row carried none gets no read. A discovery posting
     whose read failed or was not made is downgraded to refresh-only with no
-    description and counts one failure; other sightings pass through unchanged."""
+    description and counts one failure; other sightings pass through unchanged.
+
+    A posting in ``known`` already has its description stored, so it is not read
+    again (#377): it passes through as a refresh, its stored description kept,
+    and the daily allowance goes on postings not seen before. After
+    ``STOP_AFTER_REFUSALS`` refusals in a row the allowance is spent, and every
+    posting still unread counts ``not_read_refused`` instead of a call."""
     # Each posting id's one read: its detail document when it succeeded, else None.
     details: dict[str, dict[str, object] | None] = {}
     updated: list[Sighting] = []
     reads = failures = 0
     reasons: Counter[str] = Counter()
     cut = False
+    skipped_known = refusals = 0
     terminal: UpstreamFailure | None = None
     for sighting in sightings:
         posting = sighting.posting
@@ -388,6 +423,10 @@ def read_details(
             updated.append(sighting)
             continue
         key = posting.posting_id
+        if key in known:
+            skipped_known += 1
+            updated.append(_unread_known(sighting))
+            continue
         if key not in details:
             detail: dict[str, object] | None = None
             reason: str | None = None
@@ -398,6 +437,8 @@ def read_details(
                 reason = NOT_READ_DEADLINE
             elif reads >= max_reads:
                 reason = NOT_READ_CAP
+            elif refusals >= STOP_AFTER_REFUSALS:
+                reason = NOT_READ_REFUSED
             else:
                 try:
                     detail = upstream.find_jobs(
@@ -409,10 +450,16 @@ def read_details(
                 except UpstreamFailure as failure:
                     reads += 1
                     reason = read_failure_reason(failure)
+                    refused = (
+                        failure.code == "tool_error"
+                        and failure.tool_code in REFUSED_TOOL_CODES
+                    )
+                    refusals = refusals + 1 if refused else 0
                     if failure.terminal:
                         terminal = failure
                 else:
                     reads += 1
+                    refusals = 0
             if terminal is not None:
                 raise terminal
             if detail is not None and _described(posting, detail, job_hosts) is None:
@@ -435,4 +482,5 @@ def read_details(
         failures=failures,
         cut=cut,
         reasons=dict(reasons),
+        known=skipped_known,
     )

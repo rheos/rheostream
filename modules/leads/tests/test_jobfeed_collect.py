@@ -16,7 +16,9 @@ import pytest
 from rheo_core.connectors.mcp_client import McpFailure
 from rheo_leads.jobfeed.collect import (
     MAX_DETAIL_READS,
+    NOT_READ_REFUSED,
     ROW_CAP,
+    STOP_AFTER_REFUSALS,
     CollectResult,
     DetailResult,
     Sighting,
@@ -143,6 +145,7 @@ class Run:
         *,
         deadline: float = START + 10_000.0,
         max_reads: int = MAX_DETAIL_READS,
+        known: frozenset[str] = frozenset(),
     ) -> DetailResult:
         return read_details(
             self.upstream,
@@ -151,6 +154,7 @@ class Run:
             HOSTS,
             deadline=deadline,
             max_reads=max_reads,
+            known=known,
         )
 
 
@@ -877,3 +881,72 @@ def test_a_listing_with_more_pages_says_so() -> None:
     page_one = invitations_page(invite_row(2501), hasMore=True)
     assert invites(run(listing(page_one))).more
     assert not invites(run(listing(invitations_page(invite_row(2502))))).more
+
+
+# --- the daily allowance of detail reads (#377) -----------------------------------
+
+
+def test_a_posting_whose_description_is_stored_is_not_read_again() -> None:
+    r = run(details_answer())
+    seen, fresh = posting(2001, ordinal=0, at=0), posting(2002, ordinal=0, at=0)
+    result = r.details(sightings(seen, fresh), known=frozenset({seen.posting_id}))
+    # Only the posting never read before costs a read.
+    assert r.session.calls == [("get", {"id": "2002"})]
+    kept, read = result.sightings
+    # Passed through with no failure and no downgrade, but without the client
+    # figures only a detail read supplies: the stored ones stand downstream, as
+    # does the stored description (a sighting without a read carries none).
+    assert not kept.detail_ok
+    assert kept.posting.purpose == seen.purpose
+    assert kept.posting.proposal_count == seen.proposal_count
+    assert (
+        kept.posting.client_spend,
+        kept.posting.client_rating,
+        kept.posting.client_reviews,
+        kept.posting.client_hire_rate,
+    ) == (None, None, None, None)
+    assert read.detail_ok
+    assert (result.detail_reads, result.failures, result.known) == (1, 0, 1)
+    assert result.reasons == {}
+
+
+def refusing(*refused: str) -> Search:
+    def answer(params: dict[str, Any]) -> object:
+        if params["id"] in refused:
+            return McpFailure("tool_error", tool_code="PERMISSION")
+        return detail_ok(params)
+
+    return details_answer(answer)
+
+
+def test_repeated_refusals_stop_the_reads_for_the_rest_of_the_run() -> None:
+    numbers = range(2101, 2101 + STOP_AFTER_REFUSALS + 3)
+    r = run(refusing(*(str(n) for n in numbers)))
+    result = r.details(sightings(*(posting(n, ordinal=0, at=0) for n in numbers)))
+    # The allowance is spent: once this many refusals come in a row, the rest are
+    # not asked for at all.
+    assert len(r.session.calls) == STOP_AFTER_REFUSALS
+    assert result.detail_reads == STOP_AFTER_REFUSALS
+    assert result.failures == len(numbers)
+    assert result.reasons == {
+        "tool_error:PERMISSION": STOP_AFTER_REFUSALS,
+        NOT_READ_REFUSED: 3,
+    }
+
+
+def test_a_read_that_succeeds_resets_the_refusal_count() -> None:
+    # Single private jobs are refused too; they never add up to a stop.
+    numbers = list(range(2201, 2201 + 2 * STOP_AFTER_REFUSALS))
+    refused = [str(n) for n in numbers if n % 2]
+    r = run(refusing(*refused))
+    result = r.details(sightings(*(posting(n, ordinal=0, at=0) for n in numbers)))
+    assert len(r.session.calls) == len(numbers)
+    assert NOT_READ_REFUSED not in result.reasons
+
+
+def test_other_failures_do_not_count_toward_the_stop() -> None:
+    numbers = range(2301, 2301 + STOP_AFTER_REFUSALS + 2)
+    r = run(details_answer(lambda p: McpFailure("tool_error", tool_code="UPSTREAM")))
+    result = r.details(sightings(*(posting(n, ordinal=0, at=0) for n in numbers)))
+    assert len(r.session.calls) == len(numbers)
+    assert NOT_READ_REFUSED not in result.reasons

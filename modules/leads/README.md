@@ -182,7 +182,10 @@ can replace those three with their own list, keyword searches included, through 
 workspace setting `leads.jobfeed.presets` (see the deployment guide's
 [settings](../../deploy/README.md#settings) for its shape and bounds). A posting
 with 50 or fewer proposals that you have not applied to is a discovery: the collector
-reads its full description and delivers it, and routing either attaches it to the
+reads its full description and delivers it (once: a posting whose description is
+already stored is not read again, since the job service allows each account only so
+many detail reads a day, about 400 in November 2026, and a run stops reading after
+five refusals in a row), and routing either attaches it to the
 opportunity that already holds that posting id or creates a new one. A posting no
 opportunity tracks is otherwise skipped. Each run also lists the jobs clients have
 invited you to: an invited job is always read and delivered, whatever its
