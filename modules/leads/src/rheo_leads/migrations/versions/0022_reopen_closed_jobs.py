@@ -7,14 +7,14 @@ requirements, fields, rubric, template) plus a move from each closed stage back 
 every open stage that can close into it, so an undo returns a job to the stage it
 left: ``passed`` to review and qualified, ``lost`` to review, qualified, applied and
 interviewing. ``hired`` stays final. The preset's current version moves to it, and
-every opportunity on the old current version moves with it, as 0018 did. The new
+every opportunity on the old current version moves with it, as 0021 did. The new
 version is a strict superset with the same stages and outcomes, so each opportunity
 keeps its stage, its field states and its disposition. A reopen is an ordinary
 transition into an open stage, which clears the disposition and is audited and
 revision-checked like any other move.
 
 Nothing is deleted or rewritten in place; a workspace whose current version already
-has both moves is left alone.
+has all six moves is left alone.
 """
 
 from alembic import op

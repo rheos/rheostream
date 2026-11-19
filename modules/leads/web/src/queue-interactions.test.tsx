@@ -315,4 +315,29 @@ describe("the Undo for a job dismissed on its page", () => {
     expect(target.searchParams.get("from")).toBe("review");
     expect(replaceState).not.toHaveBeenCalled();
   });
+  it("shows once without a redirect when the server rendered the saved view", () => {
+    const store: Record<string, string> = {
+      [PREFS_KEY]: JSON.stringify({ pipeline: "jobs", stage: "qualified", hideFull: false, sort: "score" }),
+    };
+    vi.spyOn(window, "localStorage", "get").mockReturnValue({
+      getItem: (key: string) => store[key] ?? null,
+      setItem: (key: string, value: string) => void (store[key] = value),
+    } as unknown as Storage);
+    at(`https://leads.example.com/queue?dismissed=92a85&from=review`);
+    mount(vi.fn(), {
+      items: [other],
+      dismissed,
+      explicit: false,
+      serverSaved: true,
+      stages: [
+        { value: "review", label: "Review" },
+        { value: "qualified", label: "Qualified" },
+      ],
+      action: "https://leads.example.com/queue",
+    });
+    expect(host.textContent).toContain("Undo");
+    expect(replace).not.toHaveBeenCalled();
+    expect(replaceState).toHaveBeenCalledTimes(1);
+    expect(replaceState.mock.calls[0]?.slice(1)).toEqual(["", "https://leads.example.com/queue"]);
+  });
 });
