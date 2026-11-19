@@ -31,6 +31,17 @@ TARGET = {
 }
 
 
+def use_leads_manifest(manifest: Any) -> None:
+    """Swap the loaded Leads manifest for the rest of this test.
+
+    Written straight into ``loader._LOADED``, never through ``monkeypatch.setitem``:
+    the ``intake`` fixture clears the table on teardown, and monkeypatch's undo runs
+    after that and would put ``leads`` back without ``relationships``, so a later test
+    in the same process sees a half-loaded deployment (#341).
+    """
+    loader._LOADED["leads"] = manifest
+
+
 def predecessor(i: Intake) -> str:
     setup(i)
     capture(i, "upgrade", {"subject": "Preserved inquiry"})
@@ -98,9 +109,7 @@ def test_failed_health_rolls_back_schema_and_can_retry(
     def fail(_uow: object) -> None:
         raise RuntimeError("synthetic health check failure")
 
-    monkeypatch.setitem(
-        loader._LOADED, "leads", MANIFEST.model_copy(update={"health_checks": (fail,)})
-    )
+    use_leads_manifest(MANIFEST.model_copy(update={"health_checks": (fail,)}))
     assert not upgrade(intake).ok
     with open_unit_of_work(intake.ctx) as uow:
         assert recorded_revisions(uow.connection, "leads") == {"0004_opportunities"}
@@ -114,7 +123,7 @@ def test_failed_health_rolls_back_schema_and_can_retry(
         intake.call("leads.opportunity.get", ref=reference).state
         == "module_unavailable"
     )
-    monkeypatch.setitem(loader._LOADED, "leads", MANIFEST)
+    use_leads_manifest(MANIFEST)
     assert upgrade(intake).ok
     assert one(intake).ref == reference
 
@@ -210,9 +219,7 @@ def test_dependency_and_package_checks_precede_ddl(
     from rheo_core.modules.manifest import Dependency
 
     predecessor(intake)
-    monkeypatch.setitem(
-        loader._LOADED,
-        "leads",
+    use_leads_manifest(
         MANIFEST.model_copy(
             update={
                 "dependencies": (
@@ -222,15 +229,11 @@ def test_dependency_and_package_checks_precede_ddl(
         ),
     )
     assert upgrade(intake).state == "dependency_version"
-    monkeypatch.setitem(
-        loader._LOADED,
-        "leads",
+    use_leads_manifest(
         MANIFEST.model_copy(update={"package_version": "0.0.1"}),
     )
     assert upgrade(intake, target_version="0.0.1").state == "downgrade_refused"
-    monkeypatch.setitem(
-        loader._LOADED,
-        "leads",
+    use_leads_manifest(
         MANIFEST.model_copy(update={"package_version": "0.2.0"}),
     )
     assert upgrade(intake, target_version="0.2.0").ok
@@ -282,9 +285,7 @@ def test_missing_extension_refuses_before_ddl(
     intake: Intake, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     predecessor(intake)
-    monkeypatch.setitem(
-        loader._LOADED,
-        "leads",
+    use_leads_manifest(
         MANIFEST.model_copy(
             update={
                 "storage": MANIFEST.storage.model_copy(
