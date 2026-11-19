@@ -6,6 +6,7 @@ at head, a dismissed job is reopened through the ordinary transition operation, 
 the queue says where an undo goes.
 """
 
+from datetime import date, timedelta
 from typing import Any
 
 import pytest
@@ -17,6 +18,7 @@ from rheo_leads.storage import pipeline as p
 from sqlalchemy import Connection, delete, select
 
 from postgres.test_invited_jobs_migration import preset_rows, rows
+from postgres.test_leads_followups import schedule
 from postgres.test_leads_intake import Intake
 from postgres.test_leads_intake import intake as intake
 from postgres.test_leads_pipeline import capture, ok, rewind_leads, setup
@@ -255,3 +257,121 @@ def test_preset_edit_accepts_a_reopen_and_refuses_closed_to_closed(
         stages=stages,
         transitions=[*moves, (closed[0], entry)],
     )
+
+
+def test_a_reopen_restores_only_the_follow_up_its_dismiss_cancelled(
+    intake: Intake,
+) -> None:
+    """#464: Undo after Dismiss brings back the follow-up the dismiss cancelled,
+    as a new pending row with the same action and due date; the cancelled row
+    stays as history, and a follow-up cancelled by an earlier close stays
+    cancelled."""
+    setup(intake)
+    job_pipeline(intake)
+    capture(intake, "a", {"subject": "Example posting"})
+    card = cards(intake)["Example posting"]
+    record = ok(intake, "opportunity.get", ref=card["ref"])
+    record = schedule(intake, record, "Send the draft", "2026-12-01")
+    first = record.data["followup"]
+
+    closed = move(intake, {**card, "revision": record.revision}, "passed")
+    assert closed.ok, closed
+    closed = ok(intake, "opportunity.get", ref=card["ref"])
+    assert closed.data["followup"] is None
+    assert closed.data["followup_history"][0]["state"] == "cancelled"
+
+    reopened = move(intake, {**card, "revision": closed.revision}, "review")
+    assert reopened.ok, reopened
+    after = ok(intake, "opportunity.get", ref=card["ref"])
+    back = after.data["followup"]
+    assert back is not None and back["id"] != first["id"]
+    assert (back["action"], back["due_on"]) == ("Send the draft", date(2026, 12, 1))
+    assert back["state"] == "pending"
+    assert [h["state"] for h in after.data["followup_history"]] == ["cancelled"]
+
+    # Done with it, then dismissed again with nothing pending: the next reopen
+    # brings nothing back, not the follow-up the first dismiss cancelled.
+    done = ok(
+        intake,
+        "followup.resolve",
+        ref=card["ref"],
+        revision=after.revision,
+        reminder_id=str(back["id"]),
+        outcome="completed",
+    )
+    again = move(intake, {**card, "revision": done.revision}, "passed")
+    assert again.ok, again
+    again = ok(intake, "opportunity.get", ref=card["ref"])
+    final = move(intake, {**card, "revision": again.revision}, "review")
+    assert final.ok, final
+    final = ok(intake, "opportunity.get", ref=card["ref"])
+    assert final.data["followup"] is None
+    assert sorted(h["state"] for h in final.data["followup_history"]) == [
+        "cancelled",
+        "completed",
+    ]
+
+
+def test_a_reopen_without_a_cancelled_follow_up_schedules_none(
+    intake: Intake,
+) -> None:
+    setup(intake)
+    job_pipeline(intake)
+    capture(intake, "a", {"subject": "Example posting"})
+    card = cards(intake)["Example posting"]
+    closed = move(intake, card, "passed")
+    assert closed.ok, closed
+    closed = ok(intake, "opportunity.get", ref=card["ref"])
+    assert move(intake, {**card, "revision": closed.revision}, "review").ok
+    after = ok(intake, "opportunity.get", ref=card["ref"])
+    assert after.data["followup"] is None and after.data["followup_history"] == []
+
+
+def test_a_second_close_and_reopen_restores_its_own_follow_up(intake: Intake) -> None:
+    """Close, reopen, close, reopen: each reopen brings back what its own close
+    cancelled. The first close here is shaped like one from before #464, when the
+    follow-up was resolved a few microseconds after the job closed."""
+    setup(intake)
+    job_pipeline(intake)
+    capture(intake, "a", {"subject": "Example posting"})
+    card = cards(intake)["Example posting"]
+
+    def get() -> Any:
+        return ok(intake, "opportunity.get", ref=card["ref"])
+
+    record = schedule(intake, get(), "First action", "2026-12-01")
+    assert move(intake, {**card, "revision": record.revision}, "passed").ok
+    with open_unit_of_work(intake.ctx) as uow:
+        uow.connection.execute(
+            p.followup_reminder.update()
+            .where(p.followup_reminder.c.opportunity_id == card["id"])
+            .values(
+                resolved_at=p.followup_reminder.c.resolved_at
+                + timedelta(microseconds=7)
+            )
+        )
+        uow.commit()
+    assert move(intake, {**card, "revision": get().revision}, "review").ok
+    assert get().data["followup"]["action"] == "First action"
+
+    record = schedule(intake, get(), "Second action", "2026-12-08")
+    assert move(intake, {**card, "revision": record.revision}, "passed").ok
+    assert get().data["followup"] is None
+    assert move(intake, {**card, "revision": get().revision}, "review").ok
+    after = get()
+    assert (after.data["followup"]["action"], after.data["followup"]["due_on"]) == (
+        "Second action",
+        date(2026, 12, 8),
+    )
+    with open_unit_of_work(intake.ctx) as uow:
+        pending = (
+            uow.connection.execute(
+                select(p.followup_reminder.c.action).where(
+                    p.followup_reminder.c.opportunity_id == card["id"],
+                    p.followup_reminder.c.state == "pending",
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert pending == ["Second action"]

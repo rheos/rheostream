@@ -803,13 +803,14 @@ export function JobQueue(props: QueueProps) {
     undoing.current.delete(id);
     if (outcome.state === "ok") {
       const revision = row(outcome.result).revision;
-      // The dismiss cancelled any pending follow-up; a reopen brings none back.
+      // The reopen brings back the follow-up the dismiss cancelled (#464), which
+      // is the one this card still shows.
       setItems((current) =>
         (dismissal.to.stage_id === str(item.stage_id)
           ? current
           : afterMove(current, id, dismissal.to, props.stage)
         ).map((each) =>
-          str(each.id) === id ? { ...each, revision, followup: null } : each,
+          str(each.id) === id ? { ...each, revision, followup: item.followup } : each,
         ),
       );
       setDismissals((current) =>
