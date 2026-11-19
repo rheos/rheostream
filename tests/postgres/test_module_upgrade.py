@@ -38,7 +38,12 @@ def use_leads_manifest(manifest: Any) -> None:
     the ``intake`` fixture clears the table on teardown, and monkeypatch's undo runs
     after that and would put ``leads`` back without ``relationships``, so a later test
     in the same process sees a half-loaded deployment (#341).
+
+    Only for tests that take ``intake``: its teardown is what clears the swap.
     """
+    assert "relationships" in loader._LOADED, (
+        "use_leads_manifest needs the intake fixture"
+    )
     loader._LOADED["leads"] = manifest
 
 
@@ -101,9 +106,7 @@ def test_upgrade_unblocks_existing_records_and_retry_is_noop(intake: Intake) -> 
         assert len(versions) == 1
 
 
-def test_failed_health_rolls_back_schema_and_can_retry(
-    intake: Intake, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_failed_health_rolls_back_schema_and_can_retry(intake: Intake) -> None:
     reference = predecessor(intake)
 
     def fail(_uow: object) -> None:
@@ -213,9 +216,7 @@ def test_operator_cli_reports_mismatch_and_upgrade_result(
     )
 
 
-def test_dependency_and_package_checks_precede_ddl(
-    intake: Intake, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_dependency_and_package_checks_precede_ddl(intake: Intake) -> None:
     from rheo_core.modules.manifest import Dependency
 
     predecessor(intake)
@@ -281,9 +282,7 @@ def test_dependency_schema_mismatch_refuses_dependent_execution(intake: Intake) 
     assert upgrade(intake).state == "dependency_unavailable"
 
 
-def test_missing_extension_refuses_before_ddl(
-    intake: Intake, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_missing_extension_refuses_before_ddl(intake: Intake) -> None:
     predecessor(intake)
     use_leads_manifest(
         MANIFEST.model_copy(
