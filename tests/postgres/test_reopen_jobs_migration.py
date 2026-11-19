@@ -6,7 +6,7 @@ at head, a dismissed job is reopened through the ordinary transition operation, 
 the queue says where an undo goes.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import pytest
@@ -325,3 +325,53 @@ def test_a_reopen_without_a_cancelled_follow_up_schedules_none(
     assert move(intake, {**card, "revision": closed.revision}, "review").ok
     after = ok(intake, "opportunity.get", ref=card["ref"])
     assert after.data["followup"] is None and after.data["followup_history"] == []
+
+
+def test_a_second_close_and_reopen_restores_its_own_follow_up(intake: Intake) -> None:
+    """Close, reopen, close, reopen: each reopen brings back what its own close
+    cancelled. The first close here is shaped like one from before #464, when the
+    follow-up was resolved a few microseconds after the job closed."""
+    setup(intake)
+    job_pipeline(intake)
+    capture(intake, "a", {"subject": "Example posting"})
+    card = cards(intake)["Example posting"]
+
+    def get() -> Any:
+        return ok(intake, "opportunity.get", ref=card["ref"])
+
+    record = schedule(intake, get(), "First action", "2026-12-01")
+    assert move(intake, {**card, "revision": record.revision}, "passed").ok
+    with open_unit_of_work(intake.ctx) as uow:
+        uow.connection.execute(
+            p.followup_reminder.update()
+            .where(p.followup_reminder.c.opportunity_id == card["id"])
+            .values(
+                resolved_at=p.followup_reminder.c.resolved_at
+                + timedelta(microseconds=7)
+            )
+        )
+        uow.commit()
+    assert move(intake, {**card, "revision": get().revision}, "review").ok
+    assert get().data["followup"]["action"] == "First action"
+
+    record = schedule(intake, get(), "Second action", "2026-12-08")
+    assert move(intake, {**card, "revision": record.revision}, "passed").ok
+    assert get().data["followup"] is None
+    assert move(intake, {**card, "revision": get().revision}, "review").ok
+    after = get()
+    assert (after.data["followup"]["action"], after.data["followup"]["due_on"]) == (
+        "Second action",
+        date(2026, 12, 8),
+    )
+    with open_unit_of_work(intake.ctx) as uow:
+        pending = (
+            uow.connection.execute(
+                select(p.followup_reminder.c.action).where(
+                    p.followup_reminder.c.opportunity_id == card["id"],
+                    p.followup_reminder.c.state == "pending",
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert pending == ["Second action"]
