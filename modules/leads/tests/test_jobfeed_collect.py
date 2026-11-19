@@ -143,6 +143,7 @@ class Run:
         *,
         deadline: float = START + 10_000.0,
         max_reads: int = MAX_DETAIL_READS,
+        known: frozenset[str] = frozenset(),
     ) -> DetailResult:
         return read_details(
             self.upstream,
@@ -151,6 +152,7 @@ class Run:
             HOSTS,
             deadline=deadline,
             max_reads=max_reads,
+            known=known,
         )
 
 
@@ -877,3 +879,49 @@ def test_a_listing_with_more_pages_says_so() -> None:
     page_one = invitations_page(invite_row(2501), hasMore=True)
     assert invites(run(listing(page_one))).more
     assert not invites(run(listing(invitations_page(invite_row(2502))))).more
+
+
+# --- the daily allowance of detail reads (#377) -----------------------------------
+
+
+def test_a_posting_whose_description_is_stored_is_not_read_again() -> None:
+    r = run(details_answer())
+    seen, fresh = posting(2001, ordinal=0, at=0), posting(2002, ordinal=0, at=0)
+    result = r.details(sightings(seen, fresh), known=frozenset({seen.posting_id}))
+    # Only the posting never read before costs a read.
+    assert r.session.calls == [("get", {"id": "2002"})]
+    kept, read = result.sightings
+    # Passed through with no failure and no downgrade, but without the client
+    # figures only a detail read supplies: the stored ones stand downstream, as
+    # does the stored description (a sighting without a read carries none).
+    assert not kept.detail_ok
+    assert kept.posting.purpose == seen.purpose
+    assert kept.posting.proposal_count == seen.proposal_count
+    assert (
+        kept.posting.client_spend,
+        kept.posting.client_rating,
+        kept.posting.client_reviews,
+        kept.posting.client_hire_rate,
+    ) == (None, None, None, None)
+    assert read.detail_ok
+    assert (result.detail_reads, result.failures, result.known) == (1, 0, 1)
+    assert result.reasons == {}
+
+
+def test_a_known_posting_never_carries_feed_client_figures_eligible_or_not() -> None:
+    """Over the cap, applied to, or seen only by the refresh search, a known
+    posting is not read and keeps its stored detail figures too: the feed row's
+    own figures would overwrite them, and nothing would read them back."""
+    r = run(details_answer())
+    over = posting(2401, ordinal=0, at=0, proposals_tier="50+")
+    refresh = posting(2402, ordinal=0, at=0, purpose="refresh_only")
+    result = r.details(
+        sightings(over, refresh),
+        known=frozenset({over.posting_id, refresh.posting_id}),
+    )
+    assert r.session.calls == []
+    for kept in result.sightings:
+        assert (kept.posting.client_spend, kept.posting.client_rating) == (None, None)
+        assert kept.posting.client_reviews is None
+    # Neither was eligible for a read, so neither counts as a read saved.
+    assert (result.detail_reads, result.failures, result.known) == (0, 0, 0)
