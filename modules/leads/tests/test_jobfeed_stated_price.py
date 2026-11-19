@@ -89,6 +89,20 @@ def price(low: str, high: str | None = None, unit: str | None = None) -> StatedP
         ("We will hire you for $500 fixed.", price("500", unit="total")),
         (f"Rate {PER_HOUR} $40", price("40", unit="hour")),
         ("Rate per month $500", price("500")),
+        # From the first live run (#611): one of a thing is a per-item price.
+        ("Paid test: $10 for 1 video, then ongoing work.", price("10", unit="item")),
+        ("We pay $25 for each clip", price("25", unit="item")),
+        ("$40 for 1 hour of consulting", price("40", unit="hour")),
+        ("$1,000 for 1 month of edits", price("1000")),
+        ("$500 for a landing page", price("500")),
+        # A price in the brief loses to the job's own, and an article before an
+        # amount does not hide the pay when a pay word is in reach.
+        (
+            "Our hero buys a $70 hoodie in episode one. Budget: $400.",
+            price("400", unit="total"),
+        ),
+        ("We pay a $300 flat fee.", price("300", unit="total")),
+        ("Offering a $200 bonus on delivery", price("200")),
         # The provider's wrapper around the text is no obstacle.
         (
             f"<untrusted_participant_content>Pay $40 {AN_HOUR}"
@@ -118,6 +132,9 @@ def test_a_stated_amount_is_read_with_its_unit(
         "We did $1,000,000 in sales last year.",
         f"Client history: $8.4K total spent, $32.50{HR} avg hourly rate paid.",
         "Run awk '{print $1}' over the log.",
+        # A price inside the creative brief is not the job's pay (#611).
+        "Claymation short: a $70 hoodie ends up costing our hero far more.",
+        "She cancels the $20 plan and keeps the old phone.",
     ],
 )
 def test_no_amount_is_inferred_from_silence(text: str | None) -> None:
