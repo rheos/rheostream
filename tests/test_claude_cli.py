@@ -223,7 +223,16 @@ def _fill_seed(path: Path, *, marker: str = "seed-login") -> Path:
     return path
 
 
-def drain_until_terminal(handle: object, *, timeout: float = 2.0) -> object:
+# How long a helper waits for the stub to reach its terminal event. The stubs answer in
+# milliseconds and the helpers return as soon as they do, so a generous bound costs a
+# passing test nothing; a 2 s bound failed under load (#512). ``poll`` itself blocks up
+# to ``POLL_WAIT_SECONDS`` between events, so the loops do not spin.
+TERMINAL_WAIT_SECONDS = 30.0
+
+
+def drain_until_terminal(
+    handle: object, *, timeout: float = TERMINAL_WAIT_SECONDS
+) -> object:
     deadline = time.monotonic() + timeout
     last = None
     while time.monotonic() < deadline:
@@ -1035,7 +1044,9 @@ def test_structured_output_match_emits_final_output(
     assert event.structured == {"ok": True}
 
 
-def _events_until_terminal(handle: object, *, timeout: float = 2.0) -> list[object]:
+def _events_until_terminal(
+    handle: object, *, timeout: float = TERMINAL_WAIT_SECONDS
+) -> list[object]:
     """Every event up to and including the terminal one, in order."""
     deadline = time.monotonic() + timeout
     events: list[object] = []
