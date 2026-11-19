@@ -106,5 +106,6 @@ def test_refusal_lists_errors_in_sorted_order() -> None:
         parse_history_extract([header, json.dumps(unit)])
     # pydantic reports the fields in declaration order: external_source_key first.
     assert str(error.value) == (
-        "history_extract_invalid: line 2: body=value_error, external_source_key=value_error"
+        "history_extract_invalid: line 2: "
+        "body=value_error, external_source_key=value_error"
     )
