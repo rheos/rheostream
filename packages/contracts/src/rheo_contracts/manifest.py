@@ -304,7 +304,7 @@ class ToolDeclaration(BaseModel):
 
     ``rheo_core.operations.tool_facade.call_registered_tool`` validates a tool
     call against this model, rejecting every argument name it does not declare,
-    and dispatches the validated dump; the operation's own declared input model
+    and dispatches the fields the caller set; the operation's own declared input model
     is then validated a second time by ``dispatch``. Two models rather than one
     because a tool may legitimately restrict its operation — ``recallatron_forget``
     names a deletion operation that accepts any record reference and accepts only

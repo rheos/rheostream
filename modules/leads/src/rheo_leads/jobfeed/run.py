@@ -107,7 +107,7 @@ from rheo_leads.jobfeed.collect import (
     read_failure_reason,
     saved_reason,
 )
-from rheo_leads.jobfeed.delivery import deliver
+from rheo_leads.jobfeed.delivery import deliver, parse_digests
 from rheo_leads.jobfeed.normalize import NormalizedPosting
 from rheo_leads.jobfeed.presets import (
     DEFAULT_PRESETS,
@@ -302,19 +302,21 @@ def collect_phase(
         return _stopped(limited[0] if limited else failures[0])
     # Invited and saved rows first: merged, they keep their place, so they are read
     # first.
+    merged = merge_sightings(
+        [
+            *invites.rows,
+            *_known_refresh_only(run, saved.rows),
+            *unsaved.rows,
+            *collected.rows,
+        ]
+    )
     details = read_details(
         upstream,
-        merge_sightings(
-            [
-                *invites.rows,
-                *_known_refresh_only(run, saved.rows),
-                *unsaved.rows,
-                *collected.rows,
-            ]
-        ),
+        merged,
         organization_id,
         job_hosts,
         deadline=run.deadline,
+        known=_described_before(run, [s.posting.posting_id for s in merged]),
     )
     reasons = dict(details.reasons)
     if invites.failure is not None:
@@ -394,6 +396,25 @@ def _presets_text(ctx: WorkspaceContext, uow: UnitOfWork) -> str:
         source=TransactionBoundOverrideSource(uow, workspace_id=ctx.workspace_id),
     )
     return settings.get_str(PRESETS_KEY)
+
+
+def _described_before(run: _Run, posting_ids: Sequence[str]) -> frozenset[str]:
+    """The postings whose description this connection already delivered, read in a
+    short unit of its own. They are not read again (#377): the job service allows
+    each account only so many detail reads a day, and re-reading the same
+    postings every run spent it by mid-morning."""
+    with open_unit_of_work(run.job_ctx) as short:
+        stored = read_postings(
+            short,
+            connection_id=run.connection.connection_id,
+            posting_ids=posting_ids,
+        )
+        short.commit()
+    return frozenset(
+        posting_id
+        for posting_id, row in stored.items()
+        if "description" in parse_digests(row.field_digests)
+    )
 
 
 def _capability_on(ctx: WorkspaceContext) -> bool:

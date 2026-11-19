@@ -156,6 +156,9 @@ MANIFEST = ModuleManifest(
             "person.phone and organization.name. "
             "Do not infer consent or verified identity. "
             "To add only a contact, use relationships_create_contact instead. "
+            "Pass source_event_id (such as a mail message id) when the same event "
+            "may be captured again: a repeat id records nothing and returns "
+            "outcome duplicate with the first capture's receipt_ref. "
             "A funnel is required; "
             "missing or malformed arguments return input_invalid, "
             "unavailable attribution returns not_found, "
@@ -177,6 +180,9 @@ MANIFEST = ModuleManifest(
                     f"{RELATIONSHIPS}.party.resolve_or_create",
                     "leads.opportunity.create_from_observation",
                     "leads.opportunity.attach_observation",
+                    # The first follow-up, when leads.intake.followup_business_days
+                    # asks for one (pipeline_intake._first_followup).
+                    "leads.followup.schedule",
                 }
             ),
         ),
@@ -264,7 +270,7 @@ MANIFEST = ModuleManifest(
         ),
     ),
     export=ExportDeclaration(
-        format_version=15,
+        format_version=17,
         schema_path="export.schema.json",
         exporter=export_records,
         importer=import_records,

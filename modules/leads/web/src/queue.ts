@@ -53,10 +53,29 @@ const dollars = (n: number) =>
 export function formatBudget(fields: Row): string {
   const min = amount(fields.budget_min);
   const max = amount(fields.budget_max);
-  if (!min && !max) return "No budget listed";
+  if (!min && !max) return formatStated(fields) ?? "No budget listed";
   const rate = str(fields.job_type) === "hourly" ? "/hr" : "";
   if (min && max && min !== max) return `${dollars(min)} - ${dollars(max)}${rate}`;
   return `${dollars((min || max) as number)}${rate}`;
+}
+
+const STATED_UNITS: Record<string, string> = {
+  hour: "/hr",
+  item: " each",
+  total: " total",
+};
+
+/** A price the posting text states, read when the feed gave no budget (#503),
+ * with its unit (per hour, each, or total) and "(in the text)" after it.
+ * Nothing without one. */
+export function formatStated(fields: Row): string | null {
+  const min = amount(fields.stated_price_min);
+  if (!min) return null;
+  const max = amount(fields.stated_price_max);
+  const unit = STATED_UNITS[str(fields.stated_price_unit)] ?? "";
+  const price =
+    max && max !== min ? `${dollars(min)} - ${dollars(max)}` : dollars(min);
+  return `${price}${unit} (in the text)`;
 }
 
 /** "$12,400 spent", or nothing when the spend is unknown or zero. */
@@ -267,6 +286,29 @@ export const DEFAULT_PREFS: Prefs = {
 };
 export const PREFS_KEY = "rheo.leads.queue.v1";
 
+/** The preference the saved view is also kept under as a cookie, so the
+ * server's first render is already the saved view (#369). */
+export const QUEUE_PREFERENCE = "queue";
+/** Saved choices as the queue URL's parameters, the way the controls submit
+ * them; "" values fall back to the defaults when the server checks them. */
+export function prefsQuery(prefs: Prefs): Record<string, string> {
+  return {
+    pipeline: prefs.pipeline,
+    stage: prefs.stage,
+    full: prefs.hideFull ? "hide" : "show",
+    sort: prefs.sort,
+  };
+}
+/** A preference cookie's text, whether or not the host already decoded it. */
+export function cookieText(value: string): string {
+  if (value.startsWith("{")) return value;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 type Store = Pick<Storage, "getItem" | "setItem">;
 /** Saved preferences (JSON text) merged over the defaults; any unreadable part
  * is ignored. */
@@ -361,6 +403,40 @@ export function afterDismiss(items: Row[], id: string, stage: string): Row[] {
     { stage_id: str(to.stage_id), label: str(to.label), kind: "terminal" },
     stage,
   );
+}
+
+/** Where a dismiss can be undone to: the open stage the server named for the
+ * card's dismiss, when ``to`` is that dismiss. Null for any other move, or when
+ * the closed stage has no way back. */
+export function undoFor(item: Row, to: StageMove): StageMove | null {
+  const dismiss = row(item.dismiss);
+  const undo = row(dismiss.undo);
+  if (to.kind !== "terminal" || to.stage_id !== str(dismiss.stage_id)) return null;
+  if (!str(undo.stage_id)) return null;
+  return { stage_id: str(undo.stage_id), label: str(undo.label), kind: "open" };
+}
+
+/** A closed card's way back: its first open next stage, or null while it is open
+ * or has none. */
+export function reopenFor(item: Row): StageMove | null {
+  return str(item.stage_kind) === "terminal" ? undoTarget(item, "") : null;
+}
+
+/** The queue's query names a job just dismissed from its page, and the stage it
+ * left, so the queue can offer Undo. */
+export const DISMISSED_PARAMS = ["dismissed", "from"] as const;
+export function dismissedHref(back: string, ref: string, from: string): string {
+  const query = new URLSearchParams({ dismissed: ref, from }).toString();
+  return `${back}${back.includes("?") ? "&" : "?"}${query}`;
+}
+/** Of a dismissed job's moves, the one an undo takes: back to the stage it left
+ * when allowed, else its first open one. */
+export function undoTarget(item: Row, from: string): StageMove | null {
+  const open = rows(item.transitions).filter((m) => str(m.kind) === "open");
+  const to = open.find((m) => str(m.stage_id) === from) ?? open[0];
+  return to
+    ? { stage_id: str(to.stage_id), label: str(to.label), kind: "open" }
+    : null;
 }
 
 /** A held job's clause, as the review card's badge names it. */

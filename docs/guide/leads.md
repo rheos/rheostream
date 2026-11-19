@@ -36,8 +36,11 @@ project. It might end in a referral, a nurture stage or a closed outcome.
   with an approved snapshot of exactly what goes.
 - Record, withdraw and check contact permission per person, purpose and channel, or
   suppress all contact with someone.
-- Turn on the optional job-search capability: a job feed, scoring against your profile,
-  and application drafts.
+- Turn on the optional job-search capability: a job feed, pasted postings, scoring
+  against your profile, a review queue for held jobs, and application drafts with
+  priced milestones. Leads opens on its job queue.
+- Refer to an opportunity by its short ID, the last 8 characters of its id (longer when
+  two share a tail), in links, screens and tool calls.
 - Do all of it from an agent through the `leads_*` tools, or in the web shell.
 
 ## How it works
@@ -103,8 +106,9 @@ operation with a stage map, and fields the new version dropped stay readable as 
 An assessment records its objective, rubric version, the evidence it read, the opportunity
 revision it read, and four separate dimensions: fit, intent, evidence completeness and
 urgency, each `high`, `medium`, `low` or `needs_information`, with an uncertainty and an
-explanation. There is no combined score. If a model helped, its model id and prompt
-version are recorded. An evidence digest tells the interface when new evidence has
+explanation. There is no combined score, except that job scoring adds a 10 to 100
+score to the assessments it writes ([below](#job-scoring)). If a model helped, its
+model id and prompt version are recorded. An evidence digest tells the interface when new evidence has
 actually arrived, so notes and stage changes never prompt a reassessment. Earlier
 assessments are never replaced.
 
@@ -122,7 +126,9 @@ Current is back. A handoff that failed with no effect can be restaged too, each 
 a new approval; one that succeeded, was refused, was cancelled or has an unknown outcome
 cannot. Leads remembers which Current project the item was filed under, even after the
 item is deleted. Several intentional handoffs from one opportunity are several records.
-There is no `converted` flag.
+There is no `converted` flag. On screen the request form and its history sit in a
+closed "Send to Current" section at the foot of an opportunity's page; job-search
+opportunities do not offer it.
 
 Maintainers can run this journey on a disposable synthetic stack; see
 [the acceptance stack](../testing/leads-current-acceptance.md).
@@ -146,15 +152,72 @@ a conflict with no body, so the erased person's data cannot land a second time.
 
 ### The job-search capability
 
-An owner turns it on per workspace. It adds a job-search preset (review, qualified,
-applied, interviewing, then hired, lost or passed) with sixteen `ext.jobsearch.*` fields,
-so the Leads core gains no job column. A job feed collects postings from a provider's
-remote MCP server every two hours, with the owner's one-time consent, and delivers them
-through ordinary intake. Scoring runs fixed client filters first, then asks a model to
-judge the posting against the owner's profile under a fixed contract whose explanation is
-built only from the evidence it cites. Proposal drafts go through analysis, drafting, an
-accuracy check against the profile and a style pass. None of it sends anything; applying
-is always yours.
+An owner turns it on per workspace (`leads.capabilities.jobsearch`). It adds a
+job-search preset (review, qualified, applied, interviewing, then hired, lost or passed)
+with seventeen `ext.jobsearch.*` fields, such as the posting id and link, budget,
+proposal count, the client's spend, rating and hire rate, and whether the client invited
+you, so the Leads core gains no job column. None of it sends anything; applying is
+always yours.
+
+### The job feed
+
+A job feed collects postings from a provider's remote MCP server every two hours, with
+the owner's one-time consent, and delivers them through ordinary intake. By default a
+run reads best matches, the newest postings, and one page of postings above 50
+proposals to keep tracked jobs current; an owner can replace that list, keyword
+searches included, with the `leads.jobfeed.presets` setting. A posting at or under 50
+proposals that you have not applied to is read in full and delivered; it attaches to
+the opportunity that already holds its posting id, or creates one. A run makes at most
+60 full reads. A posting it could not read (that limit, the run's deadline, or a failed
+read) only refreshes an opportunity that already holds it; a later run that finds it
+again can read it then. Each run also reads one page of your pending invitations. An
+invited job is always delivered, whatever its competition, and is tagged Invited in the
+queue.
+
+A run that finishes or stops leaves one row of counts and fixed failure codes, never a
+posting, in `leads.jobfeed_run`, kept 90 days, so a stretch of failed reads can be
+diagnosed after the worker's logs are gone. A run whose connection was revoked or
+reconnected meanwhile, or that hit an internal error, leaves none. You can also paste a
+copied search page or one full posting (`leads.jobfeed.paste`); it converges on the same
+opportunity the feed made.
+
+### Job scoring
+
+Scoring starts once an owner sets the job-search profile (`leads.jobprofile.set`): the
+candidate's evidence and a scoring policy, kept as the workspace's own data. A sweep
+every 30 minutes, and after each delivery, works in up to three steps:
+
+1. Tier 1 applies fixed client filters (verified payment, spend, rating, hire rate, at
+   most 50 proposals). An unknown value never fails a clause. A job it holds gets fit
+   `low` with the failing clauses and no score.
+2. An optional pre-filter, off unless both the operator and the workspace owner turn it
+   on, asks Jev typed questions about the posting and holds a job only when its
+   confident estimate falls below the workspace threshold (50 by default). A provider
+   failure falls through to the next step. Invited and promoted jobs skip it.
+3. Tier 2 asks a model, with no tools, to judge the posting against the profile under a
+   fixed contract whose explanation is built only from the evidence it cites. It
+   answers 1 to 10 and the stored score is ten times that, so scores run 10 to 100.
+
+Held jobs appear in Leads > Review queue with a badge for each clause that held them.
+An owner can promote one (`leads.jobreview.promote`): the override is its own row, and
+the next sweep scores the job like one that passed. Leads > Scoring shows what scoring
+is doing: whether a call is running or paused on a usage limit, the queue, recent
+imports by stage, the job feed's last runs, and a log of every model call with its
+tokens, time and outcome but no text and no cost figure. From there an owner can end a
+usage-limit wait early (`leads.jobscoring.retry_waiting`, attempts unchanged) or put
+failed jobs back in line (`leads.jobscoring.retry_failed`).
+
+### Proposals and pricing
+
+With a proposal profile set (`leads.proposalprofile.set`), `leads.jobproposal.request`
+queues a draft cover letter, by default one letter that answers every screening
+question. A worker drafts it in four stages: analysis, drafting, an accuracy check
+against the profile with one corrective redraft, and a style pass. With a pricing
+section in the policy, `leads.jobpricing.request` turns the posting into priced
+milestones at your day rate, never from the client's budget, or says the posting is too
+vague to price. You edit sections, keep reusable answers in an answer library, and
+reach the same operations from an agent through the ten `leads_*` proposal tools. The
+profiles themselves stay off MCP.
 
 ## Why it's built this way
 
@@ -179,12 +242,21 @@ derivation shows which source won while keeping your own edits on top.
   [pipeline service](../../modules/leads/src/rheo_leads/pipeline_service.py),
   [contact permission](../../modules/leads/src/rheo_leads/permissions.py),
   [job feed](../../modules/leads/src/rheo_leads/jobfeed),
+  [job paste](../../modules/leads/src/rheo_leads/jobpaste),
   [scoring](../../modules/leads/src/rheo_leads/scoring),
+  [proposals](../../modules/leads/src/rheo_leads/proposals),
+  [short IDs](../../modules/leads/src/rheo_leads/short_ids.py),
+  [Jev setup](../../runtimes/README.md#jev-typed-judgments),
   [screens](../../modules/leads/web)
 - Tests: [intake](../../tests/postgres/test_leads_intake.py),
   [website intake](../../tests/postgres/test_website_intake.py),
   [pipelines](../../tests/postgres/test_leads_pipeline.py),
   [follow-ups](../../tests/postgres/test_leads_followups.py),
   [job scoring](../../tests/postgres/test_job_scoring.py),
+  [pre-filter](../../tests/postgres/test_job_prefilter.py),
+  [review queue](../../tests/postgres/test_job_review.py),
+  [proposals](../../tests/postgres/test_job_proposals.py),
   [job feed delivery](../../tests/postgres/test_jobfeed_delivery.py),
+  [job feed runs](../../tests/postgres/test_jobfeed_run.py),
+  [Current handoff](../../tests/postgres/test_leads_current_handoff.py),
   [module tests](../../modules/leads/tests)

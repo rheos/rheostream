@@ -421,8 +421,9 @@ def test_close_by_source_is_a_member_mutate_with_its_tool() -> None:
 
 
 def test_only_create_update_and_set_status_admit_the_service_role_to_write() -> None:
-    """A module job files and moves its own reminder items in-process with a
-    restricted service context; no other Current write is open to a service."""
+    """A module job writes items in-process with a restricted service context whose
+    operation set is the only bound, so it can write any Current item; no other
+    Current write is open to a service."""
     service_writes = {
         d.name
         for d, _ in OPERATIONS

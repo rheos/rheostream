@@ -364,6 +364,12 @@ TOOLS = tuple(
                 else ""
             )
             + (
+                " Fields left out keep their value. To clear the value, send "
+                "value_amount, value_currency and value_basis as null together."
+                if name == "opportunity.update"
+                else ""
+            )
+            + (
                 " followup_due_by is an inclusive YYYY-MM-DD cutoff for pending "
                 "reminders, ordered earliest due first; omit it for all opportunities."
                 if name in {"opportunity.list", "opportunity.search"}

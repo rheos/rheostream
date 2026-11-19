@@ -1,8 +1,10 @@
 # Architecture tour
 
 rheoStream keeps workspace records in Postgres and lets web clients and agents
-operate on them through the same service boundary. The core, Recallatron,
-Relationships, Leads and Current are implemented; Current has no screens yet. See the
+operate on them through the same service boundary. The core and five modules are
+implemented: Recallatron, Relationships, Leads, Current and Finance. Recallatron, Leads and
+Current have screens; Relationships and Finance have none of their own. A deployment loads
+only the modules its `modules.installed` setting names. See the
 [README status](../../README.md#status) for the current release position.
 
 This is a route through the code that exists today. The
@@ -20,7 +22,7 @@ Next.js web shell                  Agent / MCP client
                               |                 registry + due index
                   Authorize and dispatch                 ^
                               |                          |
-                   Core / Recallatron handler      Durable worker
+                   Core / module handler           Durable worker
                               |                          |
                               v                          v
                        Workspace database <--------------+
@@ -41,6 +43,9 @@ or client initiated the call.
    checks access and input, then runs the handler inside a workspace transaction.
    A successful mutation and its audit record commit together. Destructive,
    external and financial operations are held for approval before their handlers run.
+   An approved external operation (today only Current's `current.item.create_external`,
+   the Leads handoff) runs as a `core.external_action.execute` job against the
+   destination its module registered.
 4. A long-running operation returns an operation ID. The
    [worker](../../packages/core/src/rheo_core/work/loop.py) leases the persisted
    job and records the terminal outcome when it finishes.

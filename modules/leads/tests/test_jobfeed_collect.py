@@ -146,6 +146,7 @@ class Run:
         *,
         deadline: float = START + 10_000.0,
         max_reads: int = MAX_DETAIL_READS,
+        known: frozenset[str] = frozenset(),
     ) -> DetailResult:
         return read_details(
             self.upstream,
@@ -154,6 +155,7 @@ class Run:
             HOSTS,
             deadline=deadline,
             max_reads=max_reads,
+            known=known,
         )
 
 
@@ -886,13 +888,20 @@ def test_a_listing_with_more_pages_says_so() -> None:
 
 
 def saved_job(number: int, **changes: object) -> dict[str, object]:
-    row: dict[str, object] = {
+    """A row shaped like a live ``find_saved_jobs list`` answer: the saved record's
+    own id outside, the job (its id, URL and content) nested under ``job``."""
+    job: dict[str, object] = {
         "id": str(number),
-        "title": f"Synthetic saved build {number}",
+        "content": {"title": f"Synthetic saved build {number}"},
         "url": f"https://www.example.com/jobs/~02{number}",
     }
-    row.update(changes)
-    return row
+    job.update(changes)
+    return {
+        "followed": True,
+        "id": f"9{number}",
+        "job": job,
+        "lastUpdateTs": "2026-11-18T18:53:24Z",
+    }
 
 
 def saved_listing(
@@ -910,7 +919,10 @@ def saved_listing(
 
 
 def saved_page(*rows: object, more: bool | None = None) -> dict[str, object]:
-    document: dict[str, object] = {"status": "ok", "data": {"saved_jobs": list(rows)}}
+    document: dict[str, object] = {
+        "status": "ok",
+        "data": {"personSavedJobs": list(rows)},
+    }
     if more is not None:
         document["hasMore"] = more
     return document
@@ -967,20 +979,14 @@ def test_has_more_false_ends_the_listing_even_on_a_full_page() -> None:
     assert len(saved(r).rows) == 10 and len(r.session.calls) == 1
 
 
-def test_a_saved_row_nested_like_an_invitation_is_read() -> None:
-    nested = {
-        "savedAt": "2026-11-15T18:00:00Z",
-        "jobPosting": {
-            "id": "3401",
-            "content": {"title": "Synthetic nested build"},
-            "url": "https://www.example.com/jobs/~023401",
-        },
-    }
-    r = run(saved_listing([{"status": "ok", "jobs": [nested]}]))
+def test_a_saved_row_is_read_by_its_jobs_id_not_the_saved_records() -> None:
+    # The saved record's own id ("93401") is not the job's: details are read by the
+    # job's id, and the posting is keyed by the job's URL.
+    r = run(saved_listing([saved_page(saved_job(3401))]))
     (row,) = saved(r).rows
     assert (row.posting_id, row.title, row.feed_id) == (
         "~023401",
-        "Synthetic nested build",
+        "Synthetic saved build 3401",
         "3401",
     )
 
@@ -996,8 +1002,8 @@ def test_an_invalid_saved_row_is_counted_and_skipped() -> None:
 @pytest.mark.parametrize(
     "answer",
     [
-        {"status": "error", "data": {"saved_jobs": []}},
-        {"status": "ok", "data": {"saved_jobs": "nope"}},
+        {"status": "error", "data": {"personSavedJobs": []}},
+        {"status": "ok", "data": {"personSavedJobs": "nope"}},
         {"status": "ok"},
         saved_page(*[saved_job(3600 + n) for n in range(11)]),
     ],
@@ -1065,3 +1071,49 @@ def test_a_saved_discovery_posting_is_read_whatever_its_competition() -> None:
     result = r.details(given)
     assert [params["id"] for _, params in r.session.calls] == ["3901", "3902"]
     assert [s.detail_ok for s in result.sightings] == [True, True, False]
+
+
+# --- the daily allowance of detail reads (#377) -----------------------------------
+
+
+def test_a_posting_whose_description_is_stored_is_not_read_again() -> None:
+    r = run(details_answer())
+    seen, fresh = posting(2001, ordinal=0, at=0), posting(2002, ordinal=0, at=0)
+    result = r.details(sightings(seen, fresh), known=frozenset({seen.posting_id}))
+    # Only the posting never read before costs a read.
+    assert r.session.calls == [("get", {"id": "2002"})]
+    kept, read = result.sightings
+    # Passed through with no failure and no downgrade, but without the client
+    # figures only a detail read supplies: the stored ones stand downstream, as
+    # does the stored description (a sighting without a read carries none).
+    assert not kept.detail_ok
+    assert kept.posting.purpose == seen.purpose
+    assert kept.posting.proposal_count == seen.proposal_count
+    assert (
+        kept.posting.client_spend,
+        kept.posting.client_rating,
+        kept.posting.client_reviews,
+        kept.posting.client_hire_rate,
+    ) == (None, None, None, None)
+    assert read.detail_ok
+    assert (result.detail_reads, result.failures, result.known) == (1, 0, 1)
+    assert result.reasons == {}
+
+
+def test_a_known_posting_never_carries_feed_client_figures_eligible_or_not() -> None:
+    """Over the cap, applied to, or seen only by the refresh search, a known
+    posting is not read and keeps its stored detail figures too: the feed row's
+    own figures would overwrite them, and nothing would read them back."""
+    r = run(details_answer())
+    over = posting(2401, ordinal=0, at=0, proposals_tier="50+")
+    refresh = posting(2402, ordinal=0, at=0, purpose="refresh_only")
+    result = r.details(
+        sightings(over, refresh),
+        known=frozenset({over.posting_id, refresh.posting_id}),
+    )
+    assert r.session.calls == []
+    for kept in result.sightings:
+        assert (kept.posting.client_spend, kept.posting.client_rating) == (None, None)
+        assert kept.posting.client_reviews is None
+    # Neither was eligible for a read, so neither counts as a read saved.
+    assert (result.detail_reads, result.failures, result.known) == (0, 0, 0)

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Final
 
+from rheo_leads.participant_text import unwrapped
 from rheo_leads.scoring.profile import Tier1Policy
 
 EXTENSION: Final = "ext.jobsearch."
@@ -79,7 +80,11 @@ class JobFacts:
         def ext(name: str) -> str | None:
             return fields.get(EXTENSION + name)
 
-        description = fields.get("message")
+        # Without the feed's wrapper tag (#392), which rows stored before it was
+        # dropped at collection still carry. The fingerprint reads the stored text,
+        # so this never makes a scored job look changed.
+        stored = fields.get("message")
+        description = None if stored is None else unwrapped(stored)
         job_type = ext("job_type")
         reviews = _integer(ext("client_reviews"))
         hire_rate = _decimal(ext("client_hire_rate"))

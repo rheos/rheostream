@@ -31,6 +31,8 @@ import {
   sourceLabel,
   stageMatches,
   afterMove,
+  cookieText,
+  prefsQuery,
 } from "./queue";
 import {
   JobHeader,
@@ -186,6 +188,36 @@ describe("proposal bands and money", () => {
     expect(hourly.endsWith(["", "hr"].join("/"))).toBe(true);
     expect(formatBudget({ budget_max: "300" })).toBe("$300");
     expect(formatBudget({})).toBe("No budget listed");
+  });
+  it("shows a price stated in the posting text when there is no budget (#503)", () => {
+    expect(
+      formatBudget({ stated_price_min: "3", stated_price_unit: "item" }),
+    ).toBe("$3 each (in the text)");
+    expect(
+      formatBudget({
+        stated_price_min: "500",
+        stated_price_max: "800",
+        stated_price_unit: "total",
+      }),
+    ).toBe("$500 - $800 total (in the text)");
+    expect(formatBudget({ stated_price_min: "1500" })).toBe(
+      "$1,500 (in the text)",
+    );
+    // Built in two parts so no rate-shaped literal sits in the fixture.
+    const hourly = formatBudget({
+      stated_price_min: "25",
+      stated_price_max: "40",
+      stated_price_unit: "hour",
+    });
+    expect(hourly).toBe(`$25 - $40${["", "hr"].join("/")} (in the text)`);
+    // The feed's budget always wins; the stated price is only a fallback.
+    expect(
+      formatBudget({
+        budget_min: "900",
+        stated_price_min: "3",
+        stated_price_unit: "item",
+      }),
+    ).toBe("$900");
   });
   it("shows spend and rating only when known and above zero", () => {
     expect(formatSpend({ client_spend: "12000.4" })).toBe("$12,000 spent");
@@ -677,6 +709,73 @@ describe("queue screen", () => {
     expect(html).toContain("Job queue");
     expect(html).toContain("Example data service");
     expect(api.submit).not.toHaveBeenCalled();
+  });
+  it("renders the saved view from the preference cookie on the first render", async () => {
+    const preference = vi.fn((name: string) =>
+      name === "queue"
+        ? encodeURIComponent(
+            JSON.stringify({ ...DEFAULT_PREFS, stage: "all", sort: "newest" }),
+          )
+        : undefined,
+    );
+    const api = {
+      ...shell({
+        "leads.ui.catalog": ok({ items: catalog }),
+        "leads.ui.queue": ok({ items: [full] }),
+      }),
+      preference,
+    };
+    const html = renderToStaticMarkup(
+      await screens.queue({ shell: api, query: {} }),
+    );
+    expect(api.call.mock.calls[1]).toEqual([
+      "leads.ui.queue",
+      expect.objectContaining({
+        pipeline_id: JOBS_ID,
+        stage_id: null,
+        include_closed: true,
+        sort: "newest",
+      }),
+    ]);
+    expect(html).toContain("Example data service");
+    // A URL that names a control wins over the saved view.
+    await screens.queue({ shell: api, query: { sort: "score" } });
+    expect(api.call).toHaveBeenNthCalledWith(
+      4,
+      "leads.ui.queue",
+      expect.objectContaining({ sort: "score", stage_id: "review" }),
+    );
+  });
+  it("checks a saved view against the catalog like a URL's", async () => {
+    const api = {
+      ...shell({
+        "leads.ui.catalog": ok({ items: catalog }),
+        "leads.ui.queue": ok({ items: [] }),
+      }),
+      preference: () => '{"pipeline":"gone","stage":"nope","hideFull":false}',
+    };
+    await screens.queue({ shell: api, query: {} });
+    expect(api.call).toHaveBeenNthCalledWith(
+      2,
+      "leads.ui.queue",
+      expect.objectContaining({
+        pipeline_id: JOBS_ID,
+        stage_id: "review",
+        hide_full: false,
+      }),
+    );
+  });
+  it("reads a preference cookie whether or not the host decoded it", () => {
+    const text = '{"stage":"all"}';
+    expect(cookieText(text)).toBe(text);
+    expect(cookieText(encodeURIComponent(text))).toBe(text);
+    expect(cookieText("%E0%A4%A")).toBe("%E0%A4%A");
+    expect(prefsQuery({ ...DEFAULT_PREFS, hideFull: false })).toEqual({
+      pipeline: "",
+      stage: "",
+      full: "show",
+      sort: "score",
+    });
   });
   it("lists job-search pipelines first and asks for what the URL names", () => {
     const scope = queueScope(catalog, { pipeline: "all", stage: "all" });

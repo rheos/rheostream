@@ -19,9 +19,11 @@ from rheo_current import contracts as c
 
 MEMBERS = frozenset({Role.OWNER, Role.MEMBER})
 READERS = MEMBERS | {Role.SERVICE}
-# Create, update and set_status also admit a service: a module job files and moves
-# its own reminder items in-process, through a restricted service context that
-# names exactly the operations it may call. No other write is open to a service.
+# Create, update and set_status also admit a service: a module job writes items
+# in-process, through a restricted service context that names exactly the
+# operations it may call. That set is the only bound: a context granted these can
+# write any Current item, not only ones it created. No other write is open to a
+# service.
 SERVICE_WRITERS = MEMBERS | {Role.SERVICE}
 OWNER = frozenset({Role.OWNER})
 READ, MUTATE = SafetyClass.READ, SafetyClass.MUTATE

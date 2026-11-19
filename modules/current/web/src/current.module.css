@@ -1139,8 +1139,9 @@ a.rowTitle:hover {
 }
 .deskMeta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--rs-space-2);
+  gap: var(--rs-space-1) var(--rs-space-2);
   margin: 0;
   overflow: hidden;
   color: var(--rs-color-ink-dim);
@@ -1158,8 +1159,8 @@ a.rowTitle:hover {
   background: var(--rs-color-ink-faint);
 }
 .deskArea {
-  flex: 0 1 auto;
-  min-width: min(6ch, 100%);
+  flex: none;
+  max-inline-size: 40%;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--desk-tone);

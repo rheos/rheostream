@@ -998,3 +998,68 @@ def test_an_agent_reads_and_edits_a_proposal_over_mcp(drafting: Drafting) -> Non
     )
     assert edited.sections[0].body == "An edited letter."
     assert edited.sections[0].edited is True
+
+
+def test_a_milestone_edit_over_mcp_keeps_the_fields_it_leaves_out(
+    drafting: Drafting,
+) -> None:
+    """#477: the tool facade hands dispatch only the arguments the caller sent, so
+    an amount-only edit keeps the title, description and due date, both as a direct
+    tool call and through ``operations_call``."""
+    i = drafting.i
+    register_core_tools(i.surfaces.tools)
+    named = frozenset(tool.operation for tool in i.surfaces.tools.declarations())
+    direct_mode = drafting.c.owner
+    discover_mode = drafting.c.owner.model_copy(
+        update={"operation_set": (named & i.surfaces.operations.names()) | {TOOL_CALL}}
+    )
+
+    def tool(agent: Any, called: str, **payload: Any) -> Any:
+        outcome = call_registered_tool(
+            agent,
+            called,
+            payload,
+            consumers=i.consumers,
+            tools=i.surfaces.tools,
+            registry=i.surfaces.operations,
+        )
+        assert outcome.ok, outcome
+        return outcome.result
+
+    drafting.set_profile(pricing=PRICING)
+    opportunity = drafting.paste("~025984")
+    drafting.op("leads.jobpricing.request", ref=opportunity)
+    drafting.sweep()
+    first = drafting.op("leads.jobproposal.get", ref=opportunity).pricing.milestones[0]
+    drafting.op(
+        "leads.proposalmilestone.set",
+        ref=opportunity,
+        milestone_id=str(first.id),
+        due_on="2026-12-01",
+    )
+
+    direct = tool(
+        direct_mode,
+        "leads_set_proposal_milestone",
+        ref=opportunity,
+        milestone_id=str(first.id),
+        amount="300",
+    ).pricing.milestones[0]
+    assert (direct.title, direct.description, str(direct.due_on), direct.amount) == (
+        first.title,
+        first.description,
+        "2026-12-01",
+        "300.00",
+    )
+
+    generic = tool(
+        discover_mode,
+        "operations_call",
+        name="leads_set_proposal_milestone",
+        input={"ref": opportunity, "milestone_id": str(first.id), "amount": "275"},
+    ).pricing.milestones[0]
+    assert (generic.title, str(generic.due_on), generic.amount) == (
+        first.title,
+        "2026-12-01",
+        "275.00",
+    )

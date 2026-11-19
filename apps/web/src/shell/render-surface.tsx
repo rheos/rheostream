@@ -1,4 +1,4 @@
-import type { ComposedModule, Screen, ShellApi } from "@rheo-stream/web-contract/screen";
+import { preferenceCookie, type ComposedModule, type Screen, type ShellApi } from "@rheo-stream/web-contract/screen";
 import { cookies } from "next/headers";
 import { themeId } from "@/theme/builtins";
 import { readThemeCookie } from "@/theme/theme-cookie";
@@ -39,6 +39,7 @@ import {
 } from "@/shell/compose";
 import { ApprovalDetail } from "@/shell/approval-detail";
 import panel from "@/shell/panel.module.css";
+import { savePreference } from "@/shell/preference-action";
 import { refreshScreen } from "@/shell/refresh-screen";
 import { submitModuleForm } from "@/shell/submit-form";
 import { moduleScreenCall } from "@/shell/screen-call";
@@ -283,7 +284,9 @@ function currentPage(config: RoutingConfig, request: SurfaceRequest): string {
  * sign-in goes through `/auth/restart` here rather than straight to the identity host,
  * which would sign in and leave that cookie in place (#528). A live session pointed at
  * a workspace it can no longer open is not dead, and `/auth/restart` rightly leaves it
- * alone, so that one gets sign-out, and signing back in picks a workspace again.
+ * alone, so that one gets sign-out, and signing back in picks a workspace again. The
+ * exception is `workspace_unavailable`, which is usually temporary: it leads with wait
+ * and reload, and offers sign-out second (#530).
  */
 function sessionStatus(
   config: RoutingConfig,
@@ -293,6 +296,24 @@ function sessionStatus(
 ): ReactNode {
   if (session.state === "unavailable") {
     return <p className={panel.line}>session: unavailable</p>;
+  }
+  if (session.refusal === "workspace_unavailable") {
+    // Usually temporary (migrating, restoring), so waiting and reloading comes first:
+    // signing out could land an account with no other workspace on an unselected
+    // session that stays unselected after this one returns (#530). It can also mean a
+    // failed migration or a missing workspace, so sign-out stays, second, for an
+    // account that has another workspace to use.
+    return (
+      <>
+        <p className={panel.line}>session: signed out ({session.refusal})</p>
+        <p className={panel.detail}>
+          This workspace is unavailable right now, often because it is being moved or
+          restored. Wait a few minutes, then reload this page.
+        </p>
+        <p className={panel.detail}>Or sign out to use another workspace.</p>
+        <LogoutForm action={logoutAction(config)} />
+      </>
+    );
   }
   if (!isDeadSessionRefusal(session.refusal)) {
     return (
@@ -466,6 +487,11 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
     approvalHref: (approvalId) => approvalHref(config, approvalId),
     refresh: refreshScreen,
     timeZone: timeZone?.zone ?? "UTC",
+    preference: (name) => {
+      const cookie = preferenceCookie(owner.id, name);
+      return cookie === null ? undefined : jar.get(cookie)?.value;
+    },
+    savePreference: savePreference.bind(null, owner.id),
   };
   return (
     <ShellFrame theme={theme} timeZone={timeZone} health={health} account={account} navigation={navigation} homeHref={home}>

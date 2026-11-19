@@ -15,21 +15,25 @@ concepts the design keeps apart:
 
 Connectors come in three kinds:
 
-- Intake transports bring evidence into Leads: the signed webhook, CSV and JSON
-  import, manual capture, scheduled polls, and an email poller.
+- Intake transports bring evidence into Leads: the signed webhook, manual capture
+  (pasted inquiries and pasted job postings), and scheduled polls. CSV and JSON import
+  and an email poller are designed but not built yet; the import transport is declared
+  and has no runner.
 - Outbound MCP connectors sign in to someone else's MCP server and use its tools on
   your behalf. The job feed is the first: it collects postings from a provider's remote
   MCP server.
-- Destinations receive an approved handoff or message: a CRM, a referral partner, or
-  a back-office system for clients, contracts, time and invoices (Tuttle, in the idea
+- Destinations receive an approved handoff or message. The one built today is Current,
+  in process, for Leads handoffs. The design adds a CRM, a referral partner, or a
+  back-office system for clients, contracts, time and invoices (Tuttle, in the idea
   document).
 
 ## What you can do with it
 
 - Connect a website form, an automation tool or any system that can sign an HTTP request,
   without contributing a provider to the codebase.
-- Import a CSV or JSON file against a connection. A file whose columns do not match the
-  mapping is refused whole, naming the first missing column, before any row is accepted.
+- Once the import runner is built, import a CSV or JSON file against a connection. A
+  file whose columns do not match the mapping is refused whole, naming the first missing
+  column, before any row is accepted.
 - Paste an email, a conversation or a copied job posting into the capture screen.
 - Connect an external MCP service with a one-time consent in the provider's own sign-in
   page, then reconnect or revoke it from the Leads connections screen.
@@ -87,7 +91,10 @@ an export.
 
 A poll or email connector keeps a durable cursor on its connection and moves it only after
 the delivery is durably accepted. No model is involved: moving a known email format into
-intake is deterministic work.
+intake is deterministic work. The job feed, the one poll built, needs no cursor: it
+remembers each posting it has seen, and hands the run's postings to intake at the end of
+the run, in the job's own transaction, acting as its own connection with only the intake
+operation.
 
 ### Outbound MCP connectors
 
@@ -95,8 +102,12 @@ The job feed signs in to the provider as an OAuth client with the owner's consen
 the worker calls the provider's tools on a schedule. Nothing reaches the provider until
 the operator turns the client on and an owner connects. Every request goes over `https`
 only, follows no redirects, and goes only to hosts whose every resolved address is public.
-Tool names and actions are on an allowlist. An optional wire trace logs one line per
-request with no secrets and no content.
+Tool names and actions are on an allowlist: for the job feed, listing the accounts, the
+job tool's `search`, `smart_search` and `get` actions, and the read-only listing of
+pending invitations, nothing that writes. A deployment can set a prefix the provider puts
+in front of its tool names (`leads.jobfeed.tool_prefix`), and can have each run list the
+provider's tools (`leads.jobfeed.list_tools`), keeping names and argument names only. An optional wire trace (`connectors.mcp_client.trace`) logs one line per request
+with no secrets and no content.
 
 ### Destinations sit behind approvals
 

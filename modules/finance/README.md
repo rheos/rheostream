@@ -87,10 +87,12 @@ workspace owner alone (ADR-0028):
 | `finance_trace` | `finance.owed.trace` | each obligation with its payments and evidence |
 
 No restricted field reaches a model: every field finance tiers restricted (amounts,
-totals, the owed headline) is left out of what these operations return. An agent sees
-the fields finance tiers public or internal (structure, dates, states, counts, labels
-and the status lines' text), as finance tiers them. Labels (payees, accounts,
-document paths) are public under finance's own tiers and do reach it.
+totals, the owed headline) is empty in what these operations return to a token, and
+core's tool facade drops it. An agent sees the fields finance tiers public or internal
+(structure, dates, states, counts, labels and the status lines' text), as finance
+tiers them. Labels (payees, accounts, document paths) are public under finance's own
+tiers and do reach it. The one caller that gets the restricted fields filled is the
+workspace owner's own signed-in browser session, for the web screens (ADR-0029).
 
 The reads are opt-in. No routine token, named package set or connector grant reaches
 them, and the module's other operations are not registered in core at all. The one
@@ -112,6 +114,30 @@ the code the tick's table gives its class (`finance_layout_invalid`,
 a handler answers another type, or `finance_read_failed` for any other failure, a
 view that cannot be built included. Core's own refusals (a module that is not ready,
 an unavailable workspace) come back as core gives them.
+
+### Web screens
+
+The module's web package, `@rheo-stream/finance-web`, adds three read-only screens at
+`finance.<base host>`, shown in the navigation to the workspace owner alone:
+
+- **Owed**: open, part-paid, presumed-paid and disputed obligations, overdue first,
+  then by due date, each with its days to go, whether it has a Current reminder and
+  whether it falls before the reminders floor. A row's info button holds its source,
+  dates and the payments applied to it (`finance.owed.list`, `finance.owed.trace`).
+- **Needs attention**: counts first, the rows behind each: the confirm queue's
+  counts, documents needing manual entry, rejected or unparsed, bill gaps, unapplied
+  credits, missing account-months and the other open items, then the status data
+  checks (`finance.document.list`, `finance.coverage.get`, `finance.openitem.list`).
+- **Coverage**: statement coverage by account and month for one year
+  (`finance.coverage.get`).
+
+Every screen carries a status strip (last tick, last sync to Current, which sinks
+send) with the full status lines behind it (`finance.status.get`,
+`finance.sink.state`). The screens call only the reads above, through the owner's
+browser session, which reaches them by role: no token set, tool or MCP exposure is
+added. They show amounts because the reads fill the restricted fields for the owner's
+own browser session alone (ADR-0029). A member who opens the host sees an owner-only
+notice and nothing is read.
 
 ### A non-superuser application role
 

@@ -18,6 +18,10 @@ run, over a scratch repository tree, before scanning the real tree.
 without a plural or version suffix (see the script's own docstring for the exact
 denylist), or a generalized source-product-prefix compound identifier, in any tracked
 path or in tracked text outside an explicit historical-docs exception list.
+A tracked file that is not valid UTF-8 fails it too, unless
+`scripts/tracked_binaries.json` declares the path with a reason (the vendored font, the README thumbnail, the review
+package's images); `tests/test_absent_behaviour.py` and
+`tests/test_allowlist_variable_absent.py` read the same list.
 Self-tests itself on every run before scanning the real tree.
 
 `python3 scripts/check_fixture_provenance.py` fails when a tracked file under a
@@ -102,6 +106,25 @@ of the sha for the staged diff), and `<sha>:<message line>: denylist line <n>` f
 `--commits`, where `<n>` is the denylist file's own line number. The matched text
 and the denylist line's own content are never printed. Self-tests itself on every run
 before scanning the real tree.
+
+Three scripts here are not gates:
+
+- `python3 scripts/check_future_work_claims.py [--json] [PATH ...]` lists prose that
+  hands work to a later run, so a run can check at close-out that it has not made such
+  a sentence false (#73). It reports and exits 0 whatever it finds. When it cannot scan
+  at all (Git is missing, or cannot list the tracked files), it prints "Nothing was
+  scanned" and exits 2, so a caller never reads that as a clean run. It is deliberately not in
+  `make check`, because a claim true today would otherwise fail CI later for reasons no
+  commit caused.
+- `scripts/absence_proof.py`, run by `make absence-proof` and its own CI job, runs the
+  phase-one acceptance demonstrators twice with Recallatron absent: once by
+  configuration (`modules.installed` empty) and once in a clean detached checkout with
+  `modules/recallatron` deleted as well, then compares the two summaries. It needs the
+  project's virtualenv and a test cluster.
+- `scripts/ci_pytest_shard.py` is a pytest plugin that only CI's five Python shard
+  jobs load (`-p ci_pytest_shard`). `RHEO_TEST_SHARD=i/N` keeps whole test files on
+  shard `i`, weighted by test count with Postgres tests counted heavier, so the shards
+  together select every collected test once (#252). Unset, it does nothing.
 
 Each gate is a standalone, stdlib-only `python3` script with no import from
 anywhere else in the repository, so it runs from a bare checkout before any

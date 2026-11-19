@@ -5,10 +5,10 @@ columns, its stage, the Job search extension fields and the start of the origina
 message, the latest assessment's ratings and explanation, the pending follow-up,
 whether notes or drafts exist, the source transport, the linked party's display
 name, the stages it may move to next, and the closed stage a dismiss would move
-it to. Sorting by score (then fit) and hiding crowded postings happen here, before
-the limit,
-so the first page is the right one. Contact points, notes,
-draft bodies and full messages stay behind ``leads.opportunity.get``.
+it to, with the open stage an undo would move it back to. Sorting by score (then
+fit) and hiding crowded postings happen here, before the limit, so the first page
+is the right one. Contact points, notes, draft bodies and full messages stay behind
+``leads.opportunity.get``.
 
 With ``held_only`` it is the review queue: Job search jobs the client filters hold
 back and nobody promoted, each with a ``hold`` list of the clauses that held it
@@ -28,10 +28,11 @@ from rheo_contracts import (
 )
 from rheo_core.operations.refusals import OperationRefused
 from rheo_core.refs.resolver import UnitOfWork
-from sqlalchemy import Integer, and_, case, cast, exists, select
+from sqlalchemy import Integer, and_, case, cast, exists, func, select
 
 from rheo_leads import pipeline_common as h
 from rheo_leads import pipeline_contracts as c
+from rheo_leads.participant_text import unwrapped
 from rheo_leads.references import ref
 from rheo_leads.scoring import review
 from rheo_leads.short_ids import with_short_ids
@@ -56,6 +57,9 @@ CARD_FIELDS = (
     "client_reviews",
     "client_hire_rate",
     "invited",
+    "stated_price_min",
+    "stated_price_max",
+    "stated_price_unit",
     "saved",
 )
 PREVIEW_CHARS = 240
@@ -74,7 +78,8 @@ DISMISS_OUTCOMES = ("disqualified", "lost")
 
 class QueueInput(c.Strict):
     """Without ``ref``: open stages unless a stage or closed ones are asked for,
-    by latest score, then fit, then newest (``sort="score"``) or newest only,
+    by latest score, then fit, then newest (``sort="score"``) or newest only
+    (newest by the posting date the card shows, else the arrival day),
     optionally without postings above the proposal cap, or only the Job search jobs
     the client filters hold (``held_only``, the review queue). With ``ref``: that
     one opportunity, whatever its stage or count."""
@@ -90,26 +95,18 @@ class QueueInput(c.Strict):
     limit: int = Field(default=100, ge=1, le=200)
 
 
-# The provider's marker tag feed descriptions can arrive wrapped in (#392). A
-# preview drops exactly that outer wrapper before it is cut to length, so the
-# tag never spends the preview's characters; the stored text is unchanged.
-_WRAPPER_OPEN = "<untrusted_participant_content>"
-_WRAPPER_CLOSE = "</untrusted_participant_content>"
-
-
-def _unwrapped(text: str) -> str:
-    text = text.strip()
-    if text.startswith(_WRAPPER_OPEN):
-        text = text[len(_WRAPPER_OPEN) :].lstrip()
-    if text.endswith(_WRAPPER_CLOSE):
-        text = text[: -len(_WRAPPER_CLOSE)].rstrip()
-    return text
+def _description(text: str | None) -> str | None:
+    """The stored description as a reader sees it: without the feed's wrapper, and
+    ``None`` when nothing is left, as the preview does."""
+    return (unwrapped(text) or None) if text is not None else None
 
 
 def _preview(text: str | None, limit: int) -> str | None:
     if not text or not text.strip():
         return None
-    text = _unwrapped(text)
+    # Drop the feed's wrapper (#392) before cutting, so the tag never spends the
+    # preview's characters.
+    text = unwrapped(text)
     if not text:
         return None
     return text if len(text) <= limit else text[:limit].rstrip() + "…"
@@ -186,7 +183,16 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
                 review.is_held(o.c.id),
                 review.not_promoted(o.c.id),
             )
-    order = [o.c.created_at.desc(), o.c.id.desc()]
+    # Newest by the posting date a card shows, else the day it arrived, then
+    # arrival within a day (#369): the order and the shown dates agree.
+    order = [
+        func.coalesce(
+            _posted_on(o.c.id),
+            func.to_char(func.timezone("UTC", o.c.created_at), "YYYY-MM-DD"),
+        ).desc(),
+        o.c.created_at.desc(),
+        o.c.id.desc(),
+    ]
     if m.sort == "score":
         order[:0] = [
             _latest_score(o.c.id).desc().nulls_last(),
@@ -310,7 +316,11 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
                 },
                 "preview": _preview(found.get("message"), PREVIEW_CHARS),
                 # The whole derived posting, only for the one job the detail reads.
-                **({"description": found.get("message")} if m.ref is not None else {}),
+                **(
+                    {"description": _description(found.get("message"))}
+                    if m.ref is not None
+                    else {}
+                ),
                 "assessment": None
                 if assessment is None
                 else {
@@ -362,6 +372,26 @@ def _fit_rank(opportunity_id: Any) -> Any:
     return case(*((latest == fit, rank) for fit, rank in FIT_RANK.items()), else_=0)
 
 
+def _posted_on(opportunity_id: Any) -> Any:
+    """The posting date a card shows, as its ISO text; null when the job has none.
+
+    ISO dates sort as text exactly as they do as dates, so nothing is cast: a
+    stored value that is not a real date ("2024-02-30") can never fail the
+    queue's query, it only sorts by its digits.
+    """
+    state = p.opportunity_field_state
+    return (
+        select(state.c.value_text)
+        .where(
+            state.c.opportunity_id == opportunity_id,
+            state.c.target == EXTENSION + "posted_on",
+            state.c.value_kind == "value",
+            state.c.value_text.regexp_match("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"),
+        )
+        .scalar_subquery()
+    )
+
+
 def _over_cap(opportunity_id: Any) -> Any:
     """A whole-number proposal count above the cap, band or exact."""
     state = p.opportunity_field_state
@@ -385,7 +415,9 @@ def _transitions(
 ) -> dict[tuple[UUID, int, str], dict[str, Any]]:
     """Per pinned (preset, version, stage): the stages it may move to next, in
     stage order, and the closed stage a dismiss moves to (a disqualifying one before
-    a lost one, or none when neither is allowed)."""
+    a lost one, or none when neither is allowed). A dismiss carries ``undo``, the
+    open stage that closed stage can reopen to: the stage it was dismissed from when
+    that move exists, else the first open one, else none."""
     keys = {(r["preset_id"], r["preset_version"]) for r in records}
     if not keys:
         return {}
@@ -427,6 +459,21 @@ def _transitions(
             if rank < entry["rank"]:
                 entry["rank"] = rank
                 entry["dismiss"] = {"stage_id": r["stage_id"], "label": r["label"]}
+    for (preset, version, start), entry in found.items():
+        dismiss = entry["dismiss"]
+        if dismiss is None:
+            continue
+        back = [
+            {"stage_id": move["stage_id"], "label": move["label"]}
+            for move in found.get((preset, version, dismiss["stage_id"]), {}).get(
+                "next", []
+            )
+            if move["kind"] == "open"
+        ]
+        dismiss["undo"] = next(
+            (move for move in back if move["stage_id"] == start),
+            back[0] if back else None,
+        )
     return found
 
 

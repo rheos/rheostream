@@ -332,6 +332,13 @@ describe("ApprovalDetail", () => {
   });
 });
 
+// Submit as a click on the first form's button would. A bare requestSubmit() makes happy-dom 20
+// report the form itself as the submitter, which React's form actions then reject.
+function submitFirstForm(container: HTMLElement): void {
+  const form = container.querySelector("form")!;
+  form.requestSubmit(form.querySelector("button")!);
+}
+
 describe("approval decision interactions", () => {
   async function mounted(forms: Parameters<typeof ApprovalDecisionForms>[0]) {
     const container = document.createElement("div");
@@ -361,7 +368,7 @@ describe("approval decision interactions", () => {
     const view = await mounted({ approve, refuse });
 
     await act(async () => {
-      view.container.querySelector("form")!.requestSubmit();
+      submitFirstForm(view.container);
     });
 
     const fieldset = view.container.querySelector("fieldset");
@@ -384,7 +391,7 @@ describe("approval decision interactions", () => {
     const view = await mounted({ approve, refuse });
 
     await act(async () => {
-      view.container.querySelector("form")!.requestSubmit();
+      submitFirstForm(view.container);
     });
 
     expect(view.container.querySelector('[role="alert"]')?.textContent).toBe(message);

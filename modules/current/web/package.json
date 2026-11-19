@@ -22,7 +22,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "^16",
-    "happy-dom": "^18",
+    "happy-dom": "^20",
     "react": "^19",
     "react-dom": "^19",
     "typescript": "^5",

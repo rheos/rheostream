@@ -17,6 +17,13 @@ People reach rheo through several surfaces:
 
 These are channels into one agent, not separate bots with diverging abilities.
 
+**What is built today.** Interactive Claude over the MCP door and the web shell are
+built. Telegram and voice channels are not: `channels/` holds only a placeholder package,
+and there is no channel enrollment, no `channel` entry and no channel confirmation yet.
+The `channel` audience kind is already part of the workspace context, so memory and
+sessions are ready for it. A chat bot can reach rheoStream today only as an ordinary MCP
+client with its own token. The sections below describe the channel design.
+
 ## What you can do with it
 
 - Ask rheo what came in today, what is overdue, or what you decided about a client last
@@ -25,10 +32,10 @@ These are channels into one agent, not separate bots with diverging abilities.
   item or remember a decision.
 - Have it propose something with real consequences (sending, handing off, deleting) and
   get back an approval request instead of a finished action.
-- Approve that request in the web shell, or with a confirmation in the channel by the
-  enrolled account.
+- Approve that request in the web shell. Confirming it in a channel by the enrolled
+  account is part of the channel design and not built.
 - Run rheo on the runtime and model your workspace chooses, from the lists the operator
-  allows.
+  allows. Today that list holds only the Claude CLI.
 
 ## How it works
 
@@ -78,9 +85,10 @@ confirmations and action history.
 
 ### The runtime is a setting
 
-rheo's reasoning runs on a runtime adapter: the Claude CLI for personal installations, the
-OpenRouter API with a controlled provider policy, or Codex CLI, held to the same
-capability gate and contract suite. Runtime and model are separate choices. Switching
+rheo's reasoning runs on a runtime adapter, held to one capability gate and contract
+suite. The Claude CLI adapter is built, for personal installations. Adapters for the
+OpenRouter API (with a controlled provider policy) and Codex CLI are planned and not built.
+Runtime and model are separate choices. Switching
 runtimes starts a new native session with the selected authorized context; nothing carries
 across adapters, and completed effects are never replayed.
 

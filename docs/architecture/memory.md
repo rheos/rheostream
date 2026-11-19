@@ -12,8 +12,9 @@ invalidation rule). See the [decision list](README.md#architecture-decisions).
 A memory is an explicitly stated note, fact, decision or summary, recorded manually, derived from
 authorized records, or created conservatively from eligible sanitized transcript evidence by a
 trusted automatic producer. Release one includes ambient automatic creation without telling
-Recallatron to remember and without a per-note administered review. 1a1 supplies foundations; the
-dedicated automatic-memory carrier follows retrieval and must complete before cutover. A memory is
+Recallatron to remember and without a per-note administered review. 1a1 supplied the
+foundations; the automatic-memory drain that carries it is built
+([provenance and links](#provenance-and-links)). A memory is
 never the authoritative domain record or an unbounded conversation archive.
 
 It carries who may read it, for which purposes it may reach a model, where it came from, and
@@ -116,9 +117,9 @@ a named constant in the module's own `configuration` module, not a literal at a 
 
 - `derived_from`: each source of a `derive`, each record a `remember` cites, and the predecessor
   record of a migrated memory.
-- `about`: each record the memory concerns, plus (once Leads and relationships ship in phase
-  three; nothing expands it today) every `relationships.party` a source involves at the time of
-  writing (an opportunity's linked parties through `leads.opportunity.get`; an observation's
+- `about`: each record the memory concerns, plus (designed, not built: Leads and Relationships
+  have shipped, but nothing expands it yet) every `relationships.party` a source involves at the
+  time of writing (an opportunity's linked parties through `leads.opportunity.get`; an observation's
   `party_ref`), plus the `ref` of every entity the memory mentions that has one,
   expanded once at write time so retrieval has a bounded set to check. The mention rule is what
   keeps a memory tied to a person only through `memory_mention` inside the reach of that
@@ -126,10 +127,11 @@ a named constant in the module's own `configuration` module, not a literal at a 
   mention that produced no link would be a memory the filter could not see.
 
 A link is a reference string, never a foreign key into another schema (FR 11). A memory may link
-to Leads records only when Leads is enabled in the workspace; the memory module is to declare
-Leads and relationships as optional dependencies when they exist (today its manifest declares no
-dependencies) and reaches them through registered operations by name, which is what lets
-criterion 66's no-memory run and a memory-without-Leads workspace both exist.
+to Leads records only when Leads is enabled in the workspace. Its manifest declares no
+dependencies, even now that Leads and Relationships exist: it reaches them only through
+registered operations by name (`leads.contact_permission.check`, for one, which it treats as not
+applicable when Leads is not enabled), which is what lets criterion 66's no-memory run and a
+memory-without-Leads workspace both exist.
 
 Automatic memories retain origin=derived and the existing four memory kinds. A private trusted
 source-unit contract supplies immutable producer_kind, authority_id, original
@@ -152,7 +154,11 @@ checks each unit's authority and runs the one extraction call, then passes each 
 through `accept_source_unit` and settles it with the seam's own outcome, all in one
 transaction. An item the extraction found nothing explicit in arrives as the noop sentinel
 evidence, and acceptance terminalizes it `noop` with no memory. An extraction failure stays in
-core: the claim backs its partition off and the drain still succeeds.
+core: the claim backs its partition off and the drain still succeeds. The fifth failed attempt
+settles a unit `gap/extraction_failed` (`EXTRACTION_MAX_ATTEMPTS`). A usage limit on the
+extraction account is not counted as a failure: the provider raises `ExtractionDeferred`, and
+every claimed unit waits 15 minutes with its attempt count untouched
+(`rheo_core/evidence/service.py`), so a limit that lasts days gaps nothing.
 
 Every non-replayable receipt state answers one word, `source_unavailable`: a changed digest, a
 noncurrent or missing representation, and an erased, expired, noop, denied or orphaned receipt
@@ -253,13 +259,14 @@ as rare and is kept, and if every lexeme would be dropped the five rarest are ke
 double-quoted phrase in the query is matched as a phrase, OR-ed in, and never filtered.
 Ranking is `ts_rank_cd` cover density, which carries no inverse-document-frequency term, so a
 match on a rare word and a match on a common one can score alike; IDF-aware lexical ranking is
-run 1b's. The `pg_trgm`
+not built. The `pg_trgm`
 title index exists, and no recall statement reads it. The dense arm embeds the bare query with
 the configured provider and ranks by cosine similarity, keeping only rows at or above
 `recallatron.retrieval.dense_floor_percent` (an integer percent, default 30, so cosine 0.30).
 That default was measured on the shipped provider. The predecessor's floor, an L2 bound of
-0.76 (cosine 0.71), came from a different embedding space and does not transfer; run 1b
-confirms the number on a migrated corpus. `hybrid` runs both arms, fuses them by reciprocal
+0.76 (cosine 0.71), came from a different embedding space and does not transfer. The migration
+amendment (FR 53) made legacy-recall quality a non-gate, so no migrated-corpus measurement is
+recorded here. `hybrid` runs both arms, fuses them by reciprocal
 rank (constant 60), and within an equal fused score puts the newer memory first.
 
 **When the dense arm cannot contribute** (no provider resolves, the provider raises, the dense
@@ -510,11 +517,13 @@ transaction the caller already holds, not of three implementations agreeing.
 `recallatron.memory` is a deletable record type. `recallatron_forget` is `core.record.delete` for
 it: the owning delete removes the memory row, its embedding rows, links, and mentions; then the
 participant `recallatron.on_record_deleted` runs the closure below for memories derived from it.
-**In release one that participant is registered for `recallatron.memory` and nothing else**,
-because no other deletable record type exists yet: `leads.observation`, `leads.opportunity` and
-`relationships.party` arrive in phase three, and registering the participant for them is that
-phase's, inside the coordinator's transaction
-([deletion](deletion-export-migration.md#the-cascade)). The deletion record's
+The participant is registered for four types, `recallatron.memory`, `leads.observation`,
+`leads.opportunity` and `relationships.party` (`DELETION_PARTICIPANT_TYPES` in
+`rheo_recallatron/lifecycle.py`), and runs inside the coordinator's transaction
+([deletion](deletion-export-migration.md#the-cascade)). For the three outside types, confirmed
+user erasure removes every memory linked to the erased reference and its derived closure. It is
+not registered for Current's deletable `current.item` and `current.project`, so a memory linked
+to a deleted work item stays. The deletion record's
 `invalidated_memory_count` is the number of memory rows removed.
 
 The module reaches the coordinator through the typed owned-delete pair its record type declares
@@ -751,7 +760,7 @@ importer never commits, because the whole restore is one transaction.
 | `recallatron.entity.list`, `.get` | read | owner, member, service | none: no MCP tool is registered for either, so no model reaches them; reachable over the API by a token whose set holds them |
 | `recallatron.memory.dedup_candidates` | read | owner, member, service | none: no MCP tool, like the entity reads; reachable over the API by a token whose set holds it ([near-duplicate candidates](#near-duplicate-candidates)) |
 | `recallatron.embedding.rebuild` | mutate, long-running | owner | none |
-| `recallatron.migration.import`, `.switch_over` | mutate | owner | none (operator and web only). Not built yet: run 1b's, and neither is registered today |
+| `recallatron.migration.import`, `.switch_over` | mutate | owner | none (operator and web only). Not built, and neither is registered: the one-time release-one transfer does not need them ([migration verification](deletion-export-migration.md#migration-verification-fr-53)) |
 
 `service` on `remember` and `derive` is what lets a job or a model run write a memory on the
 actor's behalf; the audience of anything a `service` actor writes is the audience carried onto

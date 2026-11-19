@@ -1,7 +1,7 @@
-"""Migration 0021: the Job search preset and the job mappings learn ``saved``.
+"""Migration 0023: the Job search preset and the job mappings learn ``saved``.
 
-A populated workspace is rebuilt at 0020 (a Job search pipeline with an
-opportunity on preset v2, a job feed connection on a version-2 job mapping that
+A populated workspace is rebuilt at 0022 (a Job search pipeline with an
+opportunity on preset v4, a job feed connection on a version-2 job mapping that
 already reads ``invited``) and upgraded through the audited operator path
 production uses.
 """
@@ -25,14 +25,14 @@ from postgres.test_leads_queue import job_pipeline
 from postgres.test_module_upgrade import upgrade
 
 pytestmark = pytest.mark.postgres
-REVISION = "0021_saved_jobs"
+REVISION = "0023_saved_jobs"
 HEAD = REVISION
-PREVIOUS = "0020_current_handoff"
+PREVIOUS = "0022_reopen_closed_jobs"
 FIELD = "ext.jobsearch.saved"
 
 
 def rewound(i: Intake) -> tuple[str, ...]:
-    """Rebuild the workspace at 0020 and forget the undone revisions."""
+    """Rebuild the workspace at 0022 and forget the undone revisions."""
     with open_unit_of_work(i.ctx) as uow:
         undone = rewind_leads(uow.connection, PREVIOUS)
         uow.connection.execute(
@@ -80,7 +80,7 @@ def at_v2(i: Intake, name: str, transport: str) -> UUID:
     return connection_id
 
 
-def test_a_populated_0020_moves_to_preset_v3_and_the_next_mapping(
+def test_a_populated_0022_moves_to_preset_v5_and_the_next_mapping(
     intake: Intake,
 ) -> None:
     setup(intake)
@@ -91,13 +91,13 @@ def test_a_populated_0020_moves_to_preset_v3_and_the_next_mapping(
     pasted = at_v2(intake, "job_paste", "manual")
     with open_unit_of_work(intake.ctx) as uow:
         c = uow.connection
-        # Positive control: the predecessor is on preset v2 and mapping v2.
+        # Positive control: the predecessor is on preset v4 and mapping v2.
         (preset,) = rows(c, p.pipeline_preset, id=PRESET)
-        assert preset["current_version"] == 2
+        assert preset["current_version"] == 4
         (job,) = rows(c, p.opportunity, preset_id=PRESET)
-        assert job["preset_version"] == 2
+        assert job["preset_version"] == 4
         states_before = rows(c, p.opportunity_field_state, opportunity_id=job["id"])
-        v2_before = preset_rows(c, 2)
+        v4_before = preset_rows(c, 4)
         connections_before = {
             r["id"]: (r["mapping_id"], r["mapping_version"])
             for r in rows(c, t.intake_connection)
@@ -112,22 +112,22 @@ def test_a_populated_0020_moves_to_preset_v3_and_the_next_mapping(
     with open_unit_of_work(intake.ctx) as uow:
         c = uow.connection
         (preset,) = rows(c, p.pipeline_preset, id=PRESET)
-        assert preset["current_version"] == 3
+        assert preset["current_version"] == 5
         (moved,) = rows(c, p.opportunity, id=job["id"])
-        assert moved["preset_version"] == 3
+        assert moved["preset_version"] == 5
         assert {k: v for k, v in moved.items() if k != "preset_version"} == {
             k: v for k, v in job.items() if k != "preset_version"
         }
         states_after = rows(c, p.opportunity_field_state, opportunity_id=job["id"])
         assert states_after == states_before
         assert not any(s["orphaned"] for s in states_after)
-        # Version 2 is untouched; version 3 is a copy of it plus one field.
-        assert preset_rows(c, 2) == v2_before
-        v3 = preset_rows(c, 3)
-        added = [r for r in v3["preset_field"] if r[1] == FIELD]
+        # Version 4 is untouched; version 5 is a copy of it plus one field.
+        assert preset_rows(c, 4) == v4_before
+        v5 = preset_rows(c, 5)
+        added = [r for r in v5["preset_field"] if r[1] == FIELD]
         assert added == [(PRESET, FIELD, "boolean", False, "internal", [])]
-        v3["preset_field"] = [r for r in v3["preset_field"] if r[1] != FIELD]
-        assert v3 == v2_before
+        v5["preset_field"] = [r for r in v5["preset_field"] if r[1] != FIELD]
+        assert v5 == v4_before
         connections = {
             r["id"]: (r["mapping_id"], r["mapping_version"])
             for r in rows(c, t.intake_connection)
@@ -170,7 +170,7 @@ def test_the_migration_is_declared_non_destructive(intake: Intake) -> None:
 
 def _states(c: Any, title: str) -> dict[str, str]:
     (job,) = rows(c, p.opportunity, title=title)
-    assert (job["preset_id"], job["preset_version"]) == (PRESET, 3)
+    assert (job["preset_id"], job["preset_version"]) == (PRESET, 5)
     return {
         r["target"]: r["value_text"]
         for r in rows(c, p.opportunity_field_state, opportunity_id=job["id"])
@@ -181,7 +181,7 @@ def test_a_migrated_feed_connection_stores_saved(
     intake: Intake,
 ) -> None:
     """The production path end to end: a connection on a migrated mapping accepts
-    a saved delivery, and its opportunity, on preset v3, stores the flag."""
+    a saved delivery, and its opportunity, on preset v5, stores the flag."""
     setup(intake)
     pipeline = job_pipeline(intake)
     rewound(intake)

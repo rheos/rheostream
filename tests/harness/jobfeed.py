@@ -927,19 +927,24 @@ SAVED_NAME = "find_saved_jobs:list"
 
 
 def saved_row(number: int, *, title: str | None = None) -> dict[str, object]:
-    """One saved job as the listing names it: posting id ``~02<number>``, feed id
-    ``<number>``, a ready-to-use URL."""
+    """One saved job as the live listing names it: the saved record's own id
+    outside, the job nested under ``job`` with posting id ``~02<number>``, feed id
+    ``<number>`` and a ready-to-use URL."""
     return {
-        "id": str(number),
-        "title": title or f"Saved build {number}",
-        "url": f"https://www.example.com/jobs/~02{number}",
-        "saved_at": "2026-11-15T18:00:00Z",
+        "followed": True,
+        "id": f"9{number}",
+        "job": {
+            "id": str(number),
+            "content": {"title": title or f"Saved build {number}"},
+            "url": f"https://www.example.com/jobs/~02{number}",
+        },
+        "lastUpdateTs": "2026-11-15T18:00:00Z",
     }
 
 
 def saved_page(rows: list[object], *, more: bool = False) -> dict[str, object]:
     """A saved-jobs page answering ``rows``."""
-    return {"status": "ok", "data": {"saved_jobs": rows}, "hasMore": more}
+    return {"status": "ok", "data": {"personSavedJobs": rows}, "hasMore": more}
 
 
 def invitations_page(*rows: object) -> dict[str, object]:

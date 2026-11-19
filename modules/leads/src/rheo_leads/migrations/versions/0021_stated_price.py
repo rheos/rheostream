@@ -1,28 +1,30 @@
-"""Frozen: the Job search preset and the job mappings learn ``saved``.
+"""Frozen: the Job search preset and the job mappings learn the stated price.
 
-A preset version is immutable once used, so the field arrives in a new version: a
-full copy of the preset's current version (stages, transitions, requirements,
-fields, rubric, template) plus one boolean field, ``ext.jobsearch.saved``. The
-preset's current version moves to it, and every opportunity on the old current
-version moves with it. The new version is a strict superset with the same stages
-and outcomes, so each opportunity keeps its stage, its field states and its
-disposition; none is orphaned. Opportunities still on an older version stay there.
-Unlike the owner's ``pipeline.migrate_version``, the move bumps no revision and
-writes no ``opportunity.migrated`` event: nothing an owner sees changes, and no
-projection keys on the version.
+A posting's description often says what the job pays while the feed carries no
+budget (#503). The collector now reads that price from the text and sends it as
+three values kept apart from the feed's ``budget_min``/``budget_max``:
+``stated_price_min`` and ``stated_price_max`` (decimals) and ``stated_price_unit``
+(``hour``, ``total`` or ``item``).
 
-Mappings are versioned the same way: every intake connection whose job feed or job
-paste mapping lacks the rule gets a new mapping version, a copy of its current one
-plus ``saved`` read from ``/saved``, and moves to it. The old versions stay,
-since accepted receipts name the version they were processed under.
+The preset gains the three fields in a new version, the way 0018 added
+``invited``: a full copy of the current version plus the new fields, the current
+version moves to it, and every opportunity on the old current version moves with
+it. The new version is a strict superset with the same stages and outcomes, so no
+opportunity changes stage, field state or disposition. Each intake connection whose
+job feed or job paste mapping lacks the rules gets a new mapping version, a copy of
+its current one plus the three rules, and moves to it; old versions stay, since
+accepted receipts name the version they were processed under. The three rules
+clear their field on an explicit null, so a price a later read of the
+description no longer finds is taken back rather than kept.
 
-Nothing is deleted or rewritten in place; a workspace already carrying the field
-or the rule is left alone.
+Nothing is deleted or rewritten in place, no stored job gains a value here (the
+price is read from jobs collected from now on), and a workspace already carrying
+the fields or the rules is left alone.
 """
 
 from alembic import op
 
-revision = "0021_saved_jobs"
+revision = "0021_stated_price"
 down_revision = "0020_current_handoff"
 branch_labels = None
 depends_on = None
@@ -31,11 +33,35 @@ depends_on = None
 non_destructive_upgrade = True
 
 PRESET = "019bf0b0-0000-7000-8000-000000000002"
-FIELD = "ext.jobsearch.saved"
+# (target, type, enum values, mapping source path)
+FIELDS = (
+    ("ext.jobsearch.stated_price_min", "decimal", (), "/stated_price_min"),
+    ("ext.jobsearch.stated_price_max", "decimal", (), "/stated_price_max"),
+    (
+        "ext.jobsearch.stated_price_unit",
+        "enum",
+        ("hour", "total", "item"),
+        "/stated_price_unit",
+    ),
+)
+# The first new field marks a preset version or mapping as already migrated.
+FIELD = FIELDS[0][0]
 MAPPINGS = ("job_feed", "job_paste")
 
 
+def _enum(values: tuple[str, ...]) -> str:
+    return "ARRAY[" + ",".join(f"'{v}'" for v in values) + "]::TEXT[]"
+
+
 def upgrade() -> None:
+    fields = ",\n           ".join(
+        f"('{PRESET}', to_v, '{target}', '{kind}', false, 'internal', {_enum(values)})"
+        for target, kind, values, _ in FIELDS
+    )
+    rules = ",\n               ".join(
+        f"(c.mapping_id, to_v, '{target}', '{source}', NULL, NULL, false, true)"
+        for target, _, _, source in FIELDS
+    )
     op.execute(
         f"""
 DO $$
@@ -54,7 +80,7 @@ BEGIN
     to_v := from_v + 1;
     INSERT INTO leads.preset_version
         (preset_id, version, created_at, created_by_id, note)
-    VALUES ('{PRESET}', to_v, CURRENT_TIMESTAMP, NULL, 'Package preset: saved jobs');
+    VALUES ('{PRESET}', to_v, CURRENT_TIMESTAMP, NULL, 'Package preset: stated price');
     INSERT INTO leads.preset_stage
         (preset_id, version, stage_id, label, ordinal, kind, outcome)
     SELECT preset_id, to_v, stage_id, label, ordinal, kind, outcome
@@ -72,8 +98,7 @@ BEGIN
     FROM leads.preset_field WHERE preset_id = '{PRESET}' AND version = from_v;
     INSERT INTO leads.preset_field
         (preset_id, version, target, type, required, sensitivity, enum_values)
-    VALUES ('{PRESET}', to_v, '{FIELD}', 'boolean', false, 'internal',
-            ARRAY[]::TEXT[]);
+    VALUES {fields};
     INSERT INTO leads.preset_rubric (preset_id, version, rubric_slug, rubric_version)
     SELECT preset_id, to_v, rubric_slug, rubric_version
     FROM leads.preset_rubric WHERE preset_id = '{PRESET}' AND version = from_v;
@@ -131,7 +156,7 @@ BEGIN
         INSERT INTO leads.field_mapping_rule
             (mapping_id, version, target, source_path, transform, transform_arg,
              required, clear_on_null)
-        VALUES (c.mapping_id, to_v, '{FIELD}', '/saved', NULL, NULL, false, false);
+        VALUES {rules};
         UPDATE leads.intake_connection SET mapping_version = to_v WHERE id = c.id;
     END LOOP;
 END $$;

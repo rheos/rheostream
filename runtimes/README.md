@@ -3,7 +3,10 @@
 Replaceable adapters that manage model conversation mechanics. Runtime
 implementations do not own domain data, permissions, or durable work state. One conversational
 adapter is built: `rheo_runtimes.claude_cli.ClaudeCliRuntime`, which spawns the
-configured Claude CLI (`claude -p`).
+configured Claude CLI (`claude -p`). The same adapter answers the tool-less one-shot
+calls (`rheo_core.runtime.oneshot`) that automatic-memory extraction, Leads scoring,
+proposals and pricing, and Finance's model steps make. A usage-limit refusal defers
+such a call without counting an attempt.
 
 The [idea document](../docs/ideas/rheo-stream-idea.md#rheo-agent-and-interaction-model)
 requires configurable Claude CLI (`claude -p`) and OpenRouter execution, and identifies

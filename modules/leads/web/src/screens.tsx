@@ -14,7 +14,14 @@ import {
 } from "./jobfeed-panel";
 import { JobHeader, JobQueue, type Choice } from "./queue-view";
 import type { Sort } from "./queue";
-import { postingUrl } from "./queue";
+import {
+  cookieText,
+  parsePrefs,
+  postingUrl,
+  prefsQuery,
+  QUEUE_PREFERENCE,
+  undoTarget,
+} from "./queue";
 import type { FinishState } from "./finish-connecting";
 import { PasteCapture } from "./paste-capture";
 import { JobPaste } from "./job-paste";
@@ -585,7 +592,20 @@ export function queueScope(catalog: Row[], query: ScreenProps["query"]) {
 }
 export async function queue({ shell, query }: ScreenProps) {
   const catalogResult = await read(shell, "leads.ui.catalog");
-  const scope = queueScope(items(catalogResult), query);
+  const explicit = ["pipeline", "stage", "full", "sort"].some(
+    (name) => query[name] !== undefined,
+  );
+  // A bare URL opens the view saved last time, already on this render (#369);
+  // queueScope checks every saved value against the catalog like a URL's. A
+  // URL that names a control wins; the cookie is still read, so the browser
+  // knows not to hand its own copy over again.
+  const saved = shell.preference?.(QUEUE_PREFERENCE);
+  const scope = queueScope(
+    items(catalogResult),
+    saved === undefined || explicit
+      ? query
+      : { ...query, ...prefsQuery(parsePrefs(cookieText(saved))) },
+  );
   const result =
     catalogResult.state === "ok"
       ? await read(shell, "leads.ui.queue", scope.input)
@@ -606,6 +626,24 @@ export async function queue({ shell, query }: ScreenProps) {
   const hrefs = Object.fromEntries(
     records.map((r) => [str(r.id), shell.href("detail", { ref: detailRef(r) })]),
   );
+  // A job dismissed from its page: Undo is offered while it is still closed.
+  const goneResult =
+    catalogResult.state === "ok" && query.dismissed && shell.submit
+      ? await read(shell, "leads.ui.queue", { ref: query.dismissed.slice(0, 128) })
+      : null;
+  const gone = goneResult ? items(goneResult)[0] : undefined;
+  const goneTo =
+    gone && str(gone.stage_kind) === "terminal"
+      ? undoTarget(gone, query.from ?? "")
+      : null;
+  const dismissed =
+    gone && goneTo
+      ? {
+          item: gone,
+          to: goneTo,
+          href: shell.href("detail", { ref: detailRef(gone) }),
+        }
+      : undefined;
   const names =
     scope.scoped.length > 1
       ? Object.fromEntries(scope.scoped.map((p) => [str(p.id), str(p.name)]))
@@ -660,9 +698,9 @@ export async function queue({ shell, query }: ScreenProps) {
           stage={scope.stage}
           hideFull={scope.hideFull}
           sort={scope.sort}
-          explicit={["pipeline", "stage", "full", "sort"].some(
-            (name) => query[name] !== undefined,
-          )}
+          explicit={explicit}
+          serverSaved={saved !== undefined}
+          savePreference={shell.savePreference}
           filtered={
             scope.pipeline !== scope.fallback ||
             scope.stage !== scope.defaultStage
@@ -675,6 +713,7 @@ export async function queue({ shell, query }: ScreenProps) {
           limited={records.length >= QUEUE_LIMIT}
           nothingYet={nothingYet}
           submit={shell.submit}
+          dismissed={dismissed}
         />
       )}
       {catalogResult.state === "ok" && scope.jobs.length && shell.submit ? (

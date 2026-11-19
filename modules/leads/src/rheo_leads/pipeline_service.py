@@ -332,15 +332,20 @@ def transition(
     values["title"] = record["title"]
     if any(not values.get(field) for field in required):
         raise OperationRefused("evidence_required", "required fields are missing")
+    closed_at = record["disposition_at"]
+    at = h.now()
     h.bump(
         uow,
         record,
         stage_id=m.to_stage_id,
         disposition_outcome=stage["outcome"],
-        disposition_at=h.now() if stage["kind"] == "terminal" else None,
+        disposition_at=at if stage["kind"] == "terminal" else None,
     )
     if stage["kind"] == "terminal":
-        followups.close_pending(ctx, uow, record, "cancelled")
+        followups.close_pending(ctx, uow, record, "cancelled", at=at)
+    elif closed_at is not None:
+        # A reopen: the follow-up the close cancelled comes back (#464).
+        followups.restore_cancelled(ctx, uow, record, closed_at)
     if m.note:
         uow.connection.execute(
             insert(p.opportunity_note).values(

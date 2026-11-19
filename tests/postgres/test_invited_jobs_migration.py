@@ -27,8 +27,8 @@ from postgres.test_module_upgrade import upgrade
 
 pytestmark = pytest.mark.postgres
 REVISION = "0018_invited_jobs"
-# The package head the upgrade moves to; 0020 and 0021 follow this file's revision.
-HEAD = "0021_saved_jobs"
+# The package head the upgrade moves to; 0020 to 0023 follow this file's revision.
+HEAD = "0023_saved_jobs"
 PREVIOUS = "0017_proposal_separate_answers"
 FIELD = "ext.jobsearch.invited"
 PRESET = h.JOBSEARCH_PRESET_ID
@@ -104,7 +104,7 @@ def preset_rows(c: Connection, version: int) -> dict[str, list[tuple[Any, ...]]]
     return found
 
 
-def test_a_populated_0017_moves_to_preset_v2_and_mapping_v2(intake: Intake) -> None:
+def test_a_populated_0017_gets_preset_v2_and_mapping_v2(intake: Intake) -> None:
     setup(intake)
     job_pipeline(intake)
     capture(intake, "job", {"subject": "Example job", "posting_id": "~0290"})
@@ -112,7 +112,13 @@ def test_a_populated_0017_moves_to_preset_v2_and_mapping_v2(intake: Intake) -> N
     pasted = job_mapping(intake, "job_paste", "manual")
     with open_unit_of_work(intake.ctx) as uow:
         undone = rewind_leads(uow.connection, PREVIOUS)
-        assert undone == (HEAD, "0020_current_handoff", REVISION)
+        assert undone == (
+            HEAD,
+            "0022_reopen_closed_jobs",
+            "0021_stated_price",
+            "0020_current_handoff",
+            REVISION,
+        )
         uow.connection.execute(
             delete(module_schema_version).where(
                 module_schema_version.c.module_id == "leads",
@@ -135,16 +141,18 @@ def test_a_populated_0017_moves_to_preset_v2_and_mapping_v2(intake: Intake) -> N
         uow.commit()
     assert connections_before[feed][1] == connections_before[pasted][1] == 1
 
+    # The operator path upgrades to the loaded head only.
     result = upgrade(intake, target_schema=HEAD)
     assert result.ok and result.result.changed, result
 
     with open_unit_of_work(intake.ctx) as uow:
         c = uow.connection
-        # The upgrade runs on to the head, so 0021 then moves everything to v3.
         (preset,) = rows(c, p.pipeline_preset, id=PRESET)
-        assert preset["current_version"] == 3
+        # 0021, 0022 and 0023 then add versions 3, 4 and 5 the same way; version 2
+        # is this file's.
+        assert preset["current_version"] == 5
         (moved,) = rows(c, p.opportunity, id=job["id"])
-        assert moved["preset_version"] == 3
+        assert moved["preset_version"] == 5
         assert {k: v for k, v in moved.items() if k != "preset_version"} == {
             k: v for k, v in job.items() if k != "preset_version"
         }
@@ -159,15 +167,15 @@ def test_a_populated_0017_moves_to_preset_v2_and_mapping_v2(intake: Intake) -> N
         v2["preset_field"] = [r for r in v2["preset_field"] if r[1] != FIELD]
         assert v2 == v1_before
         # The job feed connection moved to its mapping's version 2, a copy of
-        # version 1 plus the rule (then on to version 3 with 0021's); every other
-        # connection stayed.
+        # version 1 plus the rule; every other connection stayed.
         connections = {
             r["id"]: (r["mapping_id"], r["mapping_version"])
             for r in rows(c, t.intake_connection)
         }
         mapping_id, _ = connections_before[feed]
-        assert connections[feed] == (mapping_id, 3)
-        assert connections[pasted] == (connections_before[pasted][0], 3)
+        # 0021 and 0023 move both on to versions 3 and 4; version 2 is this file's.
+        assert connections[feed] == (mapping_id, 4)
+        assert connections[pasted] == (connections_before[pasted][0], 4)
         moved_ids = {feed, pasted}
         assert {k: v for k, v in connections.items() if k not in moved_ids} == {
             k: v for k, v in connections_before.items() if k not in moved_ids
@@ -235,7 +243,7 @@ def test_a_migrated_feed_connection_delivers_an_invited_job(intake: Intake) -> N
     with open_unit_of_work(intake.ctx) as uow:
         c = uow.connection
         (job,) = rows(c, p.opportunity, title="Invited example")
-        assert (job["preset_id"], job["preset_version"]) == (PRESET, 3)
+        assert (job["preset_id"], job["preset_version"]) == (PRESET, 5)
         states = {
             r["target"]: r["value_text"]
             for r in rows(c, p.opportunity_field_state, opportunity_id=job["id"])

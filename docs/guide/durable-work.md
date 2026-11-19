@@ -2,8 +2,9 @@
 
 ## What it is
 
-The machinery that lets work outlive a crash, a restart or a lost connection. It is eight
-plain tables in each workspace's `core` schema, in five groups, plus a worker:
+The machinery that lets work outlive a crash, a restart or a lost connection. It is nine
+plain tables in each workspace's `core` schema, in six groups, plus a worker. (A bookkeeping
+table, `outbox_retention`, records the outbox sweep and is not counted here.)
 
 - The outbox (`outbox_event`, `event_delivery`, `consumer_processed`): events written
   in the same transaction as the change they describe, delivered to each consumer
@@ -12,8 +13,10 @@ plain tables in each workspace's `core` schema, in five groups, plus a worker:
 - Operation records (`operation`): one per long-running or gated call, with a
   terminal outcome a caller can poll;
 - Audit records (`audit_record`): one per mutating call, committed with the change;
-- External actions (`external_action`): an approved effect on the outside world,
-  executed by a job with its own outcome record.
+- Keyed results (`idempotency_result`): the stored answer a retry with the same key
+  gets back;
+- External actions (`external_action`): an approved effect on another module or the
+  outside world, with its own outcome record.
 
 There is no message broker, no distributed workflow engine and no event sourcing.
 
@@ -24,8 +27,8 @@ There is no message broker, no distributed workflow engine and no event sourcing
 - Cancel a job. A queued job is cancelled without running; a running one stops at its
   next checkpoint and ends `cancelled`, not retried.
 - See what failed. `core.work.failures` lists every failed delivery with how many later
-  deliveries it is holding back, and the shell shows a banner on every screen while any
-  delivery has failed.
+  deliveries it is holding back, and `core.work.failure_summary` gives the counts. The
+  shell does not show a failure banner yet; the summary is the read one will use.
 - Retry a failed delivery, skip it with a written note, or replay a consumer that only
   rebuilds derived state.
 - Read the audit log: who did what, through which door, when, and with what outcome.
@@ -92,7 +95,9 @@ evicts the connection it is about to use.
 ### Schedules are rows
 
 A module's manifest declares its schedules; enabling the module creates them for that
-workspace. The core runs a daily retention sweep that removes expired transcripts,
+workspace. A schedule can name a workspace setting that gates it: Finance's 15-minute tick
+is written at enable but enqueues nothing until the workspace sets `finance.jobs.enabled`
+to true. The core runs a daily retention sweep that removes expired transcripts,
 telemetry and settled outbox rows (kept 30 days by default).
 
 ### An operation record cannot claim success without proof
@@ -123,15 +128,22 @@ how it is audited. The row never holds a secret or a reference to one.
 An operation can declare natural idempotency: a unique index under which a repeat is the
 same row. Intake is idempotent on the connection and the sender's event id; a handoff on
 the opportunity and its idempotency key. Operations that must hand back a created
-reference on a retry, such as Current creating work from a handoff, use keyed idempotency
-with a stored result.
+reference on a retry, such as Current creating work from a Leads handoff, use keyed
+idempotency: the caller sends a key, the first answer is stored in `idempotency_result`,
+and a repeat with the same key and the same request gets that answer back. The same key
+with a different request is refused.
 
 ### External actions are jobs with their own record
 
-An approved effect runs as a job that depends on its destination, so withdrawing the
-recipient's permission or deleting the destination party cancels or refuses it. The lease
-prevents two executions of one action. A retry after an unknown outcome first reconciles
-by the provider's request id, and otherwise goes `unresolved`.
+Approving an external call queues exactly one `core.external_action.execute` job. When it
+runs, it rechecks the original caller, the payload and every guard at effect time, so a
+withdrawn permission or a deleted destination refuses it, and it invokes the destination at
+most once. The lease prevents two executions of one action. A destination that lives in
+another module runs inside a savepoint of the job's own transaction, so a rollback proves
+nothing happened. For an outside provider, a retry after an unknown outcome first
+reconciles by the provider's request id, and otherwise goes `unresolved`. The Leads to
+Current handoff is the first external action built: approving it creates one Current item,
+and the action records that item's reference as its result.
 
 ## Why it's built this way
 
@@ -145,8 +157,9 @@ requirement forces it. A broker or workflow engine would add a second system to 
 and a distributed transaction to reason about, for a deployment that runs on one server.
 
 Head-of-line blocking is a deliberate trade. A failed delivery stops its subject's queue
-rather than letting later events overtake it, and the failure is pushed to where a person
-already looks: a banner on every screen and the connection health in Leads.
+rather than letting later events overtake it, so the failure has to reach a person:
+today through `core.work.failures` and the connection health in Leads, and a shell banner
+is planned.
 
 ## Where to look
 

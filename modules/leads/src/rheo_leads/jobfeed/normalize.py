@@ -21,6 +21,8 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from rheo_leads.jobfeed.presets import Purpose
+from rheo_leads.jobfeed.stated_price import StatedPrice, stated_price
+from rheo_leads.participant_text import unwrapped
 
 JobType = Literal["fixed", "hourly"]
 
@@ -69,10 +71,15 @@ BODY_KEYS: tuple[str, ...] = (
     "applied",
     "invited",
     "saved",
+    "stated_price_min",
+    "stated_price_max",
+    "stated_price_unit",
     "observed_at",
 )
 # The fields whose change makes a sighting worth delivering. Both observation times
-# are stamped at response time, so neither is ever a change.
+# are stamped at response time, so neither is ever a change. The stated price is
+# read from the description, which is compared already, so it is not listed: a
+# job stored before it existed is not delivered again only to gain one.
 COMPARABLE_FIELDS: tuple[str, ...] = (
     "title",
     "description",
@@ -214,9 +221,16 @@ class NormalizedPosting:
     # whatever its competition. Never delivered, never compared. A saved job
     # already delivered, or one that only appears in a search, is not one.
     saved_discovery: bool = False
+    # A price the description states, read only while the feed gives no budget
+    # (#503). Kept apart from ``budget_*``, which only the feed fills, so an hourly
+    # rate, a project total and a per-item price stay distinguishable.
+    stated: StatedPrice | None = None
 
-    def to_body(self) -> dict[str, str | int]:
-        """The flat delivery body: unknown values are left out, never zero."""
+    def to_body(self) -> dict[str, str | int | None]:
+        """The flat delivery body: unknown values are left out, never zero. The
+        stated price is the one exception: once the description has been read,
+        each of its keys is sent, as an explicit null when there is none, so a
+        price the text no longer states is cleared, not kept."""
         values: dict[str, str | int | None] = {
             "title": self.title,
             "description": self.description,
@@ -237,14 +251,62 @@ class NormalizedPosting:
             "applied": _optional_flag(self.applied),
             "invited": _flag(True) if self.invited else None,
             "saved": _optional_flag(self.saved),
+            **stated_body(self.stated),
             "observed_at": self.observed_at.isoformat(),
         }
-        return {key: value for key, value in values.items() if value is not None}
+        return without_unknowns(values, read=self.description is not None)
 
     def comparable_fields(self) -> dict[str, str]:
         """Canonical text per comparable field that carries a value."""
         body = self.to_body()
-        return {key: str(body[key]) for key in COMPARABLE_FIELDS if key in body}
+        return {
+            key: str(body[key])
+            for key in COMPARABLE_FIELDS
+            if body.get(key) is not None
+        }
+
+
+STATED_KEYS: tuple[str, ...] = (
+    "stated_price_min",
+    "stated_price_max",
+    "stated_price_unit",
+)
+
+
+def without_unknowns(
+    values: Mapping[str, str | int | None], *, read: bool
+) -> dict[str, str | int | None]:
+    """``values`` without its unknowns. When the description was ``read``, the
+    stated-price keys stay even as nulls: there the absence of a price is known."""
+    return {
+        key: value
+        for key, value in values.items()
+        if value is not None or (read and key in STATED_KEYS)
+    }
+
+
+def stated_body(stated: StatedPrice | None) -> dict[str, str | None]:
+    """The stated price's three body values; all ``None`` when there is none."""
+    if stated is None:
+        return {
+            "stated_price_min": None,
+            "stated_price_max": None,
+            "stated_price_unit": None,
+        }
+    return {
+        "stated_price_min": _decimal_text(stated.low),
+        "stated_price_max": _optional_decimal(stated.high),
+        "stated_price_unit": stated.unit,
+    }
+
+
+def text_price(
+    description: str | None, budget_min: Decimal | None, budget_max: Decimal | None
+) -> StatedPrice | None:
+    """The price ``description`` states, read only when there is no budget."""
+    if budget_min is not None or budget_max is not None:
+        return None
+    return stated_price(description)
 
 
 def _optional_decimal(value: Decimal | None) -> str | None:
@@ -476,13 +538,16 @@ def apply_detail(
         )
     )
     description = content.get("description")
-    if not isinstance(description, str) or not description.strip():
+    if not isinstance(description, str) or not unwrapped(description):
         return posting
+    # Stored without the provider's wrapper tag (#392).
+    description = unwrapped(description)
     record = _mapping(detail_row.get("client_record"))
     hire_percent = parse_number(record.get("hire_rate_percent"))
     return replace(
         posting,
         description=description,
+        stated=text_price(description, posting.budget_min, posting.budget_max),
         client_spend=_kept(
             parse_number(record.get("spend_total")), posting.client_spend
         ),

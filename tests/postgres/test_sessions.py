@@ -1138,6 +1138,16 @@ async def test_post_endpoints_require_a_matching_origin(
         assert missing_origin.status_code == 403
         assert missing_origin.json() == {"state": "origin_not_allowed"}
 
+        # #530: an Origin urlsplit cannot parse is refused, not a 500.
+        for path in ("/auth/session/workspace", "/auth/logout"):
+            malformed = await client.post(
+                f"https://{BASE_HOST}{path}",
+                json={"target_workspace_id": str(workspace)},
+                headers={"Origin": "https://[x"},
+            )
+            assert malformed.status_code == 403
+            assert malformed.json() == {"state": "origin_not_allowed"}
+
         good_origin = await client.post(
             f"https://{BASE_HOST}/auth/session/workspace",
             json={"target_workspace_id": str(workspace)},
