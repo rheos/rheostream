@@ -815,3 +815,24 @@ def test_a_later_detail_without_the_price_sends_explicit_nulls() -> None:
 def test_a_row_whose_description_was_never_read_says_nothing_of_a_price() -> None:
     body = posting(budget=None).to_body()
     assert not set(STATED_KEYS) & set(body)
+
+
+# --- the provider's wrapper tag (#392) ------------------------------------------
+
+WRAPPED = (
+    "<untrusted_participant_content>\n"
+    "Build a <b>shop</b> page.\nShip by Friday.\n"
+    "</untrusted_participant_content>"
+)
+
+
+def test_a_detail_description_is_stored_without_the_wrapper_tag() -> None:
+    result = apply_detail(posting(), described(WRAPPED), HOSTS)
+    assert result.description == "Build a <b>shop</b> page.\nShip by Friday."
+    assert result.to_body()["description"] == result.description
+
+
+def test_a_wrapper_with_nothing_inside_is_no_description() -> None:
+    before = posting()
+    empty = "<untrusted_participant_content> </untrusted_participant_content>"
+    assert apply_detail(before, described(empty), HOSTS) == before

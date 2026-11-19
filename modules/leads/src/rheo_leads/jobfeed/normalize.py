@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 
 from rheo_leads.jobfeed.presets import Purpose
 from rheo_leads.jobfeed.stated_price import StatedPrice, stated_price
+from rheo_leads.participant_text import unwrapped
 
 JobType = Literal["fixed", "hourly"]
 
@@ -479,8 +480,10 @@ def apply_detail(
         )
     )
     description = content.get("description")
-    if not isinstance(description, str) or not description.strip():
+    if not isinstance(description, str) or not unwrapped(description):
         return posting
+    # Stored without the provider's wrapper tag (#392).
+    description = unwrapped(description)
     record = _mapping(detail_row.get("client_record"))
     hire_percent = parse_number(record.get("hire_rate_percent"))
     return replace(

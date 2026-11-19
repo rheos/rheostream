@@ -32,6 +32,7 @@ from sqlalchemy import Integer, and_, case, cast, exists, func, select
 
 from rheo_leads import pipeline_common as h
 from rheo_leads import pipeline_contracts as c
+from rheo_leads.participant_text import unwrapped
 from rheo_leads.references import ref
 from rheo_leads.scoring import review
 from rheo_leads.short_ids import with_short_ids
@@ -93,26 +94,17 @@ class QueueInput(c.Strict):
     limit: int = Field(default=100, ge=1, le=200)
 
 
-# The provider's marker tag feed descriptions can arrive wrapped in (#392). A
-# preview drops exactly that outer wrapper before it is cut to length, so the
-# tag never spends the preview's characters; the stored text is unchanged.
-_WRAPPER_OPEN = "<untrusted_participant_content>"
-_WRAPPER_CLOSE = "</untrusted_participant_content>"
-
-
-def _unwrapped(text: str) -> str:
-    text = text.strip()
-    if text.startswith(_WRAPPER_OPEN):
-        text = text[len(_WRAPPER_OPEN) :].lstrip()
-    if text.endswith(_WRAPPER_CLOSE):
-        text = text[: -len(_WRAPPER_CLOSE)].rstrip()
-    return text
+def _description(text: str | None) -> str | None:
+    """The stored description as a reader sees it: without the feed's wrapper."""
+    return None if text is None else unwrapped(text)
 
 
 def _preview(text: str | None, limit: int) -> str | None:
     if not text or not text.strip():
         return None
-    text = _unwrapped(text)
+    # Drop the feed's wrapper (#392) before cutting, so the tag never spends the
+    # preview's characters.
+    text = unwrapped(text)
     if not text:
         return None
     return text if len(text) <= limit else text[:limit].rstrip() + "…"
@@ -322,7 +314,11 @@ def queue(ctx: WorkspaceContext, uow: UnitOfWork, m: QueueInput) -> c.ItemsOutpu
                 },
                 "preview": _preview(found.get("message"), PREVIEW_CHARS),
                 # The whole derived posting, only for the one job the detail reads.
-                **({"description": found.get("message")} if m.ref is not None else {}),
+                **(
+                    {"description": _description(found.get("message"))}
+                    if m.ref is not None
+                    else {}
+                ),
                 "assessment": None
                 if assessment is None
                 else {
