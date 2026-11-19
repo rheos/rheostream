@@ -95,8 +95,9 @@ class QueueInput(c.Strict):
 
 
 def _description(text: str | None) -> str | None:
-    """The stored description as a reader sees it: without the feed's wrapper."""
-    return None if text is None else unwrapped(text)
+    """The stored description as a reader sees it: without the feed's wrapper, and
+    ``None`` when nothing is left, as the preview does."""
+    return (unwrapped(text) or None) if text is not None else None
 
 
 def _preview(text: str | None, limit: int) -> str | None:
