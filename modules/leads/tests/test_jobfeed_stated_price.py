@@ -113,6 +113,9 @@ def price(low: str, high: str | None = None, unit: str | None = None) -> StatedP
         ("a $500 USD project", price("500")),
         ("The $500 covers the full project.", price("500")),
         ("The $300 includes two revisions.", price("300")),
+        # From CodeRabbit on #614: a payment noun names the pay.
+        ("You receive a $300 payment on delivery.", price("300")),
+        ("$10 for 1 3D model", price("10", unit="item")),
         # "hour-long" describes the item; a number after "for every" is one lot.
         ("$500 for 1 hour-long video", price("500", unit="item")),
         ("$5 for every 100 words", price("5", unit="item")),

@@ -128,7 +128,8 @@ _NOUN_AFTER: Final = re.compile(
     r"\s+(?!(?:or|to|and|for|in|on|at|with|is|was|plus|up|upfront|max|min|"
     r"usd|cad|dollars|project|job|gig|contract|task|test|trial|pilot|sample|"
     r"deliverable|deliverables|package|range|retainer|budget|fee|fees|bonus|"
-    r"milestone|engagement|assignment|order|commission|offer|deal)\b)"
+    r"milestone|engagement|assignment|order|commission|offer|deal|payment|payout|"
+    r"stipend|honorarium|reward)\b)"
     r"[a-z][a-z-]*\b",
     re.IGNORECASE,
 )
