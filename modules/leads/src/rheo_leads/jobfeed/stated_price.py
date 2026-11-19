@@ -22,7 +22,8 @@ Only the amount's own clause before it and its own sentence after it are read,
 so one sentence never lends its unit or its words to another's amount. The unit
 comes from the words right after the amount: an hourly rate (``/hr``, ``per
 hour``, ``an hour``) is ``hour``; a price per anything else that is not a span of
-time (``per project``, ``/video``, ``each``, or "per video $30") is ``item``; per
+time (``per project``, ``/video``, ``each``, ``for 1 video``, or "per video $30")
+is ``item``; per
 day, week, month or year leaves the unit unknown. Without one of those, a nearby
 "fixed", "flat", "total" or "budget" makes it ``total``, and anything else leaves
 it unknown.
@@ -31,7 +32,10 @@ When several amounts qualify, the one that reads most like the job's own price
 wins: one beside "budget", "fixed price", "price", "rate" or "total", then one
 with an hourly or per-item unit, then one beside a weaker pay word ("pay", "earn",
 "offer"), then the rest; a per-month price ("users pay $4.99 per month") ranks
-last. Among equals the first wins. A text that states no amount gives ``None``:
+last. Among equals the first wins. An amount between a determiner and a word
+("a $70 hoodie") with no pay or price word in reach is what something in the
+brief costs, and is not read at all, unless that word names the work ("a $500
+project"). A text that states no amount gives ``None``:
 nothing is inferred from silence.
 """
 
@@ -93,16 +97,41 @@ _HISTORY: Final = re.compile(
 )
 # Where a pasted page's client panel starts; nothing after it is read.
 _CLIENT_PANEL: Final = re.compile(r"\babout the client\b", re.IGNORECASE)
+# "for 1 video", "for each clip", "for every 100 words": one of a thing (#611).
+# "for a landing page" is not here, so it stays a whole-job price, and "for 1
+# hour-long video" is a video, not an hour.
+_FOR_ONE: Final = r"for\s+(?:1|one|each|every)\s+"
 _HOUR: Final = re.compile(
-    r"\s*(?:/|per\b|an\b|a\b|each\b)?\s*(?:hour|hr|hrs|h)\b|\s*hourly\b",
+    r"\s*(?:/|per\b|an\b|a\b|each\b|" + _FOR_ONE + r")?\s*(?:hour|hr|hrs|h)\b(?!-)"
+    r"|\s*hourly\b",
     re.IGNORECASE,
 )
 _SPAN: Final = re.compile(
-    r"\s*(?:/|per\b|a\b|an\b|each\b)\s*(?:day|week|month|year|annum|yr|mo|wk)\b",
+    r"\s*(?:/|per\b|a\b|an\b|each\b|" + _FOR_ONE + r")\s*"
+    r"(?:day|week|month|year|annum|yr|mo|wk)\b(?!-)",
     re.IGNORECASE,
 )
 _ITEM: Final = re.compile(
-    r"\s*(?:/\s*|per\s+|each\b|apiece\b)(?:[a-z][a-z-]*)?", re.IGNORECASE
+    r"\s*(?:/\s*|per\s+|each\b|apiece\b|" + _FOR_ONE + r"(?=[a-z0-9]))"
+    r"(?:[a-z][a-z-]*)?",
+    re.IGNORECASE,
+)
+# "a $70 hoodie", "her $20 plan": an amount between an article or a possessive and
+# a word names what something in the brief costs, not what the job pays (#611).
+# It still counts with a pay or price word in reach, or when the word names the
+# work itself ("a $500 project", "a $50 test video"). "the", "this" and "your"
+# are left out: "The $500 covers the project" is the job's price.
+_DETERMINER_BEFORE: Final = re.compile(
+    r"\b(?:a|an|his|her|their|its)\s*$", re.IGNORECASE
+)
+_NOUN_AFTER: Final = re.compile(
+    r"\s+(?!(?:or|to|and|for|in|on|at|with|is|was|plus|up|upfront|max|min|"
+    r"usd|cad|dollars|project|job|gig|contract|task|test|trial|pilot|sample|"
+    r"deliverable|deliverables|package|range|retainer|budget|fee|fees|bonus|"
+    r"milestone|engagement|assignment|order|commission|offer|deal|payment|payout|"
+    r"stipend|honorarium|reward)\b)"
+    r"[a-z][a-z-]*\b",
+    re.IGNORECASE,
 )
 # "Price per video $30": the unit named just before the amount. Per hour and
 # per day, week, month or year before it are read as such, never as an item.
@@ -265,6 +294,14 @@ def _candidate(text: str, match: re.Match[str]) -> _Candidate | None:
         score = _PAY_HINT
     else:
         score = 0
+        if (
+            unit is None
+            and not per_span
+            and _DETERMINER_BEFORE.search(before)
+            and _NOUN_AFTER.match(text, end)
+            and not _PAY.search(after)
+        ):
+            return None  # what something in the brief costs, not the job's pay
     return _Candidate(match.start(), StatedPrice(low, high, unit), score)
 
 
