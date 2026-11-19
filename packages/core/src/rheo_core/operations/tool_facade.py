@@ -21,7 +21,7 @@ against the *operation's* input model, which is the wider of the two: a tool tha
 advertises a narrow schema to a client restricted nothing about a crafted call.
 :func:`call_registered_tool` validates against the tool's own declared
 ``input_model`` first, refusing every argument name that model does not declare,
-and dispatches the validated dump — so ``recallatron_forget`` handed a reference
+and dispatches the fields the caller set — so ``recallatron_forget`` handed a reference
 to somebody else's record answers ``input_invalid`` before any approval work is
 created, rather than reaching the deletion coordinator to be refused there.
 
