@@ -40,12 +40,6 @@ SEARCHES_FAILED: Final = "searches"
 """The run-history reason prefix for searches that all failed in a run that still
 delivered an invitation."""
 MAX_DETAIL_READS: Final = 60
-# The job service refuses ``find_jobs get`` once the account's daily allowance of
-# detail reads is spent (#377: about 400 a day since Nov 6 2026, resetting at
-# 00:00 UTC), and with PERMISSION alone for the odd private job. This many
-# refusals in a row means the allowance is spent: the run reads nothing more.
-REFUSED_TOOL_CODES: Final = frozenset({"PERMISSION", "JOB_BROWSE_COOLDOWN"})
-STOP_AFTER_REFUSALS: Final = 5
 OVER_CAP_BAND: Final = "50+"
 
 
@@ -93,8 +87,6 @@ class DetailResult:
 NO_FEED_ID: Final = "no_feed_id"
 NOT_READ_DEADLINE: Final = "not_read_deadline"
 NOT_READ_CAP: Final = "not_read_cap"
-NOT_READ_REFUSED: Final = "not_read_refused"
-"""Not read: the run stopped reading after ``STOP_AFTER_REFUSALS`` refusals in a row."""
 NO_DESCRIPTION: Final = "no_description"
 
 
@@ -405,17 +397,18 @@ def read_details(
     description and counts one failure; other sightings pass through unchanged.
 
     A posting in ``known`` already has its description stored, so it is not read
-    again (#377): it passes through as a refresh, its stored description kept,
-    and the daily allowance goes on postings not seen before. After
-    ``STOP_AFTER_REFUSALS`` refusals in a row the allowance is spent, and every
-    posting still unread counts ``not_read_refused`` instead of a call."""
+    again (#377): the job service allows each account only so many detail reads a
+    day (about 400 since Nov 6 2026, reset at 00:00 UTC), and re-reading every
+    posting every run spent them by mid-morning. It passes through as a refresh,
+    its stored description kept, and the allowance goes on postings not seen
+    before."""
     # Each posting id's one read: its detail document when it succeeded, else None.
     details: dict[str, dict[str, object] | None] = {}
     updated: list[Sighting] = []
     reads = failures = 0
     reasons: Counter[str] = Counter()
     cut = False
-    skipped_known = refusals = 0
+    skipped_known = 0
     terminal: UpstreamFailure | None = None
     for sighting in sightings:
         posting = sighting.posting
@@ -437,8 +430,6 @@ def read_details(
                 reason = NOT_READ_DEADLINE
             elif reads >= max_reads:
                 reason = NOT_READ_CAP
-            elif refusals >= STOP_AFTER_REFUSALS:
-                reason = NOT_READ_REFUSED
             else:
                 try:
                     detail = upstream.find_jobs(
@@ -450,16 +441,10 @@ def read_details(
                 except UpstreamFailure as failure:
                     reads += 1
                     reason = read_failure_reason(failure)
-                    refused = (
-                        failure.code == "tool_error"
-                        and failure.tool_code in REFUSED_TOOL_CODES
-                    )
-                    refusals = refusals + 1 if refused else 0
                     if failure.terminal:
                         terminal = failure
                 else:
                     reads += 1
-                    refusals = 0
             if terminal is not None:
                 raise terminal
             if detail is not None and _described(posting, detail, job_hosts) is None:

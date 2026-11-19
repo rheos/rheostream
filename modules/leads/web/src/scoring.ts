@@ -46,7 +46,6 @@ const READ_FAILURES: Record<string, string> = {
   no_feed_id: "no id to read",
   not_read_deadline: "not read: run out of time",
   not_read_cap: "not read: read limit reached",
-  not_read_refused: "not read: daily allowance spent",
   unavailable: "service unavailable",
   rate_limited: "rate limited",
   protocol: "unreadable answer",

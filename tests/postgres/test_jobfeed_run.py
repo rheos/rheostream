@@ -3083,6 +3083,32 @@ def test_a_listed_invitation_becomes_an_invited_opportunity(
     quietly_succeeded(c)
 
 
+def test_a_job_delivered_without_its_description_is_read_again(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """#377: only a posting whose description is stored skips its read. An invited
+    job is delivered even when its read fails, so it is stored without one; the
+    next run reads it again, and this time its description is delivered."""
+    c = connected_collector(intake, served)
+    mcp.invitations = [invitation_row(821)]
+    mcp.feeds = {}
+    mcp.details = {"821": answer(503)}
+    collected(c, clock)
+    assert gets(mcp) == ["821"]
+    assert len(opportunities(intake, "~02821")) == 1
+    assert "description" not in bodies(c)[-1]
+    mcp.details = {}
+    collected(c, clock, hours=2)
+    assert gets(mcp) == ["821", "821"]
+    assert bodies(c)[-1]["description"] == FEED_DESCRIPTION
+    # Read once with its description stored, it is not read a third time.
+    collected(c, clock, hours=4)
+    assert gets(mcp) == ["821", "821"]
+
+
 def test_a_tracked_job_that_is_later_invited_is_refreshed_as_invited(
     intake: Intake,
     served: FakeAuthorizationServer,

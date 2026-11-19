@@ -16,9 +16,7 @@ import pytest
 from rheo_core.connectors.mcp_client import McpFailure
 from rheo_leads.jobfeed.collect import (
     MAX_DETAIL_READS,
-    NOT_READ_REFUSED,
     ROW_CAP,
-    STOP_AFTER_REFUSALS,
     CollectResult,
     DetailResult,
     Sighting,
@@ -908,45 +906,3 @@ def test_a_posting_whose_description_is_stored_is_not_read_again() -> None:
     assert read.detail_ok
     assert (result.detail_reads, result.failures, result.known) == (1, 0, 1)
     assert result.reasons == {}
-
-
-def refusing(*refused: str) -> Search:
-    def answer(params: dict[str, Any]) -> object:
-        if params["id"] in refused:
-            return McpFailure("tool_error", tool_code="PERMISSION")
-        return detail_ok(params)
-
-    return details_answer(answer)
-
-
-def test_repeated_refusals_stop_the_reads_for_the_rest_of_the_run() -> None:
-    numbers = range(2101, 2101 + STOP_AFTER_REFUSALS + 3)
-    r = run(refusing(*(str(n) for n in numbers)))
-    result = r.details(sightings(*(posting(n, ordinal=0, at=0) for n in numbers)))
-    # The allowance is spent: once this many refusals come in a row, the rest are
-    # not asked for at all.
-    assert len(r.session.calls) == STOP_AFTER_REFUSALS
-    assert result.detail_reads == STOP_AFTER_REFUSALS
-    assert result.failures == len(numbers)
-    assert result.reasons == {
-        "tool_error:PERMISSION": STOP_AFTER_REFUSALS,
-        NOT_READ_REFUSED: 3,
-    }
-
-
-def test_a_read_that_succeeds_resets_the_refusal_count() -> None:
-    # Single private jobs are refused too; they never add up to a stop.
-    numbers = list(range(2201, 2201 + 2 * STOP_AFTER_REFUSALS))
-    refused = [str(n) for n in numbers if n % 2]
-    r = run(refusing(*refused))
-    result = r.details(sightings(*(posting(n, ordinal=0, at=0) for n in numbers)))
-    assert len(r.session.calls) == len(numbers)
-    assert NOT_READ_REFUSED not in result.reasons
-
-
-def test_other_failures_do_not_count_toward_the_stop() -> None:
-    numbers = range(2301, 2301 + STOP_AFTER_REFUSALS + 2)
-    r = run(details_answer(lambda p: McpFailure("tool_error", tool_code="UPSTREAM")))
-    result = r.details(sightings(*(posting(n, ordinal=0, at=0) for n in numbers)))
-    assert len(r.session.calls) == len(numbers)
-    assert NOT_READ_REFUSED not in result.reasons
