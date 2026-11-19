@@ -103,6 +103,19 @@ def price(low: str, high: str | None = None, unit: str | None = None) -> StatedP
         ),
         ("We pay a $300 flat fee.", price("300", unit="total")),
         ("Offering a $200 bonus on delivery", price("200")),
+        # From the cold review of #614: an amount that names the work, or that
+        # follows "the", is still the job's price.
+        ("This is a $500 project.", price("500")),
+        ("It's a $1,000 job for an experienced editor.", price("1000")),
+        ("We'll start with a $50 test video.", price("50")),
+        ("Start with a $20 trial task, then more work.", price("20")),
+        ("We have a $2-3k range in mind.", price("2000", "3000")),
+        ("a $500 USD project", price("500")),
+        ("The $500 covers the full project.", price("500")),
+        ("The $300 includes two revisions.", price("300")),
+        # "hour-long" describes the item; a number after "for every" is one lot.
+        ("$500 for 1 hour-long video", price("500", unit="item")),
+        ("$5 for every 100 words", price("5", unit="item")),
         # The provider's wrapper around the text is no obstacle.
         (
             f"<untrusted_participant_content>Pay $40 {AN_HOUR}"
@@ -134,7 +147,7 @@ def test_a_stated_amount_is_read_with_its_unit(
         "Run awk '{print $1}' over the log.",
         # A price inside the creative brief is not the job's pay (#611).
         "Claymation short: a $70 hoodie ends up costing our hero far more.",
-        "She cancels the $20 plan and keeps the old phone.",
+        "She cancels her $20 plan and keeps the old phone.",
     ],
 )
 def test_no_amount_is_inferred_from_silence(text: str | None) -> None:
