@@ -474,6 +474,31 @@ def test_tools_roundtrip_and_delete_requires_approval(intake: Intake) -> None:
         to_stage_id="discovery",
     )
     assert changed.ok, changed
+    # A tool call that leaves the value out keeps it: the facade passes only the
+    # arguments sent, so ``value_amount`` is not "set" to null behind the caller.
+    valued = tool(
+        "update",
+        ref=current.ref,
+        revision=changed.result.revision,
+        value_amount="900",
+        value_currency="USD",
+        value_basis="project_fee",
+    )
+    assert valued.ok, valued
+    retitled = tool(
+        "update",
+        ref=current.ref,
+        revision=valued.result.revision,
+        title="Renamed tool inquiry",
+    )
+    assert retitled.ok, retitled
+    kept = one(intake).data
+    assert (kept["value_amount"], kept["value_currency"], kept["value_basis"]) == (
+        valued.result.data["value_amount"],
+        "USD",
+        "project_fee",
+    )
+    assert kept["value_amount"] is not None
     assert tool("delete", ref=current.ref).state == "approval_required"
     assert (
         tool(
