@@ -34,15 +34,20 @@ client kept; any other failure is transient and nothing is retried.
 
 Then collection on the open session: one page of the account's pending
 invitations, best effort, each invited job a discovery posting flagged ``invited``;
+the owner's saved jobs, best effort and paged (:data:`~rheo_leads.jobfeed.collect.
+SAVED_PAGES`), each flagged ``saved``: one the collector has not delivered before
+is a discovery posting, read and delivered whatever its competition, and one
+already delivered only refreshes (so a run does not re-read every saved job); then
+one or two pages of jobs saved and then removed, flagged not saved, refresh only;
 the searches, paced and capped at 80 raw rows, with the capability re-read in a
 short unit between pages (read off, the run stops and writes nothing more); the
 overlapping sightings merged into one per posting, invited jobs first; the detail
 reads, where a failed or omitted read downgrades its sighting. An invited job is
 delivered whatever its competition and even without its detail. When every search
-page call failed and no invitation was listed, the run ends as an upstream failure
-with the backoff; a failed listing, a later failure, a failed or omitted detail or
-a deadline cut leaves the run complete and partial, a failed listing recorded under
-the ``invitations:<code>`` reason.
+page call failed and no invitation or saved job was listed, the run ends as an
+upstream failure with the backoff; a failed listing, a later failure, a failed or
+omitted detail or a deadline cut leaves the run complete and partial, a failed
+listing recorded under the ``invitations:<code>`` or ``saved:<code>`` reason.
 
 Last, the deliveries and the report on the worker's transaction, committed with the
 job's ``succeeded`` row: a forced lease extension, the lifecycle lock and the
@@ -59,7 +64,7 @@ raised as the fixed ``internal_error``, with no chained exception.
 import json
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Final, cast
 from uuid import UUID
 
@@ -89,16 +94,21 @@ from rheo_leads.intake.accept import health_write
 from rheo_leads.jobfeed import dependencies
 from rheo_leads.jobfeed.collect import (
     INVITATIONS_MORE,
+    SAVED_MORE,
     SEARCHES_FAILED,
+    UNSAVED_PAGES,
     Sighting,
     collect_invitations,
     collect_presets,
+    collect_saved,
     invitation_reason,
     merge_sightings,
     read_details,
     read_failure_reason,
+    saved_reason,
 )
 from rheo_leads.jobfeed.delivery import deliver, parse_digests
+from rheo_leads.jobfeed.normalize import NormalizedPosting
 from rheo_leads.jobfeed.presets import (
     DEFAULT_PRESETS,
     Preset,
@@ -267,6 +277,15 @@ def collect_phase(
     deps = dependencies()
     job_hosts = resolve().get_list(JOB_HOSTS_KEY)
     invites = collect_invitations(upstream, organization_id, job_hosts, clock=deps.now)
+    saved = collect_saved(upstream, organization_id, job_hosts, clock=deps.now)
+    unsaved = collect_saved(
+        upstream,
+        organization_id,
+        job_hosts,
+        clock=deps.now,
+        followed=False,
+        pages=UNSAVED_PAGES,
+    )
     collected = collect_presets(
         upstream,
         run.presets,
@@ -278,11 +297,24 @@ def collect_phase(
     if collected.capability_lost:
         return None
     failures = collected.upstream_failures
-    if collected.pages_ok == 0 and failures and not invites.rows:
+    saved_rows = _known_refresh_only(run, saved.rows)
+    # Only an invitation or a saved job new this run keeps a run whose every search
+    # failed going without a backoff; saved jobs already tracked only refresh, and
+    # nearly every run lists some.
+    fresh = invites.rows or any(row.saved_discovery for row in saved_rows)
+    if collected.pages_ok == 0 and failures and not fresh:
         limited = [f for f in failures if f.code == "rate_limited"]
         return _stopped(limited[0] if limited else failures[0])
-    # Invited rows first: merged, they keep their place, so they are read first.
-    merged = merge_sightings([*invites.rows, *collected.rows])
+    # Invited and saved rows first: merged, they keep their place, so they are read
+    # first.
+    merged = merge_sightings(
+        [
+            *invites.rows,
+            *saved_rows,
+            *unsaved.rows,
+            *collected.rows,
+        ]
+    )
     details = read_details(
         upstream,
         merged,
@@ -296,25 +328,38 @@ def collect_phase(
         reasons[invitation_reason(invites.failure)] = 1
     if invites.more:
         reasons[INVITATIONS_MORE] = 1
+    listings = (saved, unsaved)
+    for listing in listings:
+        if listing.failure is not None:
+            key = saved_reason(listing.failure)
+            reasons[key] = reasons.get(key, 0) + 1
+    if saved.more:
+        reasons[SAVED_MORE] = 1
     if collected.pages_ok == 0 and collected.search_failures:
         # Every search failed (a failed call, or a page that failed its checks),
-        # and only the invitations kept the run going: the failure is kept in the
-        # history, though without a backoff.
+        # and only the invitations or new saved jobs kept the run going, or no
+        # call failed outright: the failure is kept in the history, though without
+        # a backoff.
         code = read_failure_reason(failures[0]) if failures else "protocol"
         reasons[f"{SEARCHES_FAILED}:{code}"] = collected.search_failures
     return Collected(
         sightings=details.sightings,
+        # Search and invitation rows; the saved-jobs listings, which list mostly
+        # the same tracked jobs every run, are not counted.
         fetched=len(collected.rows)
         + collected.invalid_rows
         + len(invites.rows)
         + invites.invalid_rows,
-        # Search pages only; the invitations listing is not one.
+        # Search pages only; the invitations and saved-jobs listings are not.
         pages=collected.pages_used,
         detail_reads=details.detail_reads,
         errors=collected.invalid_rows
         + details.failures
         + invites.invalid_rows
-        + (invites.failure is not None),
+        + (invites.failure is not None)
+        + sum(
+            listing.invalid_rows + (listing.failure is not None) for listing in listings
+        ),
         partial=bool(
             collected.search_failures
             or collected.cut
@@ -322,9 +367,29 @@ def collect_phase(
             or details.cut
             or invites.failure
             or invites.cut
+            or any(listing.failure or listing.cut for listing in listings)
         ),
         read_failures=reasons,
     )
+
+
+def _known_refresh_only(
+    run: _Run, postings: Sequence[NormalizedPosting]
+) -> list[NormalizedPosting]:
+    """``rows`` with every posting whose description this connection already
+    delivered made refresh-only (:func:`_described_before`): a saved job is read in
+    detail until its description is stored, and refreshed after that. One tracked
+    without a description (its read failed, or it came from a refresh) stays a
+    saved discovery, so it is read, or described from its listing, next time."""
+    if not postings:
+        return []
+    described = _described_before(run, [posting.posting_id for posting in postings])
+    return [
+        replace(posting, purpose="refresh_only", saved_discovery=False)
+        if posting.posting_id in described
+        else posting
+        for posting in postings
+    ]
 
 
 def _presets_text(ctx: WorkspaceContext, uow: UnitOfWork) -> str:

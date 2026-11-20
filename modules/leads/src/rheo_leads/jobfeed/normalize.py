@@ -70,6 +70,7 @@ BODY_KEYS: tuple[str, ...] = (
     "client_hire_rate",
     "applied",
     "invited",
+    "saved",
     "stated_price_min",
     "stated_price_max",
     "stated_price_unit",
@@ -96,6 +97,7 @@ COMPARABLE_FIELDS: tuple[str, ...] = (
     "client_hire_rate",
     "applied",
     "invited",
+    "saved",
 )
 
 
@@ -211,6 +213,19 @@ class NormalizedPosting:
     # The client invited the account to this job. Delivered only when true: a
     # sighting that is not an invitation says nothing either way.
     invited: bool = False
+    # The owner saved (bookmarked) this job: true from the saved-jobs listing,
+    # false from its list of jobs saved and then removed, ``None`` from every other
+    # sighting, which says nothing either way and is left out of the body.
+    saved: bool | None = None
+    # A saved job the collector has not delivered before: read and delivered
+    # whatever its competition. Never delivered, never compared. A saved job
+    # already delivered, or one that only appears in a search, is not one.
+    saved_discovery: bool = False
+    # The full description the saved-jobs listing carried (unwrapped, #392). Never
+    # delivered, never compared: a saved job not delivered before falls back to it
+    # only when its detail read was made and failed (:func:`from_listing`), so a
+    # saved job that can't be read is still delivered once and never read again.
+    listed_description: str | None = None
     # A price the description states, read only while the feed gives no budget
     # (#503). Kept apart from ``budget_*``, which only the feed fills, so an hourly
     # rate, a project total and a per-item price stay distinguishable.
@@ -240,6 +255,7 @@ class NormalizedPosting:
             "client_hire_rate": _optional_decimal(self.client_hire_rate),
             "applied": _optional_flag(self.applied),
             "invited": _flag(True) if self.invited else None,
+            "saved": _optional_flag(self.saved),
             **stated_body(self.stated),
             "observed_at": self.observed_at.isoformat(),
         }
@@ -448,6 +464,69 @@ def normalize_invitation(
         count_band_label=None,
         feed_id=_feed_id(job.get("id")),
         invited=True,
+    )
+
+
+def normalize_saved(
+    row: object,
+    job_hosts: Sequence[str],
+    *,
+    observed_at: datetime,
+    search_ordinal: int,
+    saved: bool,
+) -> NormalizedPosting | None:
+    """One saved-jobs row as a posting flagged ``saved``, or ``None`` when it fails
+    validation.
+
+    A row is read like a search row (its URL, title, id and whatever competition,
+    budget and client facts it carries), or, when it nests its job under
+    ``jobPosting`` or ``job``, like an invitation's job. ``applied`` stays unknown
+    unless the row says so, so a listing never clears it. A currently saved job is
+    a discovery posting; one saved and then removed (``saved`` false) only
+    refreshes a posting already tracked.
+    """
+    if isinstance(job_hosts, str):
+        raise TypeError("job_hosts must be a sequence of host names")
+    if observed_at.tzinfo is None:
+        raise ValueError("observed_at must carry a time zone")
+    entry = _mapping(row)
+    nested = _mapping(entry.get("jobPosting") or entry.get("job"))
+    source = nested if nested else entry
+    title = source.get("title")
+    if not isinstance(title, str):
+        title = _mapping(source.get("content")).get("title")
+    flat = {**source, "title": title}
+    posting = normalize_row(
+        flat,
+        job_hosts,
+        observed_at=observed_at,
+        purpose="discover" if saved else "refresh_only",
+        search_ordinal=search_ordinal,
+    )
+    if posting is None:
+        return None
+    applied = source.get("applied")
+    listed = _mapping(source.get("content")).get("description")
+    listed = unwrapped(listed) if saved and isinstance(listed, str) else ""
+    return replace(
+        posting,
+        applied=applied if isinstance(applied, bool) else None,
+        saved=saved,
+        saved_discovery=saved,
+        listed_description=listed or None,
+    )
+
+
+def from_listing(posting: NormalizedPosting) -> NormalizedPosting | None:
+    """A saved job described from its listing's own description, or ``None`` when
+    it is not a saved discovery or the listing carried none."""
+    listed = posting.listed_description
+    if not posting.saved_discovery or not listed:
+        return None
+    return replace(
+        posting,
+        description=listed,
+        stated=text_price(listed, posting.budget_min, posting.budget_max),
     )
 
 

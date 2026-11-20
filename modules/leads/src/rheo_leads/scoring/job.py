@@ -35,8 +35,8 @@ disappears from the queue.
 (``job_promotion``) is not held by tier 1: it goes to the model like a job that
 passed, and the clauses that would have held it are kept on its assessment as
 conditions to check. The promotion is its own row, so it outlives every rescore.
-A job the client invited the owner to (``ext.jobsearch.invited``) is treated the
-same way, by tier 1 itself.
+A job the client invited the owner to (``ext.jobsearch.invited``) or the owner
+saved (``ext.jobsearch.saved``) is treated the same way, by tier 1 itself.
 
 **Content-free.** Log lines carry counts and fixed failure words, and a database
 error leaves as a fixed word. The profile text reaches the model's stdin, and a
@@ -174,6 +174,7 @@ READ_TARGETS: Final = (
             "client_reviews",
             "client_hire_rate",
             "invited",
+            "saved",
         )
     ),
 )
@@ -319,6 +320,10 @@ def input_digest(title: str, fields: Mapping[str, str], cap: int) -> str:
         # Only an invitation joins the fingerprint, so a job the client invited the
         # owner to is scored again, and no other job's fingerprint moves.
         facts["invited"] = True
+    if fields.get(EXTENSION + "saved") == "true":
+        # Likewise a job the owner saved: it is scored again past tier 1, and only
+        # saved jobs' fingerprints move.
+        facts["saved"] = True
     canonical = json.dumps(facts, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -400,8 +405,9 @@ def age_out(uow: UnitOfWork, *, now: datetime, max_age: timedelta | None) -> int
     earlier assessment, if any, stays its current one. Exempt: a promoted job, an
     invited one, and one whose current assessment waited for the full posting (its
     description arrived late, often pasted by the owner, and nothing else could get
-    it scored). A job a sweep holds a claim on is left to that sweep. ``None`` turns
-    the cutoff off."""
+    it scored). A job the owner saved is exempt too, as an invited one is: saving an
+    older job is a request to score it. A job a sweep holds a claim on is left to
+    that sweep. ``None`` turns the cutoff off."""
     if max_age is None:
         return 0
     state, o, field = s.job_score_state, p.opportunity, p.opportunity_field_state
@@ -409,8 +415,8 @@ def age_out(uow: UnitOfWork, *, now: datetime, max_age: timedelta | None) -> int
     old_ids = (
         _open_jobs().with_only_columns(o.c.id).where(o.c.created_at < now - max_age)
     )
-    invited = select(field.c.opportunity_id).where(
-        field.c.target == EXTENSION + "invited",
+    flagged = select(field.c.opportunity_id).where(
+        field.c.target.in_([EXTENSION + "invited", EXTENSION + "saved"]),
         field.c.value_kind == "value",
         field.c.value_text == "true",
         field.c.orphaned.is_(False),
@@ -439,7 +445,7 @@ def age_out(uow: UnitOfWork, *, now: datetime, max_age: timedelta | None) -> int
             unclaimed,
             state.c.opportunity_id.in_(old_ids),
             state.c.opportunity_id.not_in(select(s.job_promotion.c.opportunity_id)),
-            state.c.opportunity_id.not_in(invited),
+            state.c.opportunity_id.not_in(flagged),
             func.coalesce(
                 func.starts_with(latest_explanation, UNDESCRIBED_LINE), False
             ).is_(False),
@@ -612,7 +618,7 @@ def assess(
         )
     if job.description is None:
         return _undescribed(job)
-    if filter_config.enabled and not promoted and not job.invited:
+    if filter_config.enabled and not promoted and not job.invited and not job.saved:
         held = _prefilter(job, profile, filter_config, filter_runner, heartbeat, track)
         if held is not None:
             return held

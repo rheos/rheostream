@@ -17,6 +17,7 @@ import {
   formatRating,
   formatSpend,
   isInvited,
+  isSaved,
   isNewClient,
   loadPrefs,
   overCap,
@@ -229,6 +230,11 @@ describe("proposal bands and money", () => {
     expect(isInvited({ invited: "true" })).toBe(true);
     expect(isInvited({ invited: "false" })).toBe(false);
     expect(isInvited({})).toBe(false);
+  });
+  it("calls a job saved only on a stored true", () => {
+    expect(isSaved({ saved: "true" })).toBe(true);
+    expect(isSaved({ saved: "false" })).toBe(false);
+    expect(isSaved({})).toBe(false);
   });
   it("calls a client new only on a known zero spend and zero reviews", () => {
     expect(isNewClient({ client_spend: "0", client_reviews: "0" })).toBe(true);
@@ -474,6 +480,12 @@ describe("queue rendering", () => {
     expect(html).toContain(">Invited<");
     expect(render({ items: [full] })).not.toContain(">Invited<");
   });
+  it("tags a saved job and no other (#594)", () => {
+    const saved = { ...full, fields: { ...row(full.fields), saved: "true" } };
+    expect(render({ items: [saved] })).toContain(">Saved<");
+    const removed = { ...full, fields: { ...row(full.fields), saved: "false" } };
+    expect(render({ items: [removed] })).not.toContain(">Saved<");
+  });
   it("omits every absent fact on a sparse card and invents no score", () => {
     const html = render({ items: [sparse] });
     expect(html).toContain("Sparse example");
@@ -547,6 +559,14 @@ describe("queue rendering", () => {
     const quiet = renderToStaticMarkup(<JobHeader item={sparse} now={NOW} />);
     expect(quiet).not.toContain('role="alert"');
     expect(quiet).not.toContain("Payment verified");
+  });
+  it("says a saved job is saved on Upwork in the detail header (#594)", () => {
+    const saved = { ...full, fields: { ...row(full.fields), saved: "true" } };
+    const removed = { ...full, fields: { ...row(full.fields), saved: "false" } };
+    const header = (item: typeof full) =>
+      renderToStaticMarkup(<JobHeader item={item} now={NOW} />);
+    expect(header(saved)).toContain("Saved on Upwork");
+    expect(header(removed)).not.toContain("Saved on Upwork");
   });
   it("puts the client's hire rate and reviews in the info tip", () => {
     const html = renderToStaticMarkup(

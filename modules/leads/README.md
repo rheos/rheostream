@@ -193,7 +193,16 @@ invited you to: an invited job is always read and delivered, whatever its
 competition, and its `ext.jobsearch.invited` field is set, so the queue tags it
 Invited and scoring never holds it back on the client filters: it is scored like a
 job that passed, and the filters it would have failed are kept on its assessment as
-conditions to check. A tracked posting is delivered again only
+conditions to check. Each run also lists the jobs you saved on Upwork (up to 50): a
+saved job the collector has not delivered before is read in full and delivered
+whatever its competition, and its `ext.jobsearch.saved` field is set, so the queue
+tags it Saved and scoring treats it like an invited job. A saved job already
+delivered is only refreshed, so a run does not read every saved job again, and a
+job you unsave on Upwork gets `ext.jobsearch.saved = false` on the next run. The
+**Sync saved jobs** button on Leads > Scoring > Job feed (owner only,
+`leads.jobfeed.collect_now`) makes the next run due now instead of at the next
+two-hour slot; it is refused while the feed waits out a provider backoff and within
+10 minutes of the last run. A tracked posting is delivered again only
 when one of its fields changed, so its proposal count, budget and client record stay
 current. Collected values fill the `ext.jobsearch.*` fields; no person or organization
 is created. When the feed gives no budget, the collector reads a price the description

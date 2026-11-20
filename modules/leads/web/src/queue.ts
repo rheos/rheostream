@@ -116,6 +116,11 @@ export function isInvited(fields: Row): boolean {
   return str(fields.invited) === "true";
 }
 
+/** The owner saved (bookmarked) this job on Upwork. */
+export function isSaved(fields: Row): boolean {
+  return str(fields.saved) === "true";
+}
+
 export function paymentVerified(fields: Row): boolean {
   return str(fields.client_payment_verified) === "true";
 }

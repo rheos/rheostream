@@ -598,13 +598,14 @@ def backdate(scored: Scoring, posting: str, by: timedelta) -> None:
         uow.commit()
 
 
-def invite(scored: Scoring, posting: str) -> None:
-    """Flag a job invited, as the job feed's invitation listing does."""
+def invite(scored: Scoring, posting: str, flag: str = "invited") -> None:
+    """Flag a job invited (or ``saved``), as the job feed's invitation (or
+    saved-jobs) listing does."""
     with open_unit_of_work(scored.c.owner) as uow:
         uow.connection.execute(
             p.opportunity_field_state.insert().values(
                 opportunity_id=the_opportunity(scored.i, posting)["id"],
-                target="ext.jobsearch.invited",
+                target=f"ext.jobsearch.{flag}",
                 value_kind="value",
                 value_text="true",
                 owner="source",
@@ -649,6 +650,20 @@ def test_a_sweep_resuming_after_a_pause_sets_aside_jobs_past_the_cutoff(
     scored.sweep(now + timedelta(hours=1))
     assert scored.state("~02100")["state"] == "failed"
     assert len(adapter.starts) == 2
+
+
+def test_an_old_job_the_owner_saved_is_scored_not_set_aside(scored: Scoring) -> None:
+    for posting in ("~02110", "~02111"):
+        scored.paste(posting, FULL.format(title=posting, what="pipeline", activity=""))
+    backdate(scored, "~02110", timedelta(days=2))
+    backdate(scored, "~02111", timedelta(days=2))
+    invite(scored, "~02111", flag="saved")
+    adapter = scored.model(final(7))
+    scored.set_profile()
+    scored.sweep()
+    assert scored.state("~02110")["failure_kind"] == scoring.TOO_OLD
+    assert [a["score"] for a in scored.assessments("~02111")] == [70]
+    assert len(adapter.starts) == 1
 
 
 def test_an_old_job_with_a_score_keeps_it_when_its_posting_moves(

@@ -24,8 +24,8 @@ from postgres.test_module_upgrade import upgrade
 
 pytestmark = pytest.mark.postgres
 REVISION = "0021_stated_price"
-# The package head the upgrade moves to; 0022 follows this file's revision.
-HEAD = "0022_reopen_closed_jobs"
+# The package head the upgrade moves to; 0022 and 0023 follow this file's revision.
+HEAD = "0023_saved_jobs"
 PREVIOUS = "0020_current_handoff"
 FIELDS = {
     "ext.jobsearch.stated_price_min": ("decimal", [], "/stated_price_min"),
@@ -41,7 +41,7 @@ FIELDS = {
 def rewind(i: Intake) -> None:
     with open_unit_of_work(i.ctx) as uow:
         undone = rewind_leads(uow.connection, PREVIOUS)
-        assert undone == (HEAD, REVISION)
+        assert undone == (HEAD, "0022_reopen_closed_jobs", REVISION)
         uow.connection.execute(
             delete(module_schema_version).where(
                 module_schema_version.c.module_id == "leads",
@@ -80,10 +80,11 @@ def test_a_populated_0020_moves_to_preset_v3_and_new_mappings(intake: Intake) ->
     with open_unit_of_work(intake.ctx) as uow:
         c = uow.connection
         (preset,) = rows(c, p.pipeline_preset, id=PRESET)
-        # 0022 then adds version 4 the same way; version 3 is this file's.
-        assert preset["current_version"] == 4
+        # 0022 and 0023 then add versions 4 and 5 the same way; version 3 is this
+        # file's.
+        assert preset["current_version"] == 5
         (moved,) = rows(c, p.opportunity, id=job["id"])
-        assert moved["preset_version"] == 4
+        assert moved["preset_version"] == 5
         assert {k: v for k, v in moved.items() if k != "preset_version"} == {
             k: v for k, v in job.items() if k != "preset_version"
         }
@@ -101,15 +102,16 @@ def test_a_populated_0020_moves_to_preset_v3_and_new_mappings(intake: Intake) ->
         )
         v3["preset_field"] = [r for r in v3["preset_field"] if r[1] not in FIELDS]
         assert v3 == v2_before
-        # Both job connections moved to a new mapping version carrying the rules;
-        # every other connection stayed, and old rule versions are untouched.
+        # Both job connections moved to a new mapping version carrying the rules
+        # (and 0023 then moved them one further); every other connection stayed, and
+        # old rule versions are untouched.
         connections = {
             r["id"]: (r["mapping_id"], r["mapping_version"])
             for r in rows(c, t.intake_connection)
         }
         for connection in (feed, pasted):
             mapping_id, before = connections_before[connection]
-            assert connections[connection] == (mapping_id, before + 1)
+            assert connections[connection] == (mapping_id, before + 2)
             old = rows(c, t.field_mapping_rule, mapping_id=mapping_id, version=before)
             new = rows(
                 c, t.field_mapping_rule, mapping_id=mapping_id, version=before + 1
@@ -188,7 +190,7 @@ def test_a_migrated_feed_connection_stores_a_stated_price(intake: Intake) -> Non
     with open_unit_of_work(intake.ctx) as uow:
         c = uow.connection
         (job,) = rows(c, p.opportunity, title="Stated price example")
-        assert (job["preset_id"], job["preset_version"]) == (PRESET, 4)
+        assert (job["preset_id"], job["preset_version"]) == (PRESET, 5)
         states = {
             r["target"]: r["value_text"]
             for r in rows(c, p.opportunity_field_state, opportunity_id=job["id"])

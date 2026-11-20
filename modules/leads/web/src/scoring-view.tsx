@@ -405,9 +405,45 @@ function Calls({
   );
 }
 
+function SyncIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6 3h12v18l-6-4-6 4z" />
+      <path d="M12 7v6M9.5 10.5 12 13l2.5-2.5" />
+    </svg>
+  );
+}
+
+/** The owner's "Sync saved jobs": a collector run now (#594). */
+interface FeedSync {
+  run: () => void;
+  busy: boolean;
+  notice: string;
+}
+
 /** The job feed's recent runs: what each brought in, and why any detail read
  * failed, so a bad stretch can be read after the fact (#377). */
-function FeedRuns({ view, now, zone }: { view: Row; now: number; zone: string }) {
+function FeedRuns({
+  view,
+  now,
+  zone,
+  sync,
+}: {
+  view: Row;
+  now: number;
+  zone: string;
+  sync?: FeedSync;
+}) {
   const runs = rows(view.feed_runs);
   return (
     <>
@@ -420,11 +456,33 @@ function FeedRuns({ view, now, zone }: { view: Row; now: number; zone: string })
             description, until a later run reads it.
           </p>
           <p>
+            Every run also brings in the jobs you saved on Upwork, whatever
+            their competition, and tags them Saved. Sync saved jobs runs the
+            feed now instead of waiting for the next run.
+          </p>
+          <p>
             Only counts and fixed reasons are kept, never a posting. Runs older
             than 90 days are removed.
           </p>
         </InfoTip>
+        {sync ? (
+          <button
+            type="button"
+            className={styles.syncButton}
+            title="Run the job feed now to bring in your saved Upwork jobs"
+            disabled={sync.busy}
+            onClick={sync.run}
+          >
+            <SyncIcon />
+            Sync saved jobs
+          </button>
+        ) : null}
       </div>
+      {sync?.notice ? (
+        <p className={styles.quiet} role="status">
+          {sync.notice}
+        </p>
+      ) : null}
       {!runs.length ? (
         <p className={styles.quiet}>No runs recorded yet.</p>
       ) : (
@@ -500,6 +558,8 @@ function Status({
 export function ScoringView(props: ScoringProps) {
   const { view, tab, now, zone, refresh } = props;
   const [retrying, setRetrying] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const root = useRef<HTMLDivElement | null>(null);
   const live = busy(view, now);
@@ -573,6 +633,32 @@ export function ScoringView(props: ScoringProps) {
     }
     setRetrying(false);
     setError(failure);
+  }
+
+  async function syncSaved() {
+    const submit = props.submit;
+    if (!submit || syncing) return;
+    setSyncing(true);
+    setError("");
+    setNotice("");
+    let outcome;
+    try {
+      outcome = await submit("leads.jobfeed.collect_now", {});
+    } catch {
+      outcome = { state: "unavailable" as const };
+    }
+    setSyncing(false);
+    if (outcome.state === "ok") {
+      setNotice(
+        "Sync requested. The next run should start within a minute or two; reload this tab to see it.",
+      );
+      return;
+    }
+    setError(
+      outcome.state === "refused" && outcome.text
+        ? `${outcome.text.charAt(0).toUpperCase()}${outcome.text.slice(1)}.`
+        : "Could not start a sync. Try again.",
+    );
   }
 
   const queued = typeof view.queued_total === "number" ? view.queued_total : 0;
@@ -696,7 +782,16 @@ export function ScoringView(props: ScoringProps) {
       {tab === "calls" ? (
         <Calls view={view} now={now} zone={zone} hrefs={props.hrefs} />
       ) : tab === "feed" ? (
-        <FeedRuns view={view} now={now} zone={zone} />
+        <FeedRuns
+          view={view}
+          now={now}
+          zone={zone}
+          sync={
+            props.canRetry && props.submit
+              ? { run: () => void syncSaved(), busy: syncing, notice }
+              : undefined
+          }
+        />
       ) : (
         <Queue
           view={view}

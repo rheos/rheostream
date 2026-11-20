@@ -30,6 +30,8 @@ pytestmark = [
     pytest.mark.parametrize("intake", [False], indirect=True),
 ]
 REVISION = "0022_reopen_closed_jobs"
+# The package head the upgrade moves to; 0023 follows this file's revision.
+HEAD = "0023_saved_jobs"
 PREVIOUS = "0021_stated_price"
 PRESET = h.JOBSEARCH_PRESET_ID
 REOPEN = sorted(
@@ -68,7 +70,7 @@ def test_a_populated_0021_moves_to_preset_v4_with_the_reopen_moves(
     assert move(intake, cards(intake)["Passed posting"], "passed").ok
     with open_unit_of_work(intake.ctx) as uow:
         undone = rewind_leads(uow.connection, PREVIOUS)
-        assert undone == (REVISION,)
+        assert undone == (HEAD, REVISION)
         uow.connection.execute(
             delete(module_schema_version).where(
                 module_schema_version.c.module_id == "leads",
@@ -87,16 +89,17 @@ def test_a_populated_0021_moves_to_preset_v4_with_the_reopen_moves(
         assert not [r for r in transitions(c, 3) if r[1] in {"passed", "lost"}]
         uow.commit()
 
-    result = upgrade(intake, target_schema=REVISION)
+    result = upgrade(intake, target_schema=HEAD)
     assert result.ok and result.result.changed, result
 
     with open_unit_of_work(intake.ctx) as uow:
         c = uow.connection
         (preset,) = rows(c, p.pipeline_preset, id=PRESET)
-        assert preset["current_version"] == 4
+        # 0023 then adds version 5 the same way; version 4 is this file's.
+        assert preset["current_version"] == 5
         for title, before in jobs.items():
             (after,) = rows(c, p.opportunity, id=before["id"])
-            assert after["preset_version"] == 4, title
+            assert after["preset_version"] == 5, title
             # Stage, disposition and revision are kept: nothing an owner sees moves.
             assert {k: v for k, v in after.items() if k != "preset_version"} == {
                 k: v for k, v in before.items() if k != "preset_version"

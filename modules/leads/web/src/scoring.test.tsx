@@ -154,6 +154,14 @@ describe("the Scoring view's words", () => {
       "refused by the job service (PERMISSION)",
     );
   });
+  it("names a failed saved-jobs listing by its reason (#594)", () => {
+    expect(readFailureLabel("saved:protocol")).toBe(
+      "saved jobs not listed: unreadable answer",
+    );
+    expect(readFailureLabel("saved:more")).toBe(
+      "more saved jobs than one run reads",
+    );
+  });
   it("says what scoring is doing", () => {
     expect(statusLine(VIEW.status as Row, NOW).text).toBe(
       'Scoring "Example data pipeline" for 42s',
@@ -303,6 +311,54 @@ describe("retrying failed jobs", () => {
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
       "Could not put the failed jobs back in line",
     );
+  });
+
+  it("lets an owner sync saved jobs from the Job feed tab (#594)", async () => {
+    expect(markup("feed", VIEW, false)).not.toContain("Sync saved jobs</button>");
+    const outcomes = [
+      { state: "ok" as const },
+      {
+        state: "refused" as const,
+        code: "run_recent",
+        text: "the job feed ran in the last few minutes; try again shortly",
+      },
+    ];
+    const submit = vi.fn().mockImplementation(async () => outcomes.shift());
+    act(() =>
+      root.render(
+        <ScoringView
+          view={VIEW}
+          now={NOW}
+          zone="UTC"
+          tab="feed"
+          hrefs={{}}
+          tabHrefs={{ queue: "/q", calls: "/c", feed: "/f" }}
+          reviewHref="/r"
+          canRetry
+          submit={submit as unknown as ShellApi["submit"]}
+        />,
+      ),
+    );
+    const button = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Sync saved jobs"),
+    );
+    const notices = () =>
+      Array.from(host.querySelectorAll('[role="status"]'))
+        .map((n) => n.textContent ?? "")
+        .filter((text) => text.startsWith("Sync"));
+    expect(button).toBeDefined();
+    await act(async () => {
+      button?.click();
+    });
+    expect(submit).toHaveBeenCalledWith("leads.jobfeed.collect_now", {});
+    expect(notices()).toEqual([expect.stringContaining("Sync requested")]);
+    await act(async () => {
+      button?.click();
+    });
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      "The job feed ran in the last few minutes; try again shortly.",
+    );
+    expect(notices()).toEqual([]);
   });
 
   it("lets an owner retry waiting jobs now (#478)", async () => {

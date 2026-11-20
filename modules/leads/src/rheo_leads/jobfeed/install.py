@@ -25,10 +25,11 @@ from rheo_leads.storage import jobfeed as j
 from rheo_leads.storage import pipeline as p
 from rheo_leads.storage import tables as t
 
-MAPPING_VERSION = 3
+MAPPING_VERSION = 4
 """The job mapping's version. 2 adds ``invited`` (migration ``0018_invited_jobs``
 moves installed job feed and job paste mappings from 1 to 2); 3 adds the stated
-price (``0021_stated_price`` moves them on to 3)."""
+price (``0021_stated_price`` moves them on to 3); 4 adds ``saved``
+(``0023_saved_jobs`` moves them on to 4)."""
 POSTING_ID = JOBSEARCH_TARGET_PREFIX + "posting_id"
 # The const value is the Job search preset's existing platform enum value.
 PLATFORM = "upwork"
@@ -85,6 +86,7 @@ RULES: tuple[MappingRule, ...] = (
             "client_hire_rate",
             "applied",
             "invited",
+            "saved",
         )
     ),
     *(

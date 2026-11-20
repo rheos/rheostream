@@ -768,8 +768,8 @@ RHEO__leads__jobfeed__list_tools=false
   error and dropped; stored posting URLs are rebuilt on the first host in the list.
   Empty (the default) also stops a run before it starts.
 - `leads.jobfeed.tool_prefix` (default empty) goes in front of each tool name a run
-  calls, so `acme__` sends `acme__list_accounts`, `acme__list_freelancer_proposals`
-  and `acme__find_jobs`. A provider may
+  calls, so `acme__` sends `acme__list_accounts`, `acme__list_freelancer_proposals`,
+  `acme__find_saved_jobs` and `acme__find_jobs`. A provider may
   name its tools with a prefix; set this to match what its `tools/list` or a working
   client uses. Letters, digits, `_` and `-` only, at most 64; any other value makes a
   run record `endpoint_misconfigured` before it sends anything.
@@ -1053,16 +1053,22 @@ turning on the wire trace below.
 - **One run.** One token refresh, never retried; the MCP session set-up; the account
   check; one page (at most 10) of the account's pending invitations, best effort,
   through the read-only invitations action of `list_freelancer_proposals`, the only
-  action of that tool the collector may call; the workspace's search presets (by
+  action of that tool the collector may call; up to five pages (10 each) of the jobs
+  the owner saved, then up to two pages of jobs saved and later removed, best effort,
+  through the `list` action of `find_saved_jobs`, the only action of that tool the
+  collector may call (never `save_job`); the workspace's search presets (by
   default three searches: one page of best matches, up to five pages of the newest
   postings, one page of postings above 50 proposals; at most 8 pages of 10 rows with
-  configured presets); one detail read for each invited job and each discovered
-  posting that has 50 or fewer proposals and is not marked applied, at most 60,
-  invited jobs first; then the deliveries, the report and the run's history row,
-  committed together. An invited job is delivered flagged as invited, whatever its
-  proposal count and even when it is marked applied.
-  A failed invitations listing never stops the run: it completes as
-  `collection_partial` with the reason `invitations:<code>` in its history.
+  configured presets); one detail read for each invited job, each saved job not
+  delivered before, and each discovered posting that has 50 or fewer proposals and is
+  not marked applied, at most 60, invited and saved jobs first; then the deliveries,
+  the report and the run's history row, committed together. An invited job is
+  delivered flagged as invited, whatever its proposal count and even when it is
+  marked applied; a saved job not delivered before is delivered flagged as saved,
+  whatever its proposal count. A failed invitations or saved-jobs listing never stops
+  the run: it completes as `collection_partial` with the reason `invitations:<code>`
+  or `saved:<code>` in its history (`saved:more` when more saved jobs wait than one
+  run reads).
 - **Deadline and pacing.** A run has 420 seconds from its claim. Search and detail
   requests start at least 5.3 seconds apart, and none starts with too little of the
   deadline left; a cut run completes as `collection_partial`. Each MCP request has a

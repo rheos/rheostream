@@ -17,15 +17,19 @@ from rheo_core.connectors.mcp_client import McpFailure
 from rheo_leads.jobfeed.collect import (
     MAX_DETAIL_READS,
     ROW_CAP,
+    SAVED_PAGES,
     CollectResult,
     DetailResult,
     Sighting,
     collect_invitations,
     collect_presets,
+    collect_saved,
     invitation_reason,
     merge_sightings,
     read_details,
+    saved_reason,
 )
+from rheo_leads.jobfeed.delivery import delivered_posting, discovery_eligible
 from rheo_leads.jobfeed.normalize import NormalizedPosting, normalize_row
 from rheo_leads.jobfeed.presets import DEFAULT_PRESETS, Preset, Purpose
 from rheo_leads.jobfeed.upstream import Upstream, UpstreamFailure
@@ -95,12 +99,12 @@ class FakeSession:
         self, name: str, arguments: Mapping[str, object]
     ) -> dict[str, object]:
         # The invitations listing answers through ``search`` as action
-        # "invitations"; every other call is find_jobs.
-        assert name == (
-            "list_freelancer_proposals"
-            if arguments["action"] == "invitations"
-            else "find_jobs"
-        )
+        # "invitations", a saved-jobs page as action "list"; every other call is
+        # find_jobs.
+        assert name == {
+            "invitations": "list_freelancer_proposals",
+            "list": "find_saved_jobs",
+        }.get(str(arguments["action"]), "find_jobs")
         assert arguments["org_uid"] == ORG
         action = arguments["action"]
         params = arguments["params"]
@@ -879,6 +883,255 @@ def test_a_listing_with_more_pages_says_so() -> None:
     page_one = invitations_page(invite_row(2501), hasMore=True)
     assert invites(run(listing(page_one))).more
     assert not invites(run(listing(invitations_page(invite_row(2502))))).more
+
+
+# --- saved jobs ---------------------------------------------------------------------
+
+
+def saved_job(number: int, **changes: object) -> dict[str, object]:
+    """A row shaped like a live ``find_saved_jobs list`` answer: the saved record's
+    own id outside, the job (its id, URL and content) nested under ``job``."""
+    job: dict[str, object] = {
+        "id": str(number),
+        "content": {"title": f"Synthetic saved build {number}"},
+        "url": f"https://www.example.com/jobs/~02{number}",
+    }
+    job.update(changes)
+    return {
+        "followed": True,
+        "id": f"9{number}",
+        "job": job,
+        "lastUpdateTs": "2026-11-18T18:53:24Z",
+    }
+
+
+def saved_listing(
+    pages: Sequence[object], *, followed: bool = True, rest: object = None
+) -> Search:
+    """Answers page ``offset // 10`` from ``pages``, checking the arguments."""
+
+    def search(action: str, params: dict[str, Any]) -> object:
+        assert action == "list"
+        assert params["limit"] == 10 and params["followed"] is followed
+        index = params["offset"] // 10
+        return pages[index] if index < len(pages) else rest
+
+    return search
+
+
+def saved_page(*rows: object, more: bool | None = None) -> dict[str, object]:
+    document: dict[str, object] = {
+        "status": "ok",
+        "data": {"personSavedJobs": list(rows)},
+    }
+    if more is not None:
+        document["hasMore"] = more
+    return document
+
+
+def saved(r: Run, **changes: Any) -> Any:
+    return collect_saved(r.upstream, ORG, HOSTS, clock=r.clock.wall, **changes)
+
+
+def test_each_saved_job_is_a_saved_discovery_posting() -> None:
+    r = run(saved_listing([saved_page(saved_job(3001), saved_job(3002))]))
+    result = saved(r)
+    assert r.session.actions() == ["list"]
+    assert [p.posting_id for p in result.rows] == ["~023001", "~023002"]
+    assert all(p.saved is True and p.purpose == "discover" for p in result.rows)
+    assert all(p.applied is None and not p.invited for p in result.rows)
+    assert [p.feed_id for p in result.rows] == ["3001", "3002"]
+    assert (result.invalid_rows, result.failure, result.cut, result.more) == (
+        0,
+        None,
+        False,
+        False,
+    )
+
+
+def test_a_removed_job_is_flagged_not_saved_and_only_refreshes() -> None:
+    r = run(saved_listing([saved_page(saved_job(3003))], followed=False))
+    (removed,) = saved(r, followed=False).rows
+    assert removed.saved is False and removed.purpose == "refresh_only"
+
+
+def test_saved_pages_follow_the_offset_until_a_short_page() -> None:
+    full = saved_page(*[saved_job(3100 + n) for n in range(10)])
+    r = run(saved_listing([full, saved_page(saved_job(3200))]))
+    result = saved(r)
+    assert [params["offset"] for _, params in r.session.calls] == [0, 10]
+    assert len(result.rows) == 11 and not result.more
+
+
+def test_saved_pages_stop_at_the_bound_and_say_more_remain() -> None:
+    pages = [
+        saved_page(*[saved_job(4000 + 10 * page + n) for n in range(10)], more=True)
+        for page in range(SAVED_PAGES + 1)
+    ]
+    r = run(saved_listing(pages))
+    result = saved(r)
+    assert len(r.session.calls) == SAVED_PAGES
+    assert len(result.rows) == 10 * SAVED_PAGES and result.more
+
+
+def test_has_more_false_ends_the_listing_even_on_a_full_page() -> None:
+    full = saved_page(*[saved_job(3300 + n) for n in range(10)], more=False)
+    r = run(saved_listing([full], rest=AssertionError("no second page")))
+    assert len(saved(r).rows) == 10 and len(r.session.calls) == 1
+
+
+def test_a_saved_row_is_read_by_its_jobs_id_not_the_saved_records() -> None:
+    # The saved record's own id ("93401") is not the job's: details are read by the
+    # job's id, and the posting is keyed by the job's URL.
+    r = run(saved_listing([saved_page(saved_job(3401))]))
+    (row,) = saved(r).rows
+    assert (row.posting_id, row.title, row.feed_id) == (
+        "~023401",
+        "Synthetic saved build 3401",
+        "3401",
+    )
+
+
+def test_an_invalid_saved_row_is_counted_and_skipped() -> None:
+    bad = saved_job(3501, url="https://elsewhere.example.org/jobs/~023501")
+    r = run(saved_listing([saved_page(saved_job(3502), bad, "nope")]))
+    result = saved(r)
+    assert [p.posting_id for p in result.rows] == ["~023502"]
+    assert result.invalid_rows == 2
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"status": "error", "data": {"personSavedJobs": []}},
+        {"status": "ok", "data": {"personSavedJobs": "nope"}},
+        {"status": "ok"},
+        saved_page(*[saved_job(3600 + n) for n in range(11)]),
+    ],
+)
+def test_a_malformed_saved_page_is_a_protocol_failure(answer: object) -> None:
+    result = saved(run(saved_listing([answer])))
+    assert result.rows == ()
+    assert result.failure is not None
+    assert saved_reason(result.failure) == "saved:protocol"
+
+
+def test_a_failed_second_page_keeps_the_first_pages_rows() -> None:
+    full = saved_page(*[saved_job(3700 + n) for n in range(10)])
+    refused = McpFailure("tool_error", tool_code="PERMISSION")
+    result = saved(run(saved_listing([full], rest=refused)))
+    assert len(result.rows) == 10 and result.pages == 2
+    assert result.failure is not None
+    assert saved_reason(result.failure) == "saved:tool_error:PERMISSION"
+
+
+def test_a_refused_credential_on_the_saved_listing_is_raised() -> None:
+    with pytest.raises(UpstreamFailure) as caught:
+        saved(run(saved_listing([McpFailure("unauthorized")])))
+    assert caught.value.terminal
+
+
+def test_a_saved_listing_too_near_the_deadline_is_cut_not_sent() -> None:
+    r = run(saved_listing([saved_page()]), deadline=START + 1.0)
+    result = saved(r)
+    assert result.cut and r.session.calls == []
+
+
+def test_saved_merges_true_over_unknown_and_false_from_a_removal() -> None:
+    listed = saved(run(saved_listing([saved_page(saved_job(3801))]))).rows[0]
+    feed = posting(3801, ordinal=0, at=30, proposal_count=4)
+    (merged,) = merge_sightings([listed, feed])
+    assert merged.posting.saved is True and merged.posting.proposal_count == 4
+    removed = saved(
+        run(saved_listing([saved_page(saved_job(3802))], followed=False)),
+        followed=False,
+    ).rows[0]
+    (merged,) = merge_sightings([removed, posting(3802, ordinal=0, at=30)])
+    assert merged.posting.saved is False
+    (alone,) = merge_sightings([posting(3803, ordinal=0, at=30)])
+    assert alone.posting.saved is None
+
+
+def test_a_saved_discovery_posting_is_read_whatever_its_competition() -> None:
+    r = run(details_answer())
+    given = sightings(
+        replace(
+            posting(3901, ordinal=0, at=0, applied=True),
+            saved=True,
+            saved_discovery=True,
+        ),
+        replace(
+            posting(3902, ordinal=0, at=0, proposals_tier="50+"),
+            saved=True,
+            saved_discovery=True,
+        ),
+        # Already delivered once: saved, but never read again, even when a
+        # discovery search lists it over the cap.
+        replace(posting(3903, ordinal=0, at=0, proposal_count=80), saved=True),
+    )
+    result = r.details(given)
+    assert [params["id"] for _, params in r.session.calls] == ["3901", "3902"]
+    assert [s.detail_ok for s in result.sightings] == [True, True, False]
+
+
+def test_an_empty_saved_listing_is_no_rows_not_a_failure() -> None:
+    # Seen live: an empty page leaves the list key out.
+    empty = {"status": "ok", "data": {}, "hasMore": False}
+    result = saved(run(saved_listing([empty])))
+    assert (result.rows, result.failure, result.more) == ((), None, False)
+
+
+LISTED = "Synthetic saved brief, full text as the listing gives it."
+
+
+def listed_saved_job(number: int) -> NormalizedPosting:
+    """A saved discovery posting whose listing carried a wrapped description."""
+    row = saved_job(
+        number,
+        content={
+            "title": f"Synthetic saved build {number}",
+            "description": (
+                f"<untrusted_participant_content>\n{LISTED}\n"
+                "</untrusted_participant_content>"
+            ),
+        },
+    )
+    r = run(saved_listing([saved_page(row)]))
+    (listed,) = saved(r).rows
+    assert isinstance(listed, NormalizedPosting)
+    return listed
+
+
+def test_the_listing_description_is_kept_unwrapped_and_never_delivered_alone() -> None:
+    listed = listed_saved_job(3951)
+    assert listed.listed_description == LISTED
+    assert listed.description is None
+    assert "listed_description" not in listed.to_body()
+
+
+def test_a_saved_job_whose_read_failed_is_described_from_its_listing() -> None:
+    refused = McpFailure("tool_error", tool_code="JOB_NOT_VISIBLE")
+    r = run(details_answer(lambda p: refused))
+    (one,) = r.details(sightings(listed_saved_job(3952))).sightings
+    assert one.listed and not one.detail_ok
+    assert one.posting.description == LISTED
+    assert discovery_eligible(one)
+    assert delivered_posting(one).description == LISTED
+
+
+def test_a_saved_job_left_unread_by_the_cap_waits_for_the_next_run() -> None:
+    r = run(details_answer())
+    (one,) = r.details(sightings(listed_saved_job(3953)), max_reads=0).sightings
+    assert not one.listed and not one.detail_ok
+    assert one.posting.description is None
+    assert not discovery_eligible(one)
+
+
+def test_a_search_posting_whose_read_failed_never_uses_a_listing() -> None:
+    refused = McpFailure("tool_error", tool_code="JOB_NOT_VISIBLE")
+    r = run(details_answer(lambda p: refused))
+    (one,) = r.details(sightings(posting(3954, ordinal=0, at=0))).sightings
+    assert not one.listed and one.posting.description is None
 
 
 # --- the daily allowance of detail reads (#377) -----------------------------------

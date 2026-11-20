@@ -270,7 +270,7 @@ MANIFEST = ModuleManifest(
         ),
     ),
     export=ExportDeclaration(
-        format_version=16,
+        format_version=17,
         schema_path="export.schema.json",
         exporter=export_records,
         importer=import_records,
@@ -318,6 +318,8 @@ MANIFEST = ModuleManifest(
                 "jobfeed.revoke",
                 "jobfeed.paste",
                 "jobfeed.select_account",
+                # The Job feed tab's "Sync saved jobs": a collector run now.
+                "jobfeed.collect_now",
                 # The job detail's proposal workflow: drafts and the answer library.
                 "jobproposal.request",
                 "jobproposal.update",

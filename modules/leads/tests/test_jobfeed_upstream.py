@@ -226,6 +226,7 @@ def test_read_only_policy_is_exactly_the_allowlist() -> None:
         "list_accounts": None,
         "find_jobs": frozenset({"smart_search", "search", "get"}),
         "list_freelancer_proposals": frozenset({"invitations"}),
+        "find_saved_jobs": frozenset({"list"}),
     }
 
 
@@ -378,6 +379,7 @@ def test_a_prefixed_policy_is_the_allowlist_under_the_prefix() -> None:
         "acme__list_accounts": None,
         "acme__find_jobs": frozenset({"smart_search", "search", "get"}),
         "acme__list_freelancer_proposals": frozenset({"invitations"}),
+        "acme__find_saved_jobs": frozenset({"list"}),
     }
 
 
@@ -1142,3 +1144,65 @@ def test_a_sensitive_rate_limit_on_the_listing_is_retried_once(rig: Rig) -> None
     with rig.upstream() as upstream:
         assert upstream.invitations(ORG, {}) == {"status": "ok", "data": {}}
     assert rig.session.attempts("list_freelancer_proposals") == 2
+
+
+# --- the saved-jobs listing ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("action", ["count", "save", "unsave"])
+def test_only_the_listing_of_the_saved_jobs_tool_is_allowed(
+    rig: Rig, action: str
+) -> None:
+    mcp = CountingMcp(prefix="acme__")
+    with real_upstream(mcp, rig, prefix="acme__") as upstream:
+        refused = raises(
+            lambda: upstream._session.call_tool(
+                "acme__find_saved_jobs",
+                {"action": action, "org_uid": ORG, "params": {}},
+            ),
+            ToolRefused,
+        )
+    assert str(refused) == "action_not_allowed"
+    assert len(mcp.requests) == 2
+
+
+def test_the_save_job_write_tool_is_refused_before_any_send(rig: Rig) -> None:
+    mcp = CountingMcp(prefix="acme__")
+    with real_upstream(mcp, rig, prefix="acme__") as upstream:
+        refused = raises(
+            lambda: upstream._session.call_tool(
+                "acme__save_job",
+                {"action": "save", "org_uid": ORG, "params": {"job_id": "1"}},
+            ),
+            ToolRefused,
+        )
+    assert str(refused) == "tool_not_allowed"
+    assert len(mcp.requests) == 2
+
+
+def test_the_saved_jobs_listing_puts_the_exact_arguments_on_the_wire(
+    rig: Rig,
+) -> None:
+    mcp = CountingMcp(prefix="acme__")
+    with real_upstream(mcp, rig, prefix="acme__") as upstream:
+        upstream.saved_jobs(ORG, {"limit": 10, "offset": 20, "followed": True})
+    assert mcp.methods()[2:] == [("tools/call", "acme__find_saved_jobs", "list")]
+    assert json.loads(mcp.requests[2].content)["params"]["arguments"] == {
+        "action": "list",
+        "org_uid": ORG,
+        "params": {"limit": 10, "offset": 20, "followed": True},
+    }
+
+
+def test_the_saved_jobs_listing_is_paced_with_the_searches(rig: Rig) -> None:
+    with rig.upstream() as upstream:
+        upstream.saved_jobs(ORG, {})
+        upstream.saved_jobs(ORG, {"offset": 10})
+        upstream.find_jobs("search", ORG, {})
+    starts = [at for at, name, _ in rig.session.starts]
+    gaps = [later - earlier for earlier, later in zip(starts, starts[1:], strict=False)]
+    assert [name for _, name, _ in rig.session.starts][:2] == [
+        "find_saved_jobs",
+        "find_saved_jobs",
+    ]
+    assert all(gap >= FIND_JOBS_SPACING - EPSILON for gap in gaps), gaps

@@ -32,6 +32,7 @@ import {
   formatSpend,
   isInvited,
   isNewClient,
+  isSaved,
   MAX_PROPOSALS,
   overCap,
   partyName,
@@ -228,6 +229,9 @@ function Badges({ item, pipeline }: { item: Row; pipeline?: string }) {
       {isInvited(fields) ? (
         <span className={`${styles.badge} ${styles.badgeAccent}`}>Invited</span>
       ) : null}
+      {isSaved(fields) ? (
+        <span className={`${styles.badge} ${styles.badgeAccent}`}>Saved</span>
+      ) : null}
       {isNewClient(fields) ? (
         <span className={`${styles.badge} ${styles.badgeInfo}`}>New client</span>
       ) : null}
@@ -267,6 +271,9 @@ export function Meta({
       {detail && paymentVerified(fields) ? <span>Payment verified</span> : null}
       {detail && isNewClient(fields) ? (
         <span className={styles.flag}>New client</span>
+      ) : null}
+      {detail && job && isSaved(fields) ? (
+        <span className={styles.flag}>Saved on Upwork</span>
       ) : null}
       {party ? <span>{party}</span> : null}
       <span>{age(item, now, zone)}</span>

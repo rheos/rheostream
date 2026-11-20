@@ -195,7 +195,7 @@ Format versions today (each manifest's `ExportDeclaration.format_version`):
 
 | Module | Format | What the latest version added |
 | --- | --- | --- |
-| `leads` | 16 | the Job search preset's fourth version, with the moves that reopen a passed or lost job; 15 carried the stated-price version and 14 each handoff's attempt count, Current project projection and qualification (`modules/leads/src/rheo_leads/export.py`) |
+| `leads` | 17 | the Job search preset's fifth version and the job mappings' fourth, which add `saved`; 16 carried the moves that reopen a passed or lost job, 15 the stated-price version and 14 each handoff's attempt count, Current project projection and qualification (`modules/leads/src/rheo_leads/export.py`) |
 | `current` | 2 | `source_item_link`, row for row (`modules/current/src/rheo_current/export.py`) |
 | `recallatron` | 1 | |
 | `relationships` | 1 | |
