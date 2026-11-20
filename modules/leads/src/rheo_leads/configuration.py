@@ -5,6 +5,8 @@ from typing import Final
 from rheo_core.settings import KeySpec, Scope, ValueType
 from rheo_core.settings.schema import Floor
 
+from rheo_leads.jobfeed.presets import validate_setting
+
 MODULE_ID: Final = "leads"
 FACTS: Final = (
     "person.name",
@@ -81,6 +83,7 @@ JOBFEED_SETTINGS: Final = (
         floor=None,
         explicit_per_workspace=False,
         default="",
+        validator=validate_setting,
     ),
 )
 # Job scoring: the model the scorer asks (empty leaves the CLI's default), and how
