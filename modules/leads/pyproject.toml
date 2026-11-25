@@ -5,7 +5,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "rheo-core",
     "rheo-contracts",
-    "psycopg[binary]>=3.3.6,<4",
+    "psycopg[binary]>=3.3.9,<4",
     "beautifulsoup4>=4.12,<5",
 ]
 
