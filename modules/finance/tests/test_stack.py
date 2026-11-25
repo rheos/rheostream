@@ -13,6 +13,7 @@ import re
 import tomllib
 from typing import Any
 
+import pytest
 from sqlalchemy import Connection, text
 
 from tests.guards.source_tree import (
@@ -49,6 +50,30 @@ def locked_major(name: str) -> int:
     return int(versions[0].split(".")[0])
 
 
+def stays_in_major(requirement: str, name: str, major: int) -> bool:
+    """A floor inside ``major``, capped below the next; the floor may move (#629)."""
+    pin = rf"{re.escape(name)}>={major}(\.\d+)*,<{major + 1}"
+    return re.fullmatch(pin, requirement) is not None
+
+
+@pytest.mark.parametrize(
+    ("pin", "held"),
+    [
+        ("pydantic>=2.14.3,<3", True),
+        ("pydantic>=2.15,<3", True),
+        ("pydantic>=2.14.3", False),
+        ("pydantic>=2.14.3,<4", False),
+        ("pydantic>=3.0,<4", False),
+        ("pydantic>=20.1,<3", False),
+        ("pydantic<3", False),
+    ],
+)
+def test_the_major_pin_check_holds_the_cap_and_lets_the_floor_move(
+    pin: str, held: bool
+) -> None:
+    assert stays_in_major(pin, "pydantic", 2) is held
+
+
 def test_python_is_pinned_to_3_12() -> None:
     assert project()["project"]["requires-python"] == ">=3.12,<3.13"
     lock = tomllib.loads(UV_LOCK.read_text(encoding="utf-8"))
@@ -58,8 +83,8 @@ def test_python_is_pinned_to_3_12() -> None:
 def test_runtime_dependencies_pin_the_majors() -> None:
     deps = project()["project"]["dependencies"]
     assert requirement("sqlalchemy", deps) == "sqlalchemy>=2.1,<2.2"
-    assert requirement("psycopg", deps) == "psycopg[binary]>=3.3.6,<4"
-    assert requirement("pydantic", deps) == "pydantic>=2.14.3,<3"
+    assert stays_in_major(requirement("psycopg", deps), "psycopg[binary]", 3)
+    assert stays_in_major(requirement("pydantic", deps), "pydantic", 2)
     requirement("alembic", deps)
     # uv resolved them to those majors.
     assert locked_major("sqlalchemy") == 2
