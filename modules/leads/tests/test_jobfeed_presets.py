@@ -10,6 +10,7 @@ from rheo_leads.jobfeed.presets import (
     PresetInvalid,
     configured_presets,
     validate_presets,
+    validate_setting,
 )
 
 
@@ -232,3 +233,26 @@ def test_a_broken_setting_refuses_with_its_code(text: str, code: str) -> None:
     with pytest.raises(PresetInvalid) as refused:
         configured_presets(text)
     assert refused.value.code == code
+
+
+def test_the_setting_validator_refuses_what_a_run_would_refuse() -> None:
+    """The ``KeySpec`` validator is the same check, moved to the write: a list that
+    would break a collection run never reaches the row."""
+    with pytest.raises(PresetInvalid) as refused:
+        validate_setting(json.dumps([preset(pages=9)]))
+    assert refused.value.code == "pages_invalid"
+
+
+def test_the_setting_validator_accepts_a_sound_list() -> None:
+    validate_setting(json.dumps([preset()]))
+
+
+def test_the_setting_validator_accepts_the_empty_value() -> None:
+    """Empty is how the owner goes back to :data:`DEFAULT_PRESETS`."""
+    validate_setting("")
+
+
+def test_the_setting_validator_refuses_a_value_that_is_not_text() -> None:
+    with pytest.raises(PresetInvalid) as refused:
+        validate_setting(["not", "text"])
+    assert refused.value.code == "presets_not_json"

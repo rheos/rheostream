@@ -100,6 +100,19 @@ def validate_override(
         check_bounds(spec, frozen, source="the write")
     except SettingTypeMismatch as exc:
         return SettingRefusal("setting_type", key, str(exc))
+    if spec.validator is not None:
+        try:
+            # Folded into ``setting_type`` for the same reason ``check_bounds`` is,
+            # two branches above: criterion 69 quotes exactly four refusal states.
+            # The declaring module's own refusal code travels in the detail.
+            spec.validator(thaw_value(frozen))
+        except ValueError as exc:
+            code = getattr(exc, "code", None)
+            return SettingRefusal(
+                "setting_type",
+                key,
+                f"{key} is not a value this key accepts: {code or exc}",
+            )
     if spec.floor is not None:
         base = check_value(spec, deployment_value, source="deployment value")
         if is_looser(spec.floor, base, frozen):
