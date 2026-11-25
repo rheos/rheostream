@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 # psycopg is named directly because `migration/private_paths.py` imports its
 # `conninfo` parser; the specifier matches `packages/core/pyproject.toml`'s.
-dependencies = ["rheo-core", "rheo-contracts", "psycopg[binary]>=3.3.6,<4"]
+dependencies = ["rheo-core", "rheo-contracts", "psycopg[binary]>=3.3.9,<4"]
 
 # The one real embedding provider (MiniLM-L6-v2 through ONNX, in-process), as an
 # extra rather than a base dependency: a deployment that runs `lexical` retrieval
