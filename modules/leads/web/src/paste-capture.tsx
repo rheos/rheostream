@@ -66,6 +66,8 @@ export function PasteCapture({
             setReview(suggestInquiry(source));
             requestAnimationFrame(() => title.current?.focus());
           }}
+          // A submit that lands before hydration must not put typed text in a URL.
+          method="post"
           className={styles.fieldset}
         >
           <div className={styles.field}>
@@ -111,7 +113,7 @@ export function PasteCapture({
             <summary>Original text</summary>
             <p className={styles.note}>{source}</p>
           </details>
-          <form onSubmit={save} className={styles.form}>
+          <form onSubmit={save} method="post" className={styles.form}>
             <fieldset disabled={pending || saved} className={styles.fieldset}>
               <div className={styles.field}>
                 <label htmlFor={`${id}-title`}>Inquiry title</label>
