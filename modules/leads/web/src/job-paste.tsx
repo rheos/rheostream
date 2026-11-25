@@ -104,6 +104,8 @@ export function JobPaste({
     <form
       className={styles.fieldset}
       onSubmit={send}
+      // A submit that lands before hydration must not put typed text in a URL.
+      method="post"
       aria-label={kind === "posting" ? "Paste a full posting" : "Paste jobs"}
     >
       {kinds.length > 1 ? (

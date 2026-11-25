@@ -236,7 +236,12 @@ export function ActionForm({
     setValues((before) => ({ ...before, [name]: value }));
   const redirecting = result?.state === "redirecting";
   return (
-    <form onSubmit={save} className={styles.form}>
+    <form
+      onSubmit={save}
+      // A submit that lands before hydration must not put typed text in a URL.
+      method="post"
+      className={styles.form}
+    >
       <fieldset disabled={pending || redirecting} className={styles.fieldset}>
         {fields.map((field) => (
           <div className={styles.field} key={field.name}>
