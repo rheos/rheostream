@@ -399,6 +399,8 @@ describe("paid", () => {
     );
     expect(html).toContain("presumed paid, history");
     expect(html).not.toContain("marked paid Jun 1");
+    // Undone from here it could not be presumed paid again but by the confirm queue.
+    expect(html).not.toContain("Undo marking Example Rent");
   });
 
   it("leaves the group out when nothing is unconfirmed", async () => {

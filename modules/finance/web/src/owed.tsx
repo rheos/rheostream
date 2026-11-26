@@ -284,7 +284,7 @@ function Reported({
                 ) : on ? (
                   <span className={styles.faint}>marked paid {shortDate(on, year)}</span>
                 ) : null}
-                {shell.submit && o.presumedPaidBasis ? (
+                {shell.submit && o.presumedPaidBasis && !o.beforeFloor ? (
                   <PaidForm
                     submit={shell.submit}
                             operation={UNREPORT_PAID}
