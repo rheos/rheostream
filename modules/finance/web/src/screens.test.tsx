@@ -175,7 +175,55 @@ const OPEN_ITEMS = ok({
   ],
 });
 
+function charge(overrides: Record<string, unknown>) {
+  return {
+    kind: "expected",
+    state: "expected",
+    on: "2026-01-08",
+    days_away: 3,
+    label: "Example Stream",
+    account: "test-card",
+    account_label: "Test Card",
+    payee_slug: null,
+    currency: "CAD",
+    amount: "7.45",
+    amount_low: null,
+    amount_high: null,
+    cadence: "monthly",
+    seen: 11,
+    last_seen: "2025-12-08",
+    obligation_ref: null,
+    obligation_kind: null,
+    period_label: null,
+    ...overrides,
+  };
+}
+
+const UPCOMING = ok({
+  as_of: "as of 2026-01-05 09:30 UTC",
+  today: "2026-01-05",
+  window_days: 30,
+  rows: [
+    charge({ kind: "due", state: "due", on: "2026-01-10", days_away: 5, label: "Example Power", account: null, account_label: null, payee_slug: "example-power", amount: "120.00", cadence: null, seen: null, last_seen: null, obligation_ref: "finance.obligation:00000000-0000-4000-8000-000000000001", obligation_kind: "bill", period_label: "2025-12" }),
+    charge({}),
+    charge({ on: "2026-01-12", days_away: 7, label: "Example Interest", amount: "41.60", amount_low: "39.15", amount_high: "46.20" }),
+    charge({ on: "2026-01-14", days_away: 9, label: "Example Cloud", account: "zz-wallet", account_label: "zz-wallet", currency: "USD", amount: "18.25" }),
+    charge({ state: "likely_charged", on: "2026-01-02", days_away: -3, label: "Example Host", amount: "27.40" }),
+  ],
+  totals: [
+    { currency: "CAD", amount: "169.05" },
+    { currency: "USD", amount: "18.25" },
+  ],
+  overdue_count: 1,
+  accounts: [
+    { account: "test-card", account_label: "Test Card", data_through: "2025-12-20", predicts: true },
+    { account: "zz-wallet", account_label: "zz-wallet", data_through: "2025-12-14", predicts: true },
+  ],
+  headline: null,
+});
+
 const RESULTS: Record<string, OperationOutcome> = {
+  "finance.upcoming.list": UPCOMING,
   "finance.status.get": STATUS,
   "finance.sink.state": SINKS,
   "finance.owed.list": OWED,
@@ -197,7 +245,7 @@ function fakeShell(
         results[operation] ?? { state: "unavailable" },
     ),
     href: (routeId: string, query?: Record<string, string | undefined>) =>
-      `/${routeId}${query?.year ? `?year=${query.year}` : ""}`,
+      `/${routeId}${query?.year ? `?year=${query.year}` : ""}${query?.account ? `?account=${query.account}` : ""}`,
   };
 }
 
@@ -215,9 +263,10 @@ const ALLOWED = new Set([
   "finance.sink.state",
   "finance.status.get",
   "finance.txn.list",
+  "finance.upcoming.list",
 ]);
 
-describe.each(["owed", "attention", "coverage"] as const)("%s", (name) => {
+describe.each(["owed", "upcoming", "attention", "coverage"] as const)("%s", (name) => {
   it("renders the owner-only notice for a member and reads nothing", async () => {
     const shell = fakeShell("member");
     const html = await render(name, shell);
@@ -366,5 +415,48 @@ describe("coverage", () => {
     await render("coverage", shell, { year: "nonsense" });
     const year = new Date().getUTCFullYear();
     expect(shell.call).toHaveBeenCalledWith("finance.coverage.get", { year });
+  });
+});
+
+describe("upcoming", () => {
+  it("leads with the window's total and lists bills and predictions by date", async () => {
+    const html = await render("upcoming", fakeShell());
+    expect(html).toContain("$169.05 and $18.25 USD over 4 charges in the next 30 days.");
+    const order = ["Example Power", "Example Stream", "Example Interest", "Example Cloud"].map((t) =>
+      html.indexOf(t),
+    );
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(html).toContain("about $41.60");
+    expect(html).toContain("$39.15 to $46.20");
+    expect(html).toContain("Unnamed account");
+    expect(html).toContain("1 overdue bill is on Owed");
+    expect(html).not.toMatch(/zz.?2dwallet|zz-wallet/);
+  });
+
+  it("puts charges the statements do not reach yet apart", async () => {
+    const html = await render("upcoming", fakeShell());
+    const past = html.indexOf("Probably already charged");
+    expect(past).toBeGreaterThan(html.indexOf("Example Cloud"));
+    expect(html.indexOf("Example Host")).toBeGreaterThan(past);
+  });
+
+  it("filters to one named account, and never links an unnamed one", async () => {
+    const html = await render("upcoming", fakeShell(), { account: "test-card" });
+    expect(html).toContain('href="/upcoming?account=test-card"');
+    expect(html).not.toContain("Example Cloud");
+    expect(html).not.toContain("Example Power");
+    expect(html).toContain("$49.05 over 2 charges in the next 30 days.");
+    expect(html).not.toMatch(/zz.?2dwallet|zz-wallet/);
+  });
+
+  it("counts charges without money when the figures are withheld", async () => {
+    const withheld = ok({
+      ...(UPCOMING as { result: Record<string, unknown> }).result,
+      rows: [charge({ amount: null }), charge({ on: "2026-01-09", amount: null })],
+      totals: [{ currency: "CAD", amount: null }],
+    });
+    const html = await render("upcoming", fakeShell("owner", { ...RESULTS, "finance.upcoming.list": withheld }));
+    expect(html).toContain("2 charges in the next 30 days.");
+    expect(html).not.toContain("$");
   });
 });

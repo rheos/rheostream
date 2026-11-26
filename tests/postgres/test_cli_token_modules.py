@@ -856,6 +856,7 @@ FINANCE_READS: Final = frozenset(
         "finance.sink.state",
         "finance.status.get",
         "finance.txn.list",
+        "finance.upcoming.list",
     }
 )
 FINANCE_TOOLS: Final = frozenset(
@@ -868,6 +869,7 @@ FINANCE_TOOLS: Final = frozenset(
         "finance_sinks",
         "finance_status",
         "finance_lines",
+        "finance_upcoming",
     }
 )
 
@@ -890,13 +892,13 @@ def finance_enabled(cluster: ClusterSession, workspace: UUID) -> None:
 
 
 @pytest.mark.usefixtures("isolated_process_tables", "finance_beside_current")
-def test_module_read_finance_issues_exactly_the_eight_reads(
+def test_module_read_finance_issues_exactly_the_nine_reads(
     capsys: pytest.CaptureFixture[str],
     cluster: ClusterSession,
     workspace: UUID,
     owner_account_id: UUID,
 ) -> None:
-    """D1: the one way in is ``module_read:finance``, and it holds the eight reads."""
+    """D1: the one way in is ``module_read:finance``, and it holds the nine reads."""
     code, out, err = _issue(
         capsys,
         workspace,
@@ -941,7 +943,7 @@ def test_every_set_evaluator_and_the_connector_grant_skip_finance(
     owner_account_id: UUID,
 ) -> None:
     """D1: every named set and the snapshot a connector grant takes hold no finance
-    operation, with all eight registered in this process."""
+    operation, with all nine registered in this process."""
     code, _, err = _issue(
         capsys, workspace, owner_account_id, set_name="read_only", kind="cli"
     )
@@ -965,7 +967,7 @@ def test_only_a_module_read_token_lists_the_finance_tools(
     owner_account_id: UUID,
 ) -> None:
     """D2: with finance enabled, a presented ``module_read:finance`` token lists the
-    eight finance tools; ``cli_full`` and ``agent_default`` tokens list none, and a
+    nine finance tools; ``cli_full`` and ``agent_default`` tokens list none, and a
     call to ``finance_status`` on either answers ``not_found``."""
     opt_in, _ = _issued(
         capsys,

@@ -17,6 +17,7 @@ import styles from "./finance.module.css";
 
 export const TABS = [
   ["owed", "Owed"],
+  ["upcoming", "Upcoming"],
   ["attention", "Needs attention"],
   ["coverage", "Coverage"],
 ] as const;

@@ -72,7 +72,7 @@ none of the module's rows.
 
 ### Agent reads
 
-The module registers eight read operations in core, each with its tool, for the
+The module registers nine read operations in core, each with its tool, for the
 workspace owner alone (ADR-0028):
 
 | Tool | Operation | What it shows |
@@ -85,6 +85,7 @@ workspace owner alone (ADR-0028):
 | `finance_open_items` | `finance.openitem.list` | open items and counts per kind |
 | `finance_owed` | `finance.owed.list` | obligations with dates, status and flags, credits and bill gaps |
 | `finance_trace` | `finance.owed.trace` | each obligation with its payments and evidence |
+| `finance_upcoming` | `finance.upcoming.list` | bills due and recurring charges expected in the next days |
 
 No restricted field reaches a model: every field finance tiers restricted (amounts,
 totals, the owed headline) is empty in what these operations return to a token, and
@@ -117,13 +118,19 @@ an unavailable workspace) come back as core gives them.
 
 ### Web screens
 
-The module's web package, `@rheo-stream/finance-web`, adds three read-only screens at
+The module's web package, `@rheo-stream/finance-web`, adds four read-only screens at
 `finance.<base host>`, shown in the navigation to the workspace owner alone:
 
 - **Owed**: open, part-paid, presumed-paid and disputed obligations, overdue first,
   then by due date, each with its days to go, whether it has a Current reminder and
   whether it falls before the reminders floor. A row's info button holds its source,
   dates and the payments applied to it (`finance.owed.list`, `finance.owed.trace`).
+- **Upcoming**: the next 30 days by date, which account each charge hits and how much.
+  Bills come from Owed with their exact amounts; the rest are recurring charges the
+  ledger predicts from regular past charges (subscriptions, fees, interest, rent),
+  estimates that stop once the statements show the charge stopped. A charge expected
+  before today but past an account's latest statement sits apart as probably already
+  charged, and `?account=` keeps one account's rows (`finance.upcoming.list`).
 - **Needs attention**: counts first, the rows behind each: the confirm queue's
   counts, documents needing manual entry, rejected or unparsed, bill gaps, unapplied
   credits, missing account-months and the other open items, then the status data

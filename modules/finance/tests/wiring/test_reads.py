@@ -1,6 +1,6 @@
 """The opt-in reads as core sees them (RS-6d, ADR-0028). No database.
 
-- L1: the registered names are exactly the eight reader reads, the reader-READ filter
+- L1: the registered names are exactly the nine reader reads, the reader-READ filter
   over the catalogue; each tool is its spec's, names its declaration and is READ.
 - L2: every declaration is READ, owner-only, unaudited, ``Idempotency.NONE`` and not
   long-running; the manifest is ``explicit_only`` and passes core's tool rule.
@@ -79,7 +79,7 @@ from rheo_finance.wiring.manifest import MANIFEST
 
 P, INTERNAL, R = Tier.PUBLIC, Tier.INTERNAL, Tier.RESTRICTED
 
-EIGHT = (
+NINE = (
     ("finance.coverage.get", "finance_coverage"),
     ("finance.document.list", "finance_documents"),
     ("finance.openitem.list", "finance_open_items"),
@@ -88,6 +88,7 @@ EIGHT = (
     ("finance.sink.state", "finance_sinks"),
     ("finance.status.get", "finance_status"),
     ("finance.txn.list", "finance_lines"),
+    ("finance.upcoming.list", "finance_upcoming"),
 )
 
 SENTINEL_AMOUNT = Decimal("4242.42")
@@ -105,7 +106,7 @@ def _specs() -> dict[str, OperationSpec]:
 # --- L1, L2: what is registered -----------------------------------------------------
 
 
-def test_l1_exactly_the_eight_reader_reads_with_their_tools() -> None:
+def test_l1_exactly_the_nine_reader_reads_with_their_tools() -> None:
     specs = _specs()
     reader_reads = sorted(
         name
@@ -115,10 +116,10 @@ def test_l1_exactly_the_eight_reader_reads_with_their_tools() -> None:
         and not spec.owner_only
     )
     names = tuple(declaration.name for declaration, _ in MANIFEST.operations)
-    assert names == tuple(name for name, _ in EIGHT)
+    assert names == tuple(name for name, _ in NINE)
     assert list(names) == reader_reads
     tools = {tool.operation: tool for tool in MANIFEST.tools}
-    assert {(name, tools[name].name) for name in names} == set(EIGHT)
+    assert {(name, tools[name].name) for name in names} == set(NINE)
     for name in names:
         tool = tools[name]
         assert tool.name == specs[name].tool_name
@@ -159,7 +160,7 @@ def test_l2_core_registries_accept_every_declaration_and_tool() -> None:
         assert first is again and first.explicit_only
     for tool in MANIFEST.tools:
         tools.register(tool, origin="finance")
-    assert tools.names() == {tool for _, tool in EIGHT}
+    assert tools.names() == {tool for _, tool in NINE}
 
 
 def test_l2_each_handler_is_built_once() -> None:
@@ -168,7 +169,7 @@ def test_l2_each_handler_is_built_once() -> None:
     assert [handler for _, handler in MANIFEST.operations] == [
         handler for _, handler in reads.OPERATIONS
     ]
-    assert len({id(handler) for _, handler in MANIFEST.operations}) == 8
+    assert len({id(handler) for _, handler in MANIFEST.operations}) == 9
 
 
 # --- walks ----------------------------------------------------------------------
@@ -287,6 +288,14 @@ def test_l4_the_dropped_fields_are_the_designs() -> None:
     assert {"rows.amount_due", "credits.sums.amount", "credits.items.amount"} <= (
         owed_list
     )
+    coming = dropped("finance.upcoming.list")
+    assert {
+        "rows.amount",
+        "rows.amount_low",
+        "rows.amount_high",
+        "totals.amount",
+        "headline",
+    } == coming
     trace = dropped("finance.owed.trace")
     assert {
         "obligations.applications.applied_amount",
@@ -418,7 +427,7 @@ def _built(model: type[BaseModel]) -> BaseModel:
     return model.model_validate(values)
 
 
-@pytest.mark.parametrize("name", [name for name, _ in EIGHT])
+@pytest.mark.parametrize("name", [name for name, _ in NINE])
 def test_l6_no_sentinel_survives_the_view(name: str) -> None:
     spec = _specs()[name]
     out = _built(spec.output_model)
@@ -427,7 +436,12 @@ def test_l6_no_sentinel_survives_the_view(name: str) -> None:
     assert "synthetic" in dumped  # the control: the kept text reached the dump
     assert str(SENTINEL_AMOUNT) not in dumped
     assert SENTINEL_TEXT not in dumped
-    if name in {"finance.txn.list", "finance.owed.list", "finance.owed.trace"}:
+    if name in {
+        "finance.txn.list",
+        "finance.owed.list",
+        "finance.owed.trace",
+        "finance.upcoming.list",
+    }:
         assert str(SENTINEL_AMOUNT) in raw  # the control: finance's own dump has it
 
 
@@ -465,7 +479,7 @@ def test_l8_each_registered_output_is_the_owner_view_and_core_sees_its_restricte
     assert held_somewhere
 
 
-@pytest.mark.parametrize("name", [name for name, _ in EIGHT])
+@pytest.mark.parametrize("name", [name for name, _ in NINE])
 def test_l8_only_a_full_answer_carries_restricted_values(name: str) -> None:
     spec = _specs()[name]
     out = _built(spec.output_model)
@@ -473,7 +487,12 @@ def test_l8_only_a_full_answer_carries_restricted_values(name: str) -> None:
     assert "synthetic" in reduced
     assert str(SENTINEL_AMOUNT) not in reduced and SENTINEL_TEXT not in reduced
     full = reads.as_answer(spec.output_model, out, full=True).model_dump_json()
-    if name in {"finance.txn.list", "finance.owed.list", "finance.owed.trace"}:
+    if name in {
+        "finance.txn.list",
+        "finance.owed.list",
+        "finance.owed.trace",
+        "finance.upcoming.list",
+    }:
         assert str(SENTINEL_AMOUNT) in full
 
 
