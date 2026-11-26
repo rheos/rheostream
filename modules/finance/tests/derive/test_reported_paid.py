@@ -24,6 +24,7 @@ from rheo_finance.contracts import Role
 from rheo_finance.decision import DecisionRefused
 from rheo_finance.derive.run import run
 from rheo_finance.derive.snapshot import txn_snapshot
+from rheo_finance.manual.accounts import ACCOUNTS_FILE, IDENTIFIERS_FILE
 from rheo_finance.operations import dispatch
 from rheo_finance.reported import ReportOut
 from rheo_finance.reports.owed import ListIn, ListOut, list_owed
@@ -211,6 +212,55 @@ def test_every_paying_account_must_have_a_late_statement(ledger: Ledger) -> None
     ledger.accounts(
         ("chequing", "Alder", "chequing", CSV_IDENTIFIER),
         ("second", "Alder", "chequing", SECOND),
+    )
+    payees(ledger)
+    with_settings(ledger, "")
+    ledger.ctx = dataclasses.replace(ledger.ctx, snapshot_provider=txn_snapshot)
+    march(ledger)
+    march(ledger, SECOND, n=5)
+    bills(ledger, BILL)
+    ledger.derive()
+    at(ledger, D(2055, 4, 20))
+    report(ledger)
+    april(ledger)
+
+    ledger.derive()
+
+    assert status(ledger) == "presumed_paid"
+
+
+def test_the_check_starts_early_days_before_the_issue(ledger: Ledger) -> None:
+    """Stage 15 lets a payment up to early_days (10) before the April 1 issue pay the
+    bill, so with March not loaded the April statement proves nothing yet."""
+    ledger.chequing()
+    payees(ledger)
+    with_settings(ledger, "")
+    ledger.ctx = dataclasses.replace(ledger.ctx, snapshot_provider=txn_snapshot)
+    bills(ledger, BILL)
+    ledger.derive()
+    at(ledger, D(2055, 4, 20))
+    report(ledger)
+    april(ledger)
+
+    ledger.derive()
+
+    assert status(ledger) == "presumed_paid"
+
+
+def test_an_account_closed_inside_the_span_is_asked_up_to_its_closing(
+    ledger: Ledger,
+) -> None:
+    """``second`` closed April 10, after the span opened, and is loaded only to March
+    31: an April payment from it could still be unloaded, so the bill stays reported."""
+    ledger.manual(
+        ACCOUNTS_FILE,
+        "chequing,Chequing,Alder,chequing,CAD,monthly,,,,,,,,,",
+        "second,Second,Alder,chequing,CAD,monthly,,,2055-04-10,,,,,,",
+    )
+    ledger.manual(
+        IDENTIFIERS_FILE,
+        f"chequing,{CSV_IDENTIFIER},number,,",
+        f"second,{SECOND},number,,",
     )
     payees(ledger)
     with_settings(ledger, "")

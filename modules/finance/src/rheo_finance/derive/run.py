@@ -395,6 +395,7 @@ def run(
             ctx.settings.get_date(presumed.FLOOR_KEY),
             ctx.settings.get_int(presumed.LAG_KEY),
             ctx.settings.timezone,
+            early_days=ctx.settings.get_int(stage15_apply.EARLY_DAYS_KEY),
         )
         presumed.mark_floor(uow, ctx.settings.get_date(presumed.FLOOR_KEY))
 

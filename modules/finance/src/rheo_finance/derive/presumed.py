@@ -40,11 +40,14 @@ paid, due on or after the floor (or with no due date, or with no floor set), who
 paying accounts each have statements loaded for every day from the bill's issue date
 (or the report, if earlier) to ``finance.payments.reported_paid_lag_days`` after the
 local date the decision was made, with no hole, has had its chance to show the payment
-and has not. It goes back to ``open`` (or
+and has not. The span starts ``finance.payments.early_days`` before the issue date, the
+most slack stage 15 allows a payment, and only CAD statements count, since only a CAD
+payment pays an obligation. It goes back to ``open`` (or
 ``partial``) with its decision still named, so ``owed`` lists it again and says the
 report was not confirmed, and it is owed again for reminders. A paying account closed
-before that date is not asked; with none left to ask, or one whose statements leave a
-day of that span unloaded, it stays presumed paid: a statement not loaded yet never
+before the span starts is not asked, and one closed inside it is asked up to its
+closing day; with none left to ask, or one whose statements leave a
+day of its span unloaded, it stays presumed paid: a statement not loaded yet never
 reads as "not paid".
 Reporting it paid again makes a newer decision, and the check starts from that date.
 Presumed paid before the floor is a statement about history and is never checked:
@@ -67,6 +70,7 @@ from sqlalchemy import bindparam, select, update
 from rheo_finance.context import UnitOfWork
 from rheo_finance.decision import DecisionKind, reversed_clause
 from rheo_finance.derive.coverage import STATES, month_end, month_start
+from rheo_finance.derive.stage14 import CURRENCY
 from rheo_finance.derive.stage15 import ACTIVE, MONEY
 from rheo_finance.derive.stage15_apply import (
     OBLIGATION_TYPE,
@@ -156,7 +160,12 @@ def _covered(
 
 
 def unconfirm(
-    uow: UnitOfWork, floor: dt.date | None, lag_days: int, zone: ZoneInfo
+    uow: UnitOfWork,
+    floor: dt.date | None,
+    lag_days: int,
+    zone: ZoneInfo,
+    *,
+    early_days: int = 0,
 ) -> int:
     """Put back the presumed paid obligations whose statements came in without the
     payment (module docstring, "Reported paid, then checked"); how many."""
@@ -187,24 +196,29 @@ def unconfirm(
             statement_period.c.account_id,
             statement_period.c.period_start,
             statement_period.c.period_end,
-        )
+        ).where(statement_period.c.currency == CURRENCY)
     ):
+        # Only a CAD payment pays an obligation, so only CAD statements can show it.
         periods[row.account_id].append((row.period_start, row.period_end))
     for row in checked:
         reported = row.decided_at.astimezone(zone).date()
-        asked = [
-            each
-            for each in paying.get(row.payee_id, frozenset())
-            if closed.get(each) is None or closed[each] >= reported
-        ]
-        # The payment can be anywhere from the bill's issue (or the report, if that
-        # is earlier) to the report plus the lag: every day of it must be loaded.
+        # The payment can be anywhere from early_days before the bill's issue (or the
+        # report, if that is earlier) to the report plus the lag: every day of it must
+        # be loaded. early_days is the widest slack stage 15 ever allows, so a bill
+        # that takes none is checked over a span a little wider than it needs.
         issued = row.issued_on or (
             (row.due_date or reported) - dt.timedelta(days=UNDATED_DAYS)
         )
-        first = min(issued, reported)
+        first = min(issued - dt.timedelta(days=early_days), reported)
         last = reported + dt.timedelta(days=lag_days)
-        if asked and all(_covered(periods[each], first, last) for each in asked):
+        # An account closed before that span starts cannot hold the payment; one
+        # closed inside it must be loaded up to its closing day.
+        spans = [
+            (each, min(last, closed[each]) if closed.get(each) else last)
+            for each in paying.get(row.payee_id, frozenset())
+            if closed.get(each) is None or closed[each] >= first
+        ]
+        if spans and all(_covered(periods[each], first, end) for each, end in spans):
             back.append({"b_id": row.id, "b_status": PARTIAL if row.paid else OPEN})
     if back:
         uow.execute(
