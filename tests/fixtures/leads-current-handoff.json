@@ -1,0 +1,1016 @@
+{
+  "schema_version": 1,
+  "scenario": {
+    "organization": "Northwind",
+    "opportunity": "Northwind onboarding workshop",
+    "requester": "Avery Chen",
+    "destination": "Current",
+    "operation": "current.item.create_external",
+    "item_title": "Prepare Northwind onboarding workshop",
+    "item_body": "Confirm agenda, facilitators, and access requirements from the qualified opportunity.",
+    "priority": "normal",
+    "area": "Client delivery",
+    "due_date": null,
+    "project": "Northwind launch"
+  },
+  "long_payload": {
+    "note": "Synthetic long content for the approval-pending-long-payload capture. The approval shows the payload Leads builds: this title, body, priority, area and due date, plus Leads' own attempt key (leads.handoff:<id>#1). The 256-character request key is the Leads request key stored on the handoff.",
+    "item_title": "Prepare the Northwind onboarding workshop for every regional facilitation team, including the agenda review, facilitator briefings, accessibility and room access requirements, the shared materials library, the follow-up survey, and the handover notes the Northwind launch coordinators asked for after the qualified opportunity review with Avery Chen and the synthetic review panel, so each later reviewer can check the whole request in one place before deciding",
+    "item_body": "Synthetic long-payload review fixture for the Northwind onboarding workshop. Confirm the agenda, facilitators, and access requirements from the qualified opportunity before anything is scheduled, and keep every note below attached to the one Current item this handoff creates.\n\nAgenda: open with the Northwind launch goals, walk through the onboarding checklist section by section, reserve a long working session for the regional teams to rehearse their own introductions, and close with a question period that the facilitators record for the follow-up survey.\n\nFacilitators: Avery Chen leads the opening and the closing review; two synthetic co-facilitators cover the regional breakout rooms; each facilitator receives the briefing pack, the attendance list, and the escalation contact at the Northwind launch desk (launch-desk@example.com) one week before the workshop.\n\nAccess requirements: step-free routes to every room, captioning for the opening and closing sessions, quiet space near the breakout rooms, printed and large-print copies of the agenda, and a recorded walkthrough of the venue for attendees who cannot visit beforehand.\n\nMaterials: keep everything in the shared library under northwind-onboarding-workshop-materials-library-reference-index so the coordinators, facilitators, and later reviewers read the same versions without copying files between teams.\n\nFollow-up: send the survey within two working days, collect the facilitator notes the same week, and add the handover summary to this item so the Northwind launch project can pick it up later through Current's own edit form.",
+    "priority": "high",
+    "due_on": "2027-03-15",
+    "request_key": "prompt14-long-payload-northwind-onboarding-workshop-review-request-key-northwind-onboarding-workshop-review-request-key-northwind-onboarding-workshop-review-request-key-northwind-onboarding-workshop-review-request-key-northwind-onboarding-workshop-review-r"
+  },
+  "fixtures": {
+    "qualified-current": {
+      "surface": "leads",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "generic": "/leads/detail?ref=<seeded-opportunity-ref>", "job_search": "/leads/detail?ref=<seeded-opportunity-ref>" },
+      "automated": [
+        "vitest:modules/leads/web/src/screens.test.tsx > qualified-current enables handoff regardless of qualification score",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "qualified-stale": {
+      "surface": "leads",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "generic": "/leads/detail?ref=<seeded-opportunity-ref>", "job_search": "/leads/detail?ref=<seeded-opportunity-ref>" },
+      "automated": [
+        "vitest:modules/leads/web/src/screens.test.tsx > qualified-stale warns conspicuously without disabling handoff",
+        "pytest:tests/postgres/test_leads_current_handoff.py::test_handoff_snapshots_the_latest_qualification_and_stale_only_warns",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "unqualified": {
+      "surface": "leads",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "generic": "/leads/detail?ref=<seeded-opportunity-ref>", "job_search": "/leads/detail?ref=<seeded-opportunity-ref>" },
+      "note": "A new opportunity with no qualification: the handoff request form is absent, not disabled.",
+      "automated": [
+        "vitest:modules/leads/web/src/screens.test.tsx > unqualified requires a current qualification and renders no disabled facsimile",
+        "pytest:tests/postgres/test_leads_current_handoff.py::test_handoff_without_a_qualification_refuses_and_writes_nothing",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "handoff-awaiting-approval": {
+      "surface": "leads",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "generic": "/leads/detail?ref=<seeded-opportunity-ref>", "job_search": "/leads/detail?ref=<seeded-opportunity-ref>" },
+      "lifetime": "Awaiting only within the approval window (default 900 seconds after seeding); reset and reseed after it lapses.",
+      "automated": [
+        "vitest:modules/leads/web/src/handoff.test.tsx > handoff-awaiting-approval uses only the shell approval URL",
+        "pytest:tests/postgres/test_leads_current_handoff.py::test_handoff_list_reads_the_live_phase_without_reconciling",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "handoff-approved-queued": {
+      "surface": "leads",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "generic": "/leads/detail?ref=<seeded-opportunity-ref>", "job_search": "/leads/detail?ref=<seeded-opportunity-ref>" },
+      "lifetime": "Approved after the seed's last worker visit; queued while no worker runs. prompt14.sh up starts no worker service.",
+      "automated": [
+        "vitest:modules/leads/web/src/handoff.test.tsx > %s renders its accepted action phase [handoff-approved-queued]",
+        "pytest:tests/postgres/test_leads_current_handoff.py::test_handoff_list_reads_the_live_phase_without_reconciling",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "handoff-executing": {
+      "surface": "leads",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "generic": "/leads/detail?ref=<seeded-opportunity-ref>", "job_search": "/leads/detail?ref=<seeded-opportunity-ref>" },
+      "lifetime": "One seed worker visit with Current answering a typed retryable error leaves the action executing with its job requeued; durable while no worker runs.",
+      "automated": [
+        "vitest:modules/leads/web/src/handoff.test.tsx > %s renders its accepted action phase [handoff-executing]",
+        "pytest:tests/postgres/test_leads_current_handoff.py::test_handoff_list_reads_the_live_phase_without_reconciling",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "handoff-succeeded-live-item-no-project": {
+      "surface": "leads",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "generic": "/leads/detail?ref=<seeded-opportunity-ref>", "job_search": "/leads/detail?ref=<seeded-opportunity-ref>" },
+      "automated": [
+        "vitest:modules/leads/web/src/handoff.test.tsx > handoff-succeeded-live-item-no-project renders no project assignment controls",
+        "vitest:modules/leads/web/src/handoff.test.tsx > %s renders the exact project state [handoff-succeeded-live-item-no-project]",
+        "pytest:tests/postgres/test_current_external.py::test_external_approved_path_replays_core_result_without_reinvoking_destination",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "handoff-succeeded-live-item-live-project": {
+      "surface": "leads",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "generic": "/leads/detail?ref=<seeded-opportunity-ref>", "job_search": "/leads/detail?ref=<seeded-opportunity-ref>" },
+      "automated": [
+        "vitest:modules/leads/web/src/handoff.test.tsx > handoff-succeeded-live-item-live-project shows both authorized siblings",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "handoff-deleted-item-live-project": {
+      "surface": "leads",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "generic": "/leads/detail?ref=<seeded-opportunity-ref>", "job_search": "/leads/detail?ref=<seeded-opportunity-ref>" },
+      "automated": [
+        "vitest:modules/leads/web/src/handoff.test.tsx > handoff-deleted-item-live-project keeps the authorized project visible",
+        "pytest:tests/postgres/test_leads_current_links.py::test_missed_lifecycle_changes_after_an_earlier_scan_are_repaired",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "handoff-denied-item-live-project": {
+      "surface": "leads",
+      "evidence_mode": "restricted-token-and-rendered",
+      "prompt15_manual": "not-applicable-approved-contract",
+      "restricted_token_evidence": "pytest:tests/postgres/test_leads_current_view.py::test_item_and_project_are_authorized_independently",
+      "render_evidence": "vitest:modules/leads/web/src/handoff.test.tsx > handoff-denied-item-live-project keeps the authorized project visible",
+      "automated": [
+        "vitest:modules/leads/web/src/handoff.test.tsx > handoff-denied-item-live-project keeps the authorized project visible",
+        "pytest:tests/postgres/test_leads_current_view.py::test_item_and_project_are_authorized_independently"
+      ]
+    },
+    "handoff-live-item-denied-project": {
+      "surface": "leads",
+      "evidence_mode": "restricted-token-and-rendered",
+      "prompt15_manual": "not-applicable-approved-contract",
+      "restricted_token_evidence": "pytest:tests/postgres/test_leads_current_view.py::test_item_and_project_are_authorized_independently",
+      "render_evidence": "vitest:modules/leads/web/src/handoff.test.tsx > handoff-live-item-denied-project keeps the item and redacts the project",
+      "automated": [
+        "vitest:modules/leads/web/src/handoff.test.tsx > handoff-live-item-denied-project keeps the item and redacts the project",
+        "pytest:tests/postgres/test_leads_current_view.py::test_item_and_project_are_authorized_independently"
+      ]
+    },
+    "handoff-unavailable-item-unavailable-project": {
+      "surface": "leads",
+      "evidence_mode": "harness-runtime-recipe",
+      "automated": [
+        "vitest:modules/leads/web/src/handoff.test.tsx > handoff-unavailable-item-unavailable-project redacts both branches",
+        "pytest:tests/postgres/test_leads_current_view.py::test_failed_link_read_returns_only_redacted_unavailable_branches",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "handoff-cleared-project": {
+      "surface": "leads",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "generic": "/leads/detail?ref=<seeded-opportunity-ref>", "job_search": "/leads/detail?ref=<seeded-opportunity-ref>" },
+      "automated": [
+        "vitest:modules/leads/web/src/handoff.test.tsx > %s renders the exact project state [handoff-cleared-project]",
+        "pytest:tests/postgres/test_leads_current_links.py::test_missed_lifecycle_changes_after_an_earlier_scan_are_repaired",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "handoff-deleted-project": {
+      "surface": "leads",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "generic": "/leads/detail?ref=<seeded-opportunity-ref>", "job_search": "/leads/detail?ref=<seeded-opportunity-ref>" },
+      "automated": [
+        "vitest:modules/leads/web/src/handoff.test.tsx > %s renders the exact project state [handoff-deleted-project]",
+        "pytest:tests/postgres/test_leads_current_links.py::test_missed_lifecycle_changes_after_an_earlier_scan_are_repaired",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "handoff-unresolved": {
+      "surface": "leads",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "generic": "/leads/detail?ref=<seeded-opportunity-ref>", "job_search": "/leads/detail?ref=<seeded-opportunity-ref>" },
+      "automated": [
+        "vitest:modules/leads/web/src/handoff.test.tsx > handoff-unresolved forbids blind retry",
+        "pytest:tests/postgres/test_leads_current_links.py::test_a_resolution_to_succeeded_reaches_leads_and_then_its_link",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "handoff-retryable-no-effect": {
+      "surface": "leads",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "generic": "/leads/detail?ref=<seeded-opportunity-ref>", "job_search": "/leads/detail?ref=<seeded-opportunity-ref>" },
+      "automated": [
+        "vitest:modules/leads/web/src/handoff.test.tsx > handoff-retryable-no-effect offers one explicit new-approval retry",
+        "pytest:tests/postgres/test_leads_current_handoff.py::test_destination_unavailable_no_effect_restages_with_a_new_approval",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "approval-pending": {
+      "surface": "shell",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "shell": "/approvals/detail?approval_id=<seeded-approval-uuid>" },
+      "lifetime": "Pending only within its window (default 900 seconds after seeding) and until someone decides it; reset and reseed to reuse.",
+      "automated": [
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > approval-pending renders the complete verified payload before two separate fixed decision forms",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "approval-pending-long-payload": {
+      "surface": "shell",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "shell": "/approvals/detail?approval_id=<seeded-approval-uuid>" },
+      "lifetime": "Pending only within its window (default 900 seconds after seeding); never decided, so its read-only capture matrix never consumes it. Reset and reseed after it lapses.",
+      "capture": {
+        "manifest_row": "pending with complete long payload",
+        "viewports": ["1440x1024", "390x844"],
+        "steps": [
+          "Open the seeded approval-pending-long-payload URL from urls as the seeded owner in workspace A.",
+          "Read the Verified stored payload section: the long title, every paragraph of the long body, priority, area, due date and the idempotency key appear in full, before the Decision section.",
+          "Read the Review binding section: the full 64-character payload digest appears.",
+          "Repeat at each viewport and theme in the manifest matrix and at 200% zoom. Do not approve or refuse it."
+        ],
+        "wrap_checks": [
+          "The long title wraps onto further lines with no truncation, ellipsis or clipping.",
+          "The long body keeps its paragraph breaks and wraps with no truncation or clipping.",
+          "The 64-character payload digest wraps inside the panel with no clipping.",
+          "The idempotency key (Leads' attempt key, one unbroken token) wraps inside the panel with no clipping.",
+          "No horizontal page scroll: document.documentElement.scrollWidth does not exceed clientWidth."
+        ]
+      },
+      "automated": [
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > approval-pending-long-payload renders every long field in full before the decision forms",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "approval-submitting": {
+      "surface": "shell",
+      "evidence_mode": "normal-interaction",
+      "automated": [
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > approval-submitting disables both decision controls together while one decision is pending"
+      ]
+    },
+    "approval-approved-queued": {
+      "surface": "shell",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "shell": "/approvals/detail?approval_id=<seeded-approval-uuid>" },
+      "lifetime": "Approved after the seed's last worker visit; queued while no worker runs. prompt14.sh up starts no worker service.",
+      "automated": [
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > approval-approved-queued shows the queued outcome without repeat controls",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "approval-executing": {
+      "surface": "shell",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "shell": "/approvals/detail?approval_id=<seeded-approval-uuid>" },
+      "lifetime": "Executing with its job requeued after the seed's typed retryable visit; durable while no worker runs.",
+      "automated": [
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > %s renders its external outcome as read-only state without decision controls [approval-executing]",
+        "pytest:tests/postgres/test_external_continuation.py::test_typed_retry_requeues_without_settling_then_succeeds",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "approval-succeeded": {
+      "surface": "shell",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "shell": "/approvals/detail?approval_id=<seeded-approval-uuid>" },
+      "automated": [
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > %s renders its external outcome as read-only state without decision controls [approval-succeeded]",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "approval-failed-no-effect": {
+      "surface": "shell",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "shell": "/approvals/detail?approval_id=<seeded-approval-uuid>" },
+      "automated": [
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > %s renders its external outcome as read-only state without decision controls [approval-failed-no-effect]",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "approval-unresolved": {
+      "surface": "shell",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "shell": "/approvals/detail?approval_id=<seeded-approval-uuid>" },
+      "automated": [
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > approval-unresolved shows Outcome unknown without repeat controls",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "approval-refused": {
+      "surface": "shell",
+      "evidence_mode": "seeded-durable-url",
+      "urls": { "shell": "/approvals/detail?approval_id=<seeded-approval-uuid>" },
+      "automated": [
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > approval-refused renders a person's refusal as closed read-only history",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "approval-expired": {
+      "surface": "shell",
+      "evidence_mode": "normal-interaction",
+      "automated": [
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > approval-expired renders verified history with no form or submit path"
+      ]
+    },
+    "approval-stale-binding": {
+      "surface": "shell",
+      "evidence_mode": "normal-interaction",
+      "automated": [
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > approval-stale-binding leaves the stale tab's decision unapplied with no executable controls",
+        "vitest:apps/web/src/shell/approval-actions.test.ts > refuses a stale displayed digest before any mutation",
+        "pytest:tests/postgres/test_external_continuation.py::test_effect_time_recheck_refuses_a_changed_payload_snapshot"
+      ]
+    },
+    "approval-denied-or-missing": {
+      "surface": "shell",
+      "evidence_mode": "normal-interaction",
+      "prompt15_manual": "same-human-workspace-a-b-a",
+      "automated": [
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > approval-denied-or-missing renders refused, invalid, missing and unauthorized answers as one redacted state",
+        "pytest:tests/postgres/test_approvals.py::test_same_human_session_workspace_switch_redacts_one_real_approval_url",
+        "vitest:apps/web/src/lib/routing/links.test.ts > builds only the bounded approval detail URL from a UUID",
+        "pytest:tests/postgres/test_prompt14_seed.py::test_prompt14_seed_reaches_every_seeded_fixture"
+      ]
+    },
+    "approval-temporarily-unavailable": {
+      "surface": "shell",
+      "evidence_mode": "harness-runtime-recipe",
+      "automated": [
+        "vitest:apps/web/src/shell/approval-detail.test.tsx > approval-temporarily-unavailable keeps transport failure distinct but carries no stale controls",
+        "vitest:apps/web/src/shell/render-surface.test.tsx > treats an unreadable session as temporary failure with no sign-in or decision"
+      ]
+    }
+  },
+  "seed_gaps": {},
+  "pending_spares": {
+    "rows": ["approval-submitting", "approval-stale-binding", "approval-expired", "decision-approve", "decision-refuse"],
+    "note": "Each consuming row has its own undecided approval, printed by urls as spare:<row>. The approval-pending and approval-pending-long-payload fixtures are never decided, so their read-only review matrix (themes, viewports, zoom, keyboard) never consumes them.",
+    "reseed": "Every pending approval, spares included, stays pending for 900 seconds after seeding. When a pending row's window lapses before its check is done, run reset, up and seed again (about three minutes), then browser-stop and browser-start: reset deletes the database that held the review browser's session, so the old window is signed out. Continue with the new URLs from urls. The labels and recipes stay the same; every URL, approval id and workspace id is new."
+  },
+  "criteria": [
+    {
+      "criterion": 1,
+      "automated": ["pytest:tests/postgres/test_keyed_idempotency.py::test_keyed_dispatch_replays_defaults_nulls_unicode_and_exact_whitespace"],
+      "prompt15_manual": ["Confirm the seeded request exposes one stable handoff result after reload."]
+    },
+    {
+      "criterion": 2,
+      "automated": ["pytest:tests/postgres/test_keyed_idempotency.py::test_keyed_dispatch_refuses_changed_protected_request_without_handler_invocation"],
+      "prompt15_manual": ["Confirm no duplicate Current item appears in the seeded history."]
+    },
+    {
+      "criterion": 3,
+      "automated": ["pytest:tests/postgres/test_current_external.py::test_external_approved_path_replays_core_result_without_reinvoking_destination"],
+      "prompt15_manual": ["Reload the succeeded handoff and confirm the same Current item link remains."]
+    },
+    {
+      "criterion": 4,
+      "automated": ["pytest:tests/postgres/test_leads_current_handoff.py::test_handoff_list_reads_the_live_phase_without_reconciling"],
+      "prompt15_manual": ["Inspect awaiting, queued, executing, succeeded, failed, refused, and unresolved rendered states."]
+    },
+    {
+      "criterion": 5,
+      "automated": ["pytest:tests/postgres/test_leads_current_links.py::test_a_resolution_to_succeeded_reaches_leads_and_then_its_link"],
+      "prompt15_manual": ["Confirm the unresolved fixture says Outcome unknown and offers no blind retry."]
+    },
+    {
+      "criterion": 6,
+      "automated": ["pytest:tests/postgres/test_external_continuation.py::test_effect_time_recheck_refuses_a_changed_payload_snapshot"],
+      "prompt15_manual": ["Confirm stale binding exposes no executable decision controls."],
+      "manual_coverage": [
+        {
+          "state": "changed binding",
+          "mode": "automated-only",
+          "automated": ["pytest:tests/postgres/test_external_continuation.py::test_effect_time_recheck_refuses_a_changed_payload_snapshot"],
+          "note": "A stored payload snapshot changes after approval only by a direct database write; no person, page or operation can change it, so no reviewer can reach it without faking state. The PostgreSQL test pins the effect-time refusal."
+        },
+        {
+          "state": "restored requires_reapproval",
+          "mode": "automated-only",
+          "automated": [
+            "vitest:apps/web/src/shell/approval-detail.test.tsx > labels restored dates as historical and still requires a fresh explicit decision",
+            "pytest:tests/postgres/test_approvals.py::test_a_restored_approval_previews_as_restored_and_actionable",
+            "pytest:tests/postgres/test_export_restore.py::test_approved_action_restore_requires_fresh_approval_and_executes_nothing"
+          ],
+          "note": "Core writes requires_reapproval only when an operator restores a workspace export (rheo workspace restore provisions the export's recorded workspace id, so the source workspace must be gone first). No owner or member web interaction reaches it, and the acceptance stack would have to destroy and restore its seeded workspace through the operator CLI. The render test pins the restored page; the PostgreSQL tests pin how restore produces it."
+        }
+      ]
+    },
+    {
+      "criterion": 7,
+      "automated": ["pytest:tests/postgres/test_leads_current_handoff.py::test_destination_unavailable_no_effect_restages_with_a_new_approval"],
+      "prompt15_manual": ["Confirm unavailable Current leaves the Leads opportunity usable and claims no effect."]
+    },
+    {
+      "criterion": 8,
+      "automated": ["pytest:tests/postgres/test_current_external.py::test_the_loaded_current_manifest_passes_the_production_allowlist"],
+      "prompt15_manual": ["Confirm the disposable stack starts with the shipped exact composition assertion."]
+    },
+    {
+      "criterion": 9,
+      "automated": ["vitest:modules/leads/web/src/screens.test.tsx > qualified-current enables handoff regardless of qualification score", "vitest:modules/leads/web/src/screens.test.tsx > qualified-stale warns conspicuously without disabling handoff"],
+      "prompt15_manual": ["Inspect the seeded qualified-current, unqualified and qualified-stale fixtures in both Leads variants."]
+    },
+    {
+      "criterion": 10,
+      "automated": ["pytest:tests/postgres/test_current_external.py::test_external_approved_path_replays_core_result_without_reinvoking_destination"],
+      "prompt15_manual": ["Confirm success shows one standalone item and no automatically created project."]
+    },
+    {
+      "criterion": 11,
+      "automated": ["pytest:tests/postgres/test_current_external.py::test_source_index_recovers_after_the_core_row_expires"],
+      "prompt15_manual": ["Confirm one intentional second handoff is distinct while reloads keep the first reference."]
+    },
+    {
+      "criterion": 12,
+      "automated": ["pytest:tests/postgres/test_leads_current_view.py::test_item_and_project_are_authorized_independently", "vitest:modules/leads/web/src/handoff.test.tsx > handoff-denied-item-live-project keeps the authorized project visible", "vitest:modules/leads/web/src/handoff.test.tsx > handoff-live-item-denied-project keeps the item and redacts the project"],
+      "prompt15_manual": ["Confirm route absence retains authorized content and produces no fabricated link."],
+      "prompt15_not_applicable": ["The two asymmetric denied-sibling fixtures use reviewed restricted-token PostgreSQL authorization plus authored UI render evidence; do not claim a URL, screenshot, keyboard check, or manual pass."],
+      "manual_coverage": [
+        {
+          "state": "route absence",
+          "mode": "automated-only",
+          "automated": ["vitest:modules/leads/web/src/handoff.test.tsx > configured-only navigation keeps live content when no route is available"],
+          "note": "The local stack always configures the Current route, so live Current content without a route cannot be reached there without changing web routing; the render test pins it."
+        }
+      ]
+    },
+    {
+      "criterion": 13,
+      "automated": ["pytest:tests/postgres/test_leads_current_links.py::test_missed_lifecycle_changes_after_an_earlier_scan_are_repaired", "vitest:modules/leads/web/src/handoff.test.tsx > handoff-deleted-item-live-project keeps the authorized project visible"],
+      "prompt15_manual": ["Inspect deleted item/live project and confirm the project remains directly navigable."]
+    },
+    {
+      "criterion": 14,
+      "automated": ["pytest:tests/postgres/test_leads_current_links.py::test_missed_lifecycle_changes_after_an_earlier_scan_are_repaired"],
+      "prompt15_manual": ["Inspect moved, cleared, item-deleted, and project-deleted fixture outcomes."],
+      "manual_coverage": [
+        {
+          "state": "moved",
+          "mode": "normal-interaction",
+          "automated": ["pytest:tests/postgres/test_leads_current_links.py::test_missed_lifecycle_changes_after_an_earlier_scan_are_repaired"],
+          "steps": [
+            "Open the seeded live item/live project Leads URL and follow its Current item link.",
+            "In Current's existing item edit form, move the item to another project.",
+            "Reload the Leads URL and observe the newly assigned project."
+          ]
+        }
+      ]
+    },
+    {
+      "criterion": 15,
+      "automated": ["vitest:modules/leads/web/src/handoff.test.tsx > handoff-succeeded-live-item-no-project renders no project assignment controls"],
+      "prompt15_manual": ["Confirm assignment, move, and clear remain only on the Current item edit screen."]
+    },
+    {
+      "criterion": 16,
+      "automated": ["pytest:tests/postgres/test_leads_current_handoff.py::test_current_absent_at_request_is_a_local_handoff_with_no_effect"],
+      "prompt15_manual": ["Inspect the Current-omitted/unavailable copy and confirm Leads remains usable."]
+    },
+    {
+      "criterion": 17,
+      "automated": ["pytest:tests/postgres/test_leads_current_handoff.py::test_handoff_stages_one_held_attempt_and_leaves_stage_and_outcome"],
+      "prompt15_manual": ["Confirm a succeeded handoff leaves the opportunity stage and outcome unchanged."]
+    },
+    {
+      "criterion": 18,
+      "automated": ["pytest:tests/postgres/test_approvals.py::test_same_human_session_workspace_switch_redacts_one_real_approval_url", "vitest:apps/web/src/lib/routing/links.test.ts > builds only the bounded approval detail URL from a UUID", "vitest:apps/web/src/shell/approval-detail.test.tsx > approval-pending renders the complete verified payload before two separate fixed decision forms", "vitest:apps/web/src/shell/approval-actions.test.ts > refuses a stale displayed digest before any mutation"],
+      "prompt15_manual": ["Navigate, refresh, approve, and refuse separate fixtures; verify GET is inert and closed/denied states expose no controls."]
+    }
+  ],
+  "interaction_recipes": {
+    "approval-submitting": {
+      "kind": "normal-interaction",
+      "route": "the spare:approval-submitting URL",
+      "steps": ["Submit one ordinary approve or refuse form and observe its native pending state before the server result returns. This consumes that spare only."]
+    },
+    "approval-expired": {
+      "kind": "normal-interaction",
+      "route": "the spare:approval-expired URL, left undecided",
+      "steps": ["Leave that spare undecided past its window (900 seconds after seeding), then reopen the unchanged URL and observe read-only expired history with no decision form."]
+    },
+    "approval-stale-binding": {
+      "kind": "normal-interaction",
+      "route": "the spare:approval-stale-binding URL in two ordinary tabs",
+      "proves": "The concurrent-race refusal only: a decision taken in another tab leaves the stale tab's form refused, with no mutation and no resubmission. It does not change the stored binding (a changed binding) and does not reach the restored requires_reapproval page; criterion 6's manual_coverage classifies both.",
+      "steps": [
+        "Open the same pending approval in two ordinary tabs.",
+        "Decide it in the first tab.",
+        "Submit the second tab's stale form and observe the fresh-preview refusal with no mutation or resubmission."
+      ]
+    },
+    "approval-denied-or-missing": {
+      "kind": "normal-interaction",
+      "flow": "same-human-workspace-a-b-a",
+      "route": "a seeded approval URL from workspace A (the state file's workspaces.a)",
+      "workspace_b": "seeded",
+      "steps": [
+        "Open the real approval URL as its same human in workspace A and record the positive control.",
+        "Switch that host-bound human session normally to the seeded workspace B with the existing workspace switcher.",
+        "Reopen the unchanged workspace-A approval URL and observe the genuine fully redacted result.",
+        "Switch normally back to workspace A and reopen the unchanged URL as the final positive control."
+      ]
+    },
+    "handoff-unavailable-item-unavailable-project": {
+      "kind": "harness-runtime-recipe",
+      "base_fixture": "handoff-succeeded-live-item-live-project",
+      "harness": [
+        "tests/harness/prompt14.sh current-omitted ENV PROOF_DIR",
+        "tests/harness/prompt14.sh current-restored ENV PROOF_DIR"
+      ],
+      "steps": [
+        "Run current-omitted: it recreates only this project's core with the Current module left out of its loaded module list.",
+        "Open the seeded live item/live project Leads URL (either variant) and observe both Current branches reported unavailable with no Current link or content.",
+        "Run current-restored and confirm the same URL shows the live item and project again."
+      ],
+      "constraints": "Deployment configuration of the unique disposable project only. No network fault proxy, no product, auth, routing or permission change, no direct table write."
+    },
+    "approval-temporarily-unavailable": {
+      "kind": "harness-runtime-recipe",
+      "base_fixture": "approval-succeeded",
+      "harness": [
+        "tests/harness/prompt14.sh core-stop ENV PROOF_DIR",
+        "tests/harness/prompt14.sh core-start ENV PROOF_DIR"
+      ],
+      "steps": [
+        "Run core-stop: it stops only this project's core while the web app keeps serving.",
+        "Reload the unchanged seeded approval URL and observe Approval temporarily unavailable with no decision controls.",
+        "Run core-start and confirm the same URL shows the approval again."
+      ],
+      "constraints": "Stops the unique disposable project's own core service. No network fault proxy, no fake URL."
+    }
+  },
+  "audit_checks": [
+    {
+      "id": "leads-qualified-current",
+      "source": "capture-row",
+      "check": "Leads detail for an opportunity with a current qualification offers the handoff.",
+      "coverage": { "fixtures": ["qualified-current"] }
+    },
+    {
+      "id": "leads-qualified-stale",
+      "source": "capture-row",
+      "check": "Leads detail for an opportunity whose qualification is out of date.",
+      "coverage": { "fixtures": ["qualified-stale"] }
+    },
+    {
+      "id": "leads-awaiting-approval",
+      "source": "capture-row",
+      "check": "Leads detail with a handoff awaiting approval.",
+      "coverage": { "fixtures": ["handoff-awaiting-approval"] }
+    },
+    {
+      "id": "leads-succeeded-live-item-no-project",
+      "source": "capture-row",
+      "check": "Leads detail with a succeeded handoff, a live Current item and no project.",
+      "coverage": { "fixtures": ["handoff-succeeded-live-item-no-project"] }
+    },
+    {
+      "id": "leads-deleted-item-live-project",
+      "source": "capture-row",
+      "check": "Leads detail whose Current item was deleted while its project lives.",
+      "coverage": { "fixtures": ["handoff-deleted-item-live-project"] }
+    },
+    {
+      "id": "leads-unavailable-item-unavailable-project",
+      "source": "capture-row",
+      "check": "Leads detail while both the Current item and project are unavailable.",
+      "coverage": { "fixtures": ["handoff-unavailable-item-unavailable-project"] }
+    },
+    {
+      "id": "leads-unresolved",
+      "source": "capture-row",
+      "check": "Leads detail with a handoff whose outcome is unknown.",
+      "coverage": { "fixtures": ["handoff-unresolved"] }
+    },
+    {
+      "id": "leads-history-empty",
+      "source": "capture-row",
+      "check": "Leads detail whose handoff history is empty.",
+      "coverage": {
+        "fixtures": ["qualified-current", "unqualified"],
+        "automated": [
+          "vitest:modules/leads/web/src/screens.test.tsx > qualified-current enables handoff regardless of qualification score",
+          "vitest:modules/leads/web/src/handoff.test.tsx > renders loading, empty, denied and temporary history states"
+        ],
+        "note": "The seed stages no handoff for either opportunity, so each page's history reads No Current handoffs yet. The qualified-current screen test asserts that copy on the real detail screen."
+      }
+    },
+    {
+      "id": "leads-history-loading",
+      "source": "capture-row",
+      "check": "Leads detail while its handoff history is still loading.",
+      "coverage": {
+        "automated_only": {
+          "tests": [
+            "vitest:modules/leads/web/src/screens.test.tsx > renders the real detail loading fallback before handoff history settles",
+            "vitest:modules/leads/web/src/handoff.test.tsx > renders loading, empty, denied and temporary history states"
+          ],
+          "reason": "The loading line is the fallback streamed while the server-side history read is still pending. On the local stack that read finishes inside the same response, and holding it open would need a slowed or faked Core read, which the acceptance stack never adds."
+        }
+      }
+    },
+    {
+      "id": "leads-history-error",
+      "source": "capture-row",
+      "check": "Leads detail whose handoff history is refused or temporarily unavailable.",
+      "coverage": {
+        "automated_only": {
+          "tests": [
+            "vitest:modules/leads/web/src/handoff.test.tsx > renders loading, empty, denied and temporary history states",
+            "pytest:tests/postgres/test_leads_current_handoff.py::test_owner_and_authenticated_member_receive_the_live_phase"
+          ],
+          "reason": "History is refused only to a caller outside the owner and member roles, and every person who can open the opportunity in a browser holds one of them. It is temporarily unavailable only when the history read fails while the rest of the page renders: core-stop takes the whole page to the shell's temporary failure, and current-omitted leaves Leads history readable. The render test pins both copies."
+        }
+      }
+    },
+    {
+      "id": "leads-denied-item-live-project",
+      "source": "capture-row",
+      "check": "A viewer who may read the project but not the item keeps the project; restricted-token authorization and render evidence, no browser row.",
+      "coverage": { "fixtures": ["handoff-denied-item-live-project"] }
+    },
+    {
+      "id": "leads-live-item-denied-project",
+      "source": "capture-row",
+      "check": "A viewer who may read the item but not the project keeps the item; restricted-token authorization and render evidence, no browser row.",
+      "coverage": { "fixtures": ["handoff-live-item-denied-project"] }
+    },
+    {
+      "id": "approval-pending-long-payload",
+      "source": "capture-row",
+      "check": "Approval detail for a pending approval with a long payload, shown in full.",
+      "coverage": { "fixtures": ["approval-pending-long-payload"] }
+    },
+    {
+      "id": "approval-submitting",
+      "source": "capture-row",
+      "check": "Approval detail while a decision is being submitted.",
+      "coverage": { "fixtures": ["approval-submitting"] }
+    },
+    {
+      "id": "approval-approved-queued",
+      "source": "capture-row",
+      "check": "Approval detail for an approved, queued action.",
+      "coverage": { "fixtures": ["approval-approved-queued"] }
+    },
+    {
+      "id": "approval-succeeded",
+      "source": "capture-row",
+      "check": "Approval detail for a succeeded action.",
+      "coverage": { "fixtures": ["approval-succeeded"] }
+    },
+    {
+      "id": "approval-unresolved",
+      "source": "capture-row",
+      "check": "Approval detail for an action whose outcome is unknown.",
+      "coverage": { "fixtures": ["approval-unresolved"] }
+    },
+    {
+      "id": "approval-expired-binding",
+      "source": "capture-row",
+      "check": "Approval detail after the approval window has expired.",
+      "coverage": { "fixtures": ["approval-expired"] }
+    },
+    {
+      "id": "approval-stale-binding",
+      "source": "capture-row",
+      "check": "Approval detail whose displayed binding is stale.",
+      "coverage": {
+        "fixtures": ["approval-stale-binding"],
+        "manual_coverage": [{ "criterion": 6, "state": "changed binding" }]
+      }
+    },
+    {
+      "id": "approval-denied-or-not-found",
+      "source": "capture-row",
+      "check": "Approval detail for an approval the viewer may not see or that does not exist.",
+      "coverage": { "fixtures": ["approval-denied-or-missing"] }
+    },
+    {
+      "id": "approval-temporary-error",
+      "source": "capture-row",
+      "check": "Approval detail while Core cannot be reached.",
+      "coverage": { "fixtures": ["approval-temporarily-unavailable"] }
+    },
+    {
+      "id": "approval-protected-chrome-across-themes",
+      "source": "capture-row",
+      "check": "The protected approval area, native controls included, looks the same while the shell theme changes.",
+      "coverage": { "every_reachable": "shell" }
+    },
+    {
+      "id": "no-horizontal-scroll-at-200-zoom",
+      "source": "capture-assertion",
+      "check": "No horizontal page scroll and no clipping, including at 200% zoom.",
+      "coverage": { "every_reachable": "all" }
+    },
+    {
+      "id": "long-content-wraps",
+      "source": "capture-assertion",
+      "check": "A long title, body, digest and idempotency key wrap without truncation.",
+      "coverage": { "fixtures": ["approval-pending-long-payload"] }
+    },
+    {
+      "id": "payload-before-actions",
+      "source": "capture-assertion",
+      "check": "A pending approval shows every payload field before its decision controls.",
+      "coverage": { "fixtures": ["approval-pending", "approval-pending-long-payload"] }
+    },
+    {
+      "id": "denied-approval-redacted-like-invalid",
+      "source": "capture-assertion",
+      "check": "A denied, invalid, missing or unauthorized approval shows no sensitive field and looks the same in every case.",
+      "coverage": { "fixtures": ["approval-denied-or-missing"] }
+    },
+    {
+      "id": "deleted-item-keeps-live-project",
+      "source": "capture-assertion",
+      "check": "A deleted item does not hide a project that is still live.",
+      "coverage": { "fixtures": ["handoff-deleted-item-live-project"], "criteria": [13] }
+    },
+    {
+      "id": "denied-siblings-keep-the-other-branch",
+      "source": "capture-assertion",
+      "check": "A denied item or project never hides its authorized sibling; restricted-token authorization and render evidence only.",
+      "coverage": {
+        "fixtures": ["handoff-denied-item-live-project", "handoff-live-item-denied-project"],
+        "criteria": [12]
+      }
+    },
+    {
+      "id": "route-absence-keeps-content",
+      "source": "capture-assertion",
+      "check": "Without a Current route the authorized content stays and no link is invented.",
+      "coverage": { "manual_coverage": [{ "criterion": 12, "state": "route absence" }] }
+    },
+    {
+      "id": "stale-qualification-warns-and-stays-enabled",
+      "source": "capture-assertion",
+      "check": "An out-of-date qualification shows explicit warning text and the handoff stays available.",
+      "coverage": { "fixtures": ["qualified-stale"], "criteria": [9] }
+    },
+    {
+      "id": "success-only-for-proven-result",
+      "source": "capture-assertion",
+      "check": "Success language appears only once a result is proven, never while queued or in progress.",
+      "coverage": {
+        "fixtures": [
+          "handoff-succeeded-live-item-no-project",
+          "approval-succeeded",
+          "handoff-approved-queued",
+          "approval-approved-queued",
+          "handoff-executing",
+          "approval-executing"
+        ]
+      }
+    },
+    {
+      "id": "current-edit-form-is-the-only-project-control",
+      "source": "capture-assertion",
+      "check": "Current's own item edit form is the only place to assign, move or clear a project.",
+      "coverage": { "fixtures": ["handoff-succeeded-live-item-no-project"], "criteria": [15] }
+    },
+    {
+      "id": "skip-link-and-focus-order",
+      "source": "keyboard-focus",
+      "check": "The skip link works and focus moves forward and backward through the page in order.",
+      "coverage": { "every_reachable": "all" }
+    },
+    {
+      "id": "decision-controls-disable-together",
+      "source": "keyboard-focus",
+      "check": "Approve and refuse, each tried on its own approval, disable together while a decision submits.",
+      "coverage": {
+        "fixtures": ["approval-submitting"],
+        "spares": ["decision-approve", "decision-refuse"]
+      }
+    },
+    {
+      "id": "focus-lands-on-result",
+      "source": "keyboard-focus",
+      "check": "After a decision, focus lands on the durable result heading or status.",
+      "coverage": { "spares": ["decision-approve", "decision-refuse"] }
+    },
+    {
+      "id": "concurrent-resolution-never-resubmits",
+      "source": "keyboard-focus",
+      "check": "A decision already taken elsewhere is not resubmitted.",
+      "coverage": { "fixtures": ["approval-stale-binding"] }
+    },
+    {
+      "id": "item-project-branches-in-every-theme",
+      "source": "keyboard-focus",
+      "check": "Every reachable Current item and project branch, in each theme at desktop and mobile sizes.",
+      "coverage": {
+        "fixtures": [
+          "handoff-succeeded-live-item-no-project",
+          "handoff-succeeded-live-item-live-project",
+          "handoff-deleted-item-live-project",
+          "handoff-unavailable-item-unavailable-project",
+          "handoff-cleared-project",
+          "handoff-deleted-project"
+        ],
+        "manual_coverage": [{ "criterion": 14, "state": "moved" }]
+      }
+    },
+    {
+      "id": "reduced-motion-and-forced-colors",
+      "source": "keyboard-focus",
+      "check": "Reduced motion and forced colors behave correctly.",
+      "coverage": { "every_reachable": "all" }
+    },
+    {
+      "id": "leads-detail-both-variants",
+      "source": "audit-check",
+      "check": "Every reachable Leads state in both the generic and the job-search Leads variants.",
+      "coverage": {
+        "fixtures": [
+          "qualified-current",
+          "qualified-stale",
+          "unqualified",
+          "handoff-awaiting-approval",
+          "handoff-approved-queued",
+          "handoff-executing",
+          "handoff-succeeded-live-item-no-project",
+          "handoff-succeeded-live-item-live-project",
+          "handoff-deleted-item-live-project",
+          "handoff-unavailable-item-unavailable-project",
+          "handoff-cleared-project",
+          "handoff-deleted-project",
+          "handoff-unresolved",
+          "handoff-retryable-no-effect"
+        ]
+      }
+    },
+    {
+      "id": "approval-states-complete",
+      "source": "audit-check",
+      "check": "The complete list of approval states on the shell approval page.",
+      "coverage": {
+        "fixtures": [
+          "approval-pending",
+          "approval-pending-long-payload",
+          "approval-submitting",
+          "approval-approved-queued",
+          "approval-executing",
+          "approval-succeeded",
+          "approval-failed-no-effect",
+          "approval-unresolved",
+          "approval-refused",
+          "approval-expired",
+          "approval-stale-binding",
+          "approval-denied-or-missing",
+          "approval-temporarily-unavailable"
+        ]
+      }
+    },
+    {
+      "id": "current-item-and-project-links",
+      "source": "audit-check",
+      "check": "The Current item and project links Leads shows open the provider's own pages.",
+      "coverage": {
+        "fixtures": [
+          "handoff-succeeded-live-item-no-project",
+          "handoff-succeeded-live-item-live-project",
+          "handoff-deleted-item-live-project"
+        ],
+        "criteria": [3, 13]
+      }
+    },
+    {
+      "id": "routing-subdomain-isolation-and-configured-urls",
+      "source": "audit-check",
+      "check": "Subdomain mode keeps each surface on its own host and every link uses the configured URLs.",
+      "coverage": {
+        "automated_only": {
+          "tests": [
+            "vitest:apps/web/src/lib/routing/resolve.test.ts > serves approval detail only on the shell host",
+            "vitest:apps/web/src/lib/routing/resolve.test.ts > gives a module host's whole path to the module, its root included",
+            "vitest:apps/web/src/lib/routing/resolve.test.ts > serves nothing on the shell host below its root, or on any other host",
+            "vitest:apps/web/src/lib/routing/record-href.test.ts > serves a root-path provider on its own subdomain host",
+            "vitest:apps/web/src/lib/routing/record-href.test.ts > returns null rather than linking through an unserved routing surface",
+            "vitest:apps/web/src/lib/routing/links.test.ts > puts the sign-in link on a different host than the shell in subdomain mode",
+            "vitest:apps/web/src/lib/routing/links.test.ts > builds only the bounded approval detail URL from a UUID",
+            "vitest:apps/web/src/lib/routing/url-for.test.ts > keeps the two modes distinct for every case covered in both"
+          ],
+          "reason": "The disposable stack runs path mode on one localhost origin. Subdomain mode needs a separate host for each surface, which the stack does not serve, so these routing tests are the evidence for it and the browser review uses path mode."
+        }
+      }
+    },
+    {
+      "id": "build-start-console-and-responsiveness",
+      "source": "audit-check",
+      "check": "The reviewed build result, Core and web startup readiness, runtime console errors and visible responsiveness, with no invented metrics.",
+      "coverage": { "every_reachable": "all", "criteria": [8] }
+    },
+    {
+      "id": "three-themes",
+      "source": "audit-check",
+      "check": "GreenStream dark, Novadiem dark and Novadiem light on both surfaces.",
+      "coverage": { "every_reachable": "all" }
+    },
+    {
+      "id": "viewports-and-zoom",
+      "source": "audit-check",
+      "check": "Desktop 1440x1024, tablet 1024x768, mobile 390x844 and 200% zoom on both surfaces.",
+      "coverage": { "every_reachable": "all" }
+    },
+    {
+      "id": "row-record-contrast-and-overflow",
+      "source": "audit-check",
+      "check": "Each reviewed row records its route, theme, viewport, zoom, keyboard outcome, contrast, overflow, wrapping, motion, forced colors, console result and evidence.",
+      "coverage": { "every_reachable": "all" }
+    },
+    {
+      "id": "get-refresh-back-forward-inert",
+      "source": "audit-check",
+      "check": "Opening, refreshing, Back and Forward change nothing.",
+      "coverage": { "fixtures": ["approval-pending"], "criteria": [18] }
+    },
+    {
+      "id": "controls-at-least-44px",
+      "source": "audit-check",
+      "check": "Interactive controls are at least 44px.",
+      "coverage": { "every_reachable": "all" }
+    },
+    {
+      "id": "cleared-project",
+      "source": "audit-check",
+      "check": "A project connection cleared in Current.",
+      "coverage": { "fixtures": ["handoff-cleared-project"], "criteria": [14] }
+    },
+    {
+      "id": "later-project-deletion",
+      "source": "audit-check",
+      "check": "A project deleted in Current after the handoff.",
+      "coverage": { "fixtures": ["handoff-deleted-project"], "criteria": [14] }
+    },
+    {
+      "id": "current-omitted",
+      "source": "audit-check",
+      "check": "Current left out of the deployment: Leads stays usable and shows Current as unavailable.",
+      "coverage": { "fixtures": ["handoff-unavailable-item-unavailable-project"], "criteria": [16] }
+    },
+    {
+      "id": "current-disabled",
+      "source": "audit-check",
+      "check": "Current disabled in the workspace: Leads stays usable and a handoff makes no Current effect.",
+      "coverage": {
+        "automated_only": {
+          "tests": [
+            "pytest:tests/postgres/test_leads_current_handoff.py::test_request_time_unavailable_restages_once_current_is_ready",
+            "pytest:tests/postgres/test_leads_current_links.py::test_current_absent_denied_or_unready_preserves_the_projection"
+          ],
+          "reason": "A workspace module is disabled only by writing its module state, and nothing does that: Core has install, enable and upgrade operations but no disable, and only those and export restore write module state. A reviewer would have to edit the database. The PostgreSQL tests set the state directly and pin that a request made while Current is disabled becomes a local handoff with no effect, restages once Current is back, and leaves the linked projection untouched. The omitted state, which a deployment can reach, has its own runtime recipe."
+        }
+      }
+    },
+    {
+      "id": "keyed-lost-response",
+      "source": "audit-check",
+      "check": "A request whose response was lost, retried with the same key, makes one handoff.",
+      "coverage": {
+        "automated_only": {
+          "tests": [
+            "vitest:modules/leads/web/src/handoff-request-form.test.tsx > keeps one user request key across a lost response and retry",
+            "pytest:tests/postgres/test_leads_current_handoff.py::test_same_key_same_snapshot_returns_the_same_handoff_after_a_lost_response",
+            "pytest:tests/postgres/test_leads_current_handoff.py::test_a_restage_replays_a_lost_response_and_refuses_a_stale_attempt",
+            "pytest:tests/postgres/test_keyed_idempotency.py::test_keyed_dispatch_replays_defaults_nulls_unicode_and_exact_whitespace",
+            "pytest:tests/postgres/test_keyed_idempotency.py::test_keyed_dispatch_concurrent_same_request_runs_one_handler_and_effect"
+          ],
+          "reason": "A lost response means Core committed the request but the reply never reached the browser. Only a network fault between the two produces that, and the acceptance stack adds no fault proxy; a stopped Core refuses the request before anything commits, which is a different state. The form test pins that a retry reuses the same request key, and the PostgreSQL tests pin that the same key returns the same handoff and that concurrent identical requests run one effect."
+        }
+      }
+    },
+    {
+      "id": "explicit-unresolved-resolution",
+      "source": "audit-check",
+      "check": "A person explicitly resolves an action whose outcome is unknown, and Leads follows the named outcome.",
+      "coverage": {
+        "automated_only": {
+          "tests": [
+            "pytest:tests/postgres/test_external_continuation.py::test_resolve_success_requires_a_verified_result_ref",
+            "pytest:tests/postgres/test_external_continuation.py::test_resolve_failed_requires_proof_of_no_effect",
+            "pytest:tests/postgres/test_external_continuation.py::test_resolve_cancelled_is_terminal_without_proof",
+            "pytest:tests/postgres/test_leads_current_links.py::test_a_resolution_to_succeeded_reaches_leads_and_then_its_link",
+            "pytest:tests/postgres/test_leads_current_links.py::test_a_resolution_to_failed_reaches_leads_and_restages_on_a_new_approval",
+            "pytest:tests/postgres/test_leads_current_links.py::test_a_resolution_to_cancelled_is_recorded_and_never_restages_but_a_new_key_does"
+          ],
+          "reason": "Core's core.operation.resolve has no page or form, and no token of any kind may carry it, so no normal page, CLI or MCP client calls it; reaching it would mean hand-building a request. The unknown-outcome state itself is seeded (handoff-unresolved and approval-unresolved). The PostgreSQL tests pin each resolution outcome and that Leads picks it up."
+        }
+      }
+    },
+    {
+      "id": "stage-and-outcome-unchanged",
+      "source": "audit-check",
+      "check": "A succeeded handoff leaves the opportunity's stage and outcome unchanged.",
+      "coverage": { "fixtures": ["handoff-succeeded-live-item-no-project"], "criteria": [17] }
+    },
+    {
+      "id": "closed-history-read-only",
+      "source": "audit-check",
+      "check": "An expired or resolved approval shows its verified snapshot only as closed, read-only history with no decision controls or submit path.",
+      "coverage": {
+        "fixtures": ["approval-expired", "approval-succeeded", "approval-refused", "approval-failed-no-effect"]
+      }
+    },
+    {
+      "id": "denied-or-missing-workspace-switch",
+      "source": "audit-check",
+      "check": "The same person's approval link from workspace A is redacted after a normal switch to workspace B and readable again back in A.",
+      "coverage": { "fixtures": ["approval-denied-or-missing"] }
+    },
+    {
+      "id": "requires-reapproval-never-rebuilds",
+      "source": "audit-check",
+      "check": "An expired approval or one that needs a fresh decision is never silently rebuilt.",
+      "coverage": {
+        "fixtures": ["approval-expired"],
+        "manual_coverage": [{ "criterion": 6, "state": "restored requires_reapproval" }]
+      }
+    }
+  ]
+}

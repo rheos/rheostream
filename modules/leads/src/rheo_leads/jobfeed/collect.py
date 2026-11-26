@@ -1,16 +1,19 @@
-"""Collection: the invitations, the search pages, the merge of overlapping sightings,
-the detail reads.
+"""Collection: the invitations, the saved jobs, the search pages, the merge of
+overlapping sightings, the detail reads.
 
 No database access. Every collaborator arrives as an argument: the run's
 :class:`~rheo_leads.jobfeed.upstream.Upstream`, the wall clock that stamps each page's
 rows, and the capability re-read the run handler performs between pages.
 
 :func:`collect_invitations` lists the account's pending invitations first, one page,
-best effort. :func:`collect_presets` is the one place the run's raw search row count
-is bounded (:data:`ROW_CAP`). Together they are the only producers of the rows that
-detail reads and delivery receive. A failed call or page stops its own search (or
-the listing) and counts one failure; the rest still run. A terminal upstream failure
-(a refused credential) is raised, because every later call would be refused too.
+best effort. :func:`collect_saved` pages through the jobs the owner saved (and,
+separately, the ones saved and then removed), best effort and bounded by
+:data:`SAVED_PAGES`. :func:`collect_presets` is the one place the run's raw search
+row count is bounded (:data:`ROW_CAP`). Together they are the only producers of
+the rows that detail reads and delivery receive. A failed call or page stops its
+own search (or listing) and counts one failure; the rest still run. A terminal
+upstream failure (a refused credential) is raised, because every later call would
+be refused too.
 """
 
 from collections import Counter
@@ -22,8 +25,10 @@ from typing import Final
 from rheo_leads.jobfeed.normalize import (
     NormalizedPosting,
     apply_detail,
+    from_listing,
     normalize_invitation,
     normalize_row,
+    normalize_saved,
 )
 from rheo_leads.jobfeed.presets import DISCOVERY_CAP, MAX_LIMIT, Preset
 from rheo_leads.jobfeed.upstream import RunCut, Upstream, UpstreamFailure
@@ -36,6 +41,21 @@ INVITATIONS_FAILED: Final = "invitations"
 """The run-history reason prefix for a failed invitations listing."""
 INVITATIONS_MORE: Final = "invitations:more"
 """The run-history reason for a listing that had more than one page."""
+SAVED_LIMIT: Final = 10
+"""The saved-jobs page size: the provider's maximum."""
+SAVED_PAGES: Final = 10
+"""The most saved-jobs pages one run reads, so at most 100 saved jobs a run; the
+search row cap does not count them. A page is one listing call, not a detail
+read."""
+UNSAVED_PAGES: Final = 2
+"""The most pages of jobs saved and then removed one run reads."""
+SAVED_FAILED: Final = "saved"
+"""The run-history reason prefix for a failed saved-jobs listing."""
+SAVED_MORE: Final = "saved:more"
+"""The run-history reason for saved jobs left past :data:`SAVED_PAGES`."""
+SAVED_LIST_KEYS: Final = ("personSavedJobs",)
+"""Where a saved-jobs page carries its rows, under ``data`` (as a live ``list``
+answered on 2026-11-19) or at the top."""
 SEARCHES_FAILED: Final = "searches"
 """The run-history reason prefix for searches that all failed in a run that still
 delivered an invitation."""
@@ -65,6 +85,10 @@ class CollectResult:
 class Sighting:
     posting: NormalizedPosting
     detail_ok: bool = False
+    listed: bool = False
+    """A saved job whose detail read failed, described from its listing instead
+    (:func:`~rheo_leads.jobfeed.normalize.from_listing`): delivered, but without
+    the figures only a detail read supplies."""
 
 
 @dataclass(frozen=True)
@@ -76,6 +100,8 @@ class DetailResult:
     """Discovery postings downgraded because their read failed or was not made."""
     cut: bool
     reasons: Mapping[str, int] = field(default_factory=dict)
+    known: int = 0
+    """Postings not read because their description is already stored (#377)."""
     """Why each of the ``failures`` happened, as fixed codes and their counts
     (:func:`read_failure_reason`): the run history keeps these, content-free."""
 
@@ -284,6 +310,129 @@ def collect_invitations(
     )
 
 
+@dataclass(frozen=True)
+class SavedResult:
+    rows: tuple[NormalizedPosting, ...]
+    """The listed jobs, valid rows only, in the listing's order."""
+    invalid_rows: int
+    pages: int = 0
+    """Pages requested (a call was made, whatever its outcome)."""
+    failure: UpstreamFailure | None = None
+    """The failed call or page, when one failed; the rows before it are kept and
+    collection goes on."""
+    cut: bool = False
+    more: bool = False
+    """The provider had more rows past the last page this run may read."""
+
+
+def saved_reason(failure: UpstreamFailure) -> str:
+    """A failed saved-jobs listing as a run-history reason, content-free."""
+    return f"{SAVED_FAILED}:{read_failure_reason(failure)}"
+
+
+def _saved_rows(document: Mapping[str, object]) -> list[object] | None:
+    """A saved-jobs page's rows when it passes the checks, else ``None``.
+
+    An empty listing leaves the key out (``{"data": {}, "hasMore": false}``, seen
+    live 2026-11-19): with ``data`` present and nothing more to come it is a page
+    of no rows, not a failure."""
+    if document.get("status") != "ok":
+        return None
+    data = document.get("data")
+    places = [data, document] if isinstance(data, Mapping) else [document]
+    for place in places:
+        for key in SAVED_LIST_KEYS:
+            if key not in place:
+                continue
+            listed = place.get(key)
+            if not isinstance(listed, list):
+                return None
+            return listed if len(listed) <= SAVED_LIMIT else None
+    if isinstance(data, Mapping) and document.get("hasMore") is False:
+        return []
+    return None
+
+
+def _saved_more(document: Mapping[str, object], count: int) -> bool:
+    """Whether a page claims more: its ``hasMore`` when it gives one, else a full
+    page."""
+    data = document.get("data")
+    for place in (document, data if isinstance(data, Mapping) else {}):
+        flag = place.get("hasMore")
+        if isinstance(flag, bool):
+            return flag
+    return count >= SAVED_LIMIT
+
+
+def collect_saved(
+    upstream: Upstream,
+    org_uid: str,
+    job_hosts: Sequence[str],
+    *,
+    clock: Callable[[], datetime],
+    followed: bool = True,
+    pages: int = SAVED_PAGES,
+) -> SavedResult:
+    """The owner's saved jobs (``followed``) or the jobs saved and then removed
+    (not ``followed``), at most ``pages`` pages of :data:`SAVED_LIMIT` paged by
+    offset, best effort: a failed call or page ends the listing as a failure, the
+    rows already read kept, and the run carries on. A terminal failure (a refused
+    credential) is raised, because every later call would be refused too.
+
+    A saved job becomes a discovery posting flagged ``saved``, so one not yet
+    tracked is read in detail and delivered whatever its competition; a removed one
+    is flagged not saved and only refreshes a tracked posting
+    (:func:`~rheo_leads.jobfeed.normalize.normalize_saved`). Their
+    ``search_ordinal`` is -1, ahead of every search."""
+    rows: list[NormalizedPosting] = []
+    invalid = requested = 0
+    for page in range(pages):
+        params: dict[str, object] = {
+            "limit": SAVED_LIMIT,
+            "offset": page * SAVED_LIMIT,
+            "followed": followed,
+        }
+        try:
+            document = upstream.saved_jobs(org_uid, params)
+        except RunCut:
+            return SavedResult(tuple(rows), invalid, requested, cut=True)
+        except UpstreamFailure as failure:
+            if failure.terminal:
+                raise
+            return SavedResult(tuple(rows), invalid, requested + 1, failure=failure)
+        requested += 1
+        observed_at = clock()
+        listed = _saved_rows(document)
+        if listed is None:
+            return SavedResult(
+                tuple(rows), invalid, requested, failure=UpstreamFailure("protocol")
+            )
+        for entry in listed:
+            posting = normalize_saved(
+                entry,
+                job_hosts,
+                observed_at=observed_at,
+                search_ordinal=-1,
+                saved=followed,
+            )
+            if posting is None:
+                invalid += 1
+            else:
+                rows.append(posting)
+        if not listed or not _saved_more(document, len(listed)):
+            return SavedResult(tuple(rows), invalid, requested)
+    return SavedResult(tuple(rows), invalid, requested, more=True)
+
+
+def _saved(group: Sequence[NormalizedPosting]) -> bool | None:
+    """True if any row lists the job as saved, false if one lists it as removed,
+    else unknown."""
+    flags = [row.saved for row in group]
+    if any(flag is True for flag in flags):
+        return True
+    return False if any(flag is False for flag in flags) else None
+
+
 def _preference(posting: NormalizedPosting) -> tuple[datetime, int, int]:
     exactness = {True: 2, False: 1, None: 0}[posting.proposal_count_exact]
     return (posting.observed_at, exactness, -posting.search_ordinal)
@@ -303,8 +452,10 @@ def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
     The newest row (ties: an exact count over a band, then the earlier search, then
     the earlier row) supplies the competition fields, the observation time and every
     other feed field; ``applied`` and ``invited`` hold if any row says so (``applied``
-    stays unknown when only invitations were seen); the purpose is discovery if any
-    row came from a discovery search or an invitation.
+    stays unknown when only invitations or saved jobs were seen), ``saved`` holds if
+    any row lists the job as saved and is false if one lists it as removed; the
+    purpose is discovery if any row came from a discovery search, an invitation or
+    the saved-jobs listing of a job not yet tracked.
     """
     groups: dict[str, list[NormalizedPosting]] = {}
     for row in rows:
@@ -321,6 +472,16 @@ def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
                     preferred,
                     applied=_applied(group),
                     invited=any(row.invited for row in group),
+                    saved=_saved(group),
+                    saved_discovery=any(row.saved_discovery for row in group),
+                    listed_description=next(
+                        (
+                            row.listed_description
+                            for row in group
+                            if row.listed_description
+                        ),
+                        None,
+                    ),
                     feed_id=preferred.feed_id
                     or next((row.feed_id for row in group if row.feed_id), None),
                     purpose=(
@@ -337,12 +498,20 @@ def merge_sightings(rows: Sequence[NormalizedPosting]) -> list[Sighting]:
 def _eligible(posting: NormalizedPosting) -> bool:
     """Whether a posting gets a detail read. An invited job always does: the
     client asked, so the discovery filters (applied, the proposal cap) do not
-    apply."""
-    return posting.invited or (
-        posting.purpose == "discover"
-        and not posting.applied
-        and posting.count_band_label != OVER_CAP_BAND
-        and (posting.proposal_count is None or posting.proposal_count <= DISCOVERY_CAP)
+    apply. A saved job not delivered before does too: the owner saved it. One
+    already delivered follows the ordinary rules, so it is read once."""
+    return (
+        posting.invited
+        or posting.saved_discovery
+        or (
+            posting.purpose == "discover"
+            and not posting.applied
+            and posting.count_band_label != OVER_CAP_BAND
+            and (
+                posting.proposal_count is None
+                or posting.proposal_count <= DISCOVERY_CAP
+            )
+        )
     )
 
 
@@ -361,6 +530,23 @@ def _downgraded(posting: NormalizedPosting) -> Sighting:
     return Sighting(replace(posting, purpose="refresh_only", description=None))
 
 
+def _unread_known(sighting: Sighting) -> Sighting:
+    """A posting not read again because its description is stored, without the
+    client figures a detail read supplies (spend, rating, reviews, hire rate).
+    The feed row's own versions of those differ from the detail's, so carrying
+    them would make every known posting look changed and overwrite the stored
+    detail figures each run; left out, the stored ones stand."""
+    return Sighting(
+        replace(
+            sighting.posting,
+            client_spend=None,
+            client_rating=None,
+            client_reviews=None,
+            client_hire_rate=None,
+        )
+    )
+
+
 def read_details(
     upstream: Upstream,
     sightings: Sequence[Sighting],
@@ -369,25 +555,43 @@ def read_details(
     *,
     deadline: float,
     max_reads: int = MAX_DETAIL_READS,
+    known: frozenset[str] = frozenset(),
 ) -> DetailResult:
     """One ``find_jobs get`` per unique eligible posting, at most ``max_reads``,
     none starting with the ``deadline`` too close. A ``get`` sends the feed row's
     own id; a posting whose row carried none gets no read. A discovery posting
     whose read failed or was not made is downgraded to refresh-only with no
-    description and counts one failure; other sightings pass through unchanged."""
+    description and counts one failure; other sightings pass through unchanged.
+
+    A posting in ``known`` already has its description stored, so it is not read
+    again (#377): the job service allows each account only so many detail reads a
+    day (about 400 since Nov 6 2026, reset at 00:00 UTC), and re-reading every
+    posting every run spent them by mid-morning. It passes through as a refresh,
+    its stored description kept, and the allowance goes on postings not seen
+    before."""
     # Each posting id's one read: its detail document when it succeeded, else None.
     details: dict[str, dict[str, object] | None] = {}
     updated: list[Sighting] = []
     reads = failures = 0
     reasons: Counter[str] = Counter()
     cut = False
+    skipped_known = 0
     terminal: UpstreamFailure | None = None
+    # Postings whose read was never made: no feed id, the cap or the deadline.
+    unread: set[str] = set()
     for sighting in sightings:
         posting = sighting.posting
+        key = posting.posting_id
+        if key in known:
+            # Known postings carry no feed client figures, read or not: the stored
+            # detail figures stand even while a posting is over the cap, applied
+            # to, or seen only by the refresh search, since nothing re-reads it.
+            skipped_known += _eligible(posting)
+            updated.append(_unread_known(sighting))
+            continue
         if not _eligible(posting):
             updated.append(sighting)
             continue
-        key = posting.posting_id
         if key not in details:
             detail: dict[str, object] | None = None
             reason: str | None = None
@@ -422,12 +626,20 @@ def read_details(
             if detail is None:
                 failures += 1
                 reasons[reason or NO_DESCRIPTION] += 1
+                if reason in (NO_FEED_ID, NOT_READ_DEADLINE, NOT_READ_CAP):
+                    unread.add(key)
         found = details[key]
         described = None if found is None else _described(posting, found, job_hosts)
+        if described is not None:
+            updated.append(Sighting(described, detail_ok=True))
+            continue
+        # A saved job whose read was made and failed (refused, or no description)
+        # falls back to its listing's description, so it is delivered once and not
+        # read again every run. One left unread by the cap or the deadline waits for
+        # the next run's read.
+        listed = None if key in unread else from_listing(posting)
         updated.append(
-            _downgraded(posting)
-            if described is None
-            else Sighting(described, detail_ok=True)
+            _downgraded(posting) if listed is None else Sighting(listed, listed=True)
         )
     return DetailResult(
         sightings=tuple(updated),
@@ -435,4 +647,5 @@ def read_details(
         failures=failures,
         cut=cut,
         reasons=dict(reasons),
+        known=skipped_known,
     )

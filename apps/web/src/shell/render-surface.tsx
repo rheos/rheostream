@@ -1,4 +1,4 @@
-import type { ComposedModule, Screen, ShellApi } from "@rheo-stream/web-contract/screen";
+import { preferenceCookie, type ComposedModule, type Screen, type ShellApi } from "@rheo-stream/web-contract/screen";
 import { cookies } from "next/headers";
 import { themeId } from "@/theme/builtins";
 import { readThemeCookie } from "@/theme/theme-cookie";
@@ -17,11 +17,19 @@ import {
   type WorkspaceStatusResult,
 } from "@/lib/operations";
 import type { RoutingConfig } from "@/lib/routing/config";
-import { homeHref, loginHref, logoutAction, switcherAction } from "@/lib/routing/links";
+import { recordHref } from "@/lib/routing/record-href";
+import {
+  approvalHref,
+  homeHref,
+  logoutAction,
+  postLoginReturn,
+  restartSignInHref,
+  switcherAction,
+} from "@/lib/routing/links";
 import { loadRoutingConfig } from "@/lib/routing/load";
 import { resolveRequest, type ResolvedRequest } from "@/lib/routing/resolve";
 import { urlFor } from "@/lib/routing/url-for";
-import { activeWorkspaceName, type SessionResult } from "@/lib/session";
+import { activeWorkspaceName, isDeadSessionRefusal, type SessionResult } from "@/lib/session";
 import { MODULES } from "@/modules.generated";
 import {
   composeNavigation,
@@ -29,7 +37,9 @@ import {
   visibleModules,
   type VisibilityOptions,
 } from "@/shell/compose";
+import { ApprovalDetail } from "@/shell/approval-detail";
 import panel from "@/shell/panel.module.css";
+import { savePreference } from "@/shell/preference-action";
 import { refreshScreen } from "@/shell/refresh-screen";
 import { submitModuleForm } from "@/shell/submit-form";
 import { moduleScreenCall } from "@/shell/screen-call";
@@ -55,6 +65,7 @@ type Query = Readonly<Record<string, string | undefined>>;
 type SignedIn = Extract<SessionResult, { state: "ok" }>;
 type SignedOut = Exclude<SessionResult, { state: "ok" } | { state: "no-workspace" }>;
 type ModuleRequest = Extract<ResolvedRequest, { kind: "module" }>;
+type ApprovalRequest = Extract<ResolvedRequest, { kind: "approval" }>;
 
 /**
  * Everything a request can come to, in the guard order: routing first, then the
@@ -85,6 +96,13 @@ export type SurfaceDecision =
       resolved: { kind: "shell" };
       session: SignedIn;
       workspace: WorkspaceStatusResult;
+      visibility: VisibilityOptions;
+    }
+  | {
+      kind: "approval";
+      config: RoutingConfig;
+      resolved: ApprovalRequest;
+      session: SignedIn;
       visibility: VisibilityOptions;
     }
   | {
@@ -154,6 +172,9 @@ export const decideSurface = cache(
     };
     if (resolved.kind === "shell") {
       return { kind: "shell", config, resolved, session, workspace, visibility };
+    }
+    if (resolved.kind === "approval") {
+      return { kind: "approval", config, resolved, session, visibility };
     }
     if (workspace.state !== "ok") {
       return { kind: "modules-unavailable", config, resolved, session, visibility };
@@ -245,15 +266,75 @@ function StatusPanel({ heading, children }: { heading: string; children: ReactNo
   );
 }
 
-function sessionStatus(config: RoutingConfig, session: SignedOut): ReactNode {
+/** The page this request asked for, as the absolute URL `/auth/restart` returns to. */
+function currentPage(config: RoutingConfig, request: SurfaceRequest): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(request.query)) {
+    if (value !== undefined) {
+      params.set(key, value);
+    }
+  }
+  const search = params.toString();
+  return `${config.scheme}://${request.host}${request.pathname}${search ? `?${search}` : ""}`;
+}
+
+/**
+ * This panel only shows behind a cookie core refused (the middleware redirects a
+ * request with none). A dead session's cookie can only be cleared from this host, so
+ * sign-in goes through `/auth/restart` here rather than straight to the identity host,
+ * which would sign in and leave that cookie in place (#528). A live session pointed at
+ * a workspace it can no longer open is not dead, and `/auth/restart` rightly leaves it
+ * alone, so that one gets sign-out, and signing back in picks a workspace again. The
+ * exception is `workspace_unavailable`, which is usually temporary: it leads with wait
+ * and reload, and offers sign-out second (#530).
+ */
+function sessionStatus(
+  config: RoutingConfig,
+  session: SignedOut,
+  request: SurfaceRequest,
+  approval: string | undefined = undefined,
+): ReactNode {
   if (session.state === "unavailable") {
     return <p className={panel.line}>session: unavailable</p>;
   }
+  if (session.refusal === "workspace_unavailable") {
+    // Usually temporary (migrating, restoring), so waiting and reloading comes first:
+    // signing out could land an account with no other workspace on an unselected
+    // session that stays unselected after this one returns (#530). It can also mean a
+    // failed migration or a missing workspace, so sign-out stays, second, for an
+    // account that has another workspace to use.
+    return (
+      <>
+        <p className={panel.line}>session: signed out ({session.refusal})</p>
+        <p className={panel.detail}>
+          This workspace is unavailable right now, often because it is being moved or
+          restored. Wait a few minutes, then reload this page.
+        </p>
+        <p className={panel.detail}>Or sign out to use another workspace.</p>
+        <LogoutForm action={logoutAction(config)} />
+      </>
+    );
+  }
+  if (!isDeadSessionRefusal(session.refusal)) {
+    return (
+      <>
+        <p className={panel.line}>session: signed out ({session.refusal})</p>
+        <p className={panel.detail}>
+          This session can no longer open its workspace. Sign out, then sign in again.
+        </p>
+        <LogoutForm action={logoutAction(config)} />
+      </>
+    );
+  }
+  const returnTarget =
+    approval === undefined
+      ? currentPage(config, request)
+      : (approvalHref(config, approval) ?? postLoginReturn(config));
   return (
     <>
       <p className={panel.line}>session: signed out ({session.refusal})</p>
-      <a className={panel.action} href={loginHref(config)}>
-        Sign in
+      <a className={panel.action} href={restartSignInHref(config, returnTarget)}>
+        {approval === undefined ? "Sign in" : "Sign in to continue"}
       </a>
     </>
   );
@@ -298,14 +379,35 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
       );
     case "not-found":
       return notFound();
-    case "signed-out":
+    case "signed-out": {
+      const approvalRoute = decision.resolved.kind === "approval";
       return (
         <ShellFrame theme={theme} timeZone={timeZone} health={health} homeHref={homeHref(decision.config)}>
-          <StatusPanel heading={decision.resolved.kind === "shell" ? "Home" : "Workspace"}>
-            {sessionStatus(decision.config, decision.session)}
+          <StatusPanel
+            heading={
+              decision.resolved.kind === "shell"
+                ? "Home"
+                : approvalRoute
+                  ? decision.session.state === "unavailable"
+                    ? "Approval temporarily unavailable"
+                    : "Review approval"
+                  : "Workspace"
+            }
+          >
+            {approvalRoute && decision.session.state === "unavailable" ? (
+              <p className={panel.line}>Session is temporarily unavailable. Reload this page to try again.</p>
+            ) : (
+              sessionStatus(
+                decision.config,
+                decision.session,
+                request,
+                approvalRoute ? request.query.approval_id : undefined,
+              )
+            )}
           </StatusPanel>
         </ShellFrame>
       );
+    }
     case "no-workspace":
       return (
         <ShellFrame theme={theme} timeZone={timeZone} health={health} homeHref={homeHref(decision.config)}>
@@ -347,6 +449,19 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
     );
   }
 
+  if (decision.kind === "approval") {
+    const detail = await ApprovalDetail({
+      approvalId: request.query.approval_id,
+      workspaceId: session.activeWorkspaceId,
+      timeZone: timeZone?.zone ?? "UTC",
+    });
+    return (
+      <ShellFrame theme={theme} timeZone={timeZone} health={health} account={account} navigation={navigation} homeHref={home}>
+        {detail}
+      </ShellFrame>
+    );
+  }
+
   if (decision.kind === "modules-unavailable") {
     return (
       <ShellFrame theme={theme} timeZone={timeZone} health={health} account={account} navigation={navigation} homeHref={home}>
@@ -367,8 +482,16 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
       callOperation(operation, input, identity),
     ),
     href: (routeId, query) => moduleHref(config, owner, routeId, query),
+    recordHref: (ref) =>
+      recordHref(config, MODULES, decision.visibility.enabledModuleIds, ref),
+    approvalHref: (approvalId) => approvalHref(config, approvalId),
     refresh: refreshScreen,
     timeZone: timeZone?.zone ?? "UTC",
+    preference: (name) => {
+      const cookie = preferenceCookie(owner.id, name);
+      return cookie === null ? undefined : jar.get(cookie)?.value;
+    },
+    savePreference: savePreference.bind(null, owner.id),
   };
   return (
     <ShellFrame theme={theme} timeZone={timeZone} health={health} account={account} navigation={navigation} homeHref={home}>

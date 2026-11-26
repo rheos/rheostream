@@ -25,6 +25,10 @@ class CaptureInput(Strict):
     funnel_ref: str
     campaign_ref: str | None = None
     body: dict[str, object]
+    # The caller's own id for the event, such as a mail message id. A second capture
+    # with the same id records nothing and answers ``duplicate``: the first capture
+    # stands, whatever the later body holds. Left out, every capture is new.
+    source_event_id: str | None = Field(default=None, min_length=1, max_length=512)
 
 
 class AcceptedDelivery(Strict):

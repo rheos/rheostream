@@ -21,6 +21,8 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from rheo_leads.jobfeed.presets import Purpose
+from rheo_leads.jobfeed.stated_price import StatedPrice, stated_price
+from rheo_leads.participant_text import unwrapped
 
 JobType = Literal["fixed", "hourly"]
 
@@ -68,10 +70,16 @@ BODY_KEYS: tuple[str, ...] = (
     "client_hire_rate",
     "applied",
     "invited",
+    "saved",
+    "stated_price_min",
+    "stated_price_max",
+    "stated_price_unit",
     "observed_at",
 )
 # The fields whose change makes a sighting worth delivering. Both observation times
-# are stamped at response time, so neither is ever a change.
+# are stamped at response time, so neither is ever a change. The stated price is
+# read from the description, which is compared already, so it is not listed: a
+# job stored before it existed is not delivered again only to gain one.
 COMPARABLE_FIELDS: tuple[str, ...] = (
     "title",
     "description",
@@ -89,6 +97,7 @@ COMPARABLE_FIELDS: tuple[str, ...] = (
     "client_hire_rate",
     "applied",
     "invited",
+    "saved",
 )
 
 
@@ -204,9 +213,29 @@ class NormalizedPosting:
     # The client invited the account to this job. Delivered only when true: a
     # sighting that is not an invitation says nothing either way.
     invited: bool = False
+    # The owner saved (bookmarked) this job: true from the saved-jobs listing,
+    # false from its list of jobs saved and then removed, ``None`` from every other
+    # sighting, which says nothing either way and is left out of the body.
+    saved: bool | None = None
+    # A saved job the collector has not delivered before: read and delivered
+    # whatever its competition. Never delivered, never compared. A saved job
+    # already delivered, or one that only appears in a search, is not one.
+    saved_discovery: bool = False
+    # The full description the saved-jobs listing carried (unwrapped, #392). Never
+    # delivered, never compared: a saved job not delivered before falls back to it
+    # only when its detail read was made and failed (:func:`from_listing`), so a
+    # saved job that can't be read is still delivered once and never read again.
+    listed_description: str | None = None
+    # A price the description states, read only while the feed gives no budget
+    # (#503). Kept apart from ``budget_*``, which only the feed fills, so an hourly
+    # rate, a project total and a per-item price stay distinguishable.
+    stated: StatedPrice | None = None
 
-    def to_body(self) -> dict[str, str | int]:
-        """The flat delivery body: unknown values are left out, never zero."""
+    def to_body(self) -> dict[str, str | int | None]:
+        """The flat delivery body: unknown values are left out, never zero. The
+        stated price is the one exception: once the description has been read,
+        each of its keys is sent, as an explicit null when there is none, so a
+        price the text no longer states is cleared, not kept."""
         values: dict[str, str | int | None] = {
             "title": self.title,
             "description": self.description,
@@ -226,14 +255,63 @@ class NormalizedPosting:
             "client_hire_rate": _optional_decimal(self.client_hire_rate),
             "applied": _optional_flag(self.applied),
             "invited": _flag(True) if self.invited else None,
+            "saved": _optional_flag(self.saved),
+            **stated_body(self.stated),
             "observed_at": self.observed_at.isoformat(),
         }
-        return {key: value for key, value in values.items() if value is not None}
+        return without_unknowns(values, read=self.description is not None)
 
     def comparable_fields(self) -> dict[str, str]:
         """Canonical text per comparable field that carries a value."""
         body = self.to_body()
-        return {key: str(body[key]) for key in COMPARABLE_FIELDS if key in body}
+        return {
+            key: str(body[key])
+            for key in COMPARABLE_FIELDS
+            if body.get(key) is not None
+        }
+
+
+STATED_KEYS: tuple[str, ...] = (
+    "stated_price_min",
+    "stated_price_max",
+    "stated_price_unit",
+)
+
+
+def without_unknowns(
+    values: Mapping[str, str | int | None], *, read: bool
+) -> dict[str, str | int | None]:
+    """``values`` without its unknowns. When the description was ``read``, the
+    stated-price keys stay even as nulls: there the absence of a price is known."""
+    return {
+        key: value
+        for key, value in values.items()
+        if value is not None or (read and key in STATED_KEYS)
+    }
+
+
+def stated_body(stated: StatedPrice | None) -> dict[str, str | None]:
+    """The stated price's three body values; all ``None`` when there is none."""
+    if stated is None:
+        return {
+            "stated_price_min": None,
+            "stated_price_max": None,
+            "stated_price_unit": None,
+        }
+    return {
+        "stated_price_min": _decimal_text(stated.low),
+        "stated_price_max": _optional_decimal(stated.high),
+        "stated_price_unit": stated.unit,
+    }
+
+
+def text_price(
+    description: str | None, budget_min: Decimal | None, budget_max: Decimal | None
+) -> StatedPrice | None:
+    """The price ``description`` states, read only when there is no budget."""
+    if budget_min is not None or budget_max is not None:
+        return None
+    return stated_price(description)
 
 
 def _optional_decimal(value: Decimal | None) -> str | None:
@@ -389,6 +467,69 @@ def normalize_invitation(
     )
 
 
+def normalize_saved(
+    row: object,
+    job_hosts: Sequence[str],
+    *,
+    observed_at: datetime,
+    search_ordinal: int,
+    saved: bool,
+) -> NormalizedPosting | None:
+    """One saved-jobs row as a posting flagged ``saved``, or ``None`` when it fails
+    validation.
+
+    A row is read like a search row (its URL, title, id and whatever competition,
+    budget and client facts it carries), or, when it nests its job under
+    ``jobPosting`` or ``job``, like an invitation's job. ``applied`` stays unknown
+    unless the row says so, so a listing never clears it. A currently saved job is
+    a discovery posting; one saved and then removed (``saved`` false) only
+    refreshes a posting already tracked.
+    """
+    if isinstance(job_hosts, str):
+        raise TypeError("job_hosts must be a sequence of host names")
+    if observed_at.tzinfo is None:
+        raise ValueError("observed_at must carry a time zone")
+    entry = _mapping(row)
+    nested = _mapping(entry.get("jobPosting") or entry.get("job"))
+    source = nested if nested else entry
+    title = source.get("title")
+    if not isinstance(title, str):
+        title = _mapping(source.get("content")).get("title")
+    flat = {**source, "title": title}
+    posting = normalize_row(
+        flat,
+        job_hosts,
+        observed_at=observed_at,
+        purpose="discover" if saved else "refresh_only",
+        search_ordinal=search_ordinal,
+    )
+    if posting is None:
+        return None
+    applied = source.get("applied")
+    listed = _mapping(source.get("content")).get("description")
+    listed = unwrapped(listed) if saved and isinstance(listed, str) else ""
+    return replace(
+        posting,
+        applied=applied if isinstance(applied, bool) else None,
+        saved=saved,
+        saved_discovery=saved,
+        listed_description=listed or None,
+    )
+
+
+def from_listing(posting: NormalizedPosting) -> NormalizedPosting | None:
+    """A saved job described from its listing's own description, or ``None`` when
+    it is not a saved discovery or the listing carried none."""
+    listed = posting.listed_description
+    if not posting.saved_discovery or not listed:
+        return None
+    return replace(
+        posting,
+        description=listed,
+        stated=text_price(listed, posting.budget_min, posting.budget_max),
+    )
+
+
 def _mapping(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
 
@@ -418,13 +559,16 @@ def apply_detail(
         )
     )
     description = content.get("description")
-    if not isinstance(description, str) or not description.strip():
+    if not isinstance(description, str) or not unwrapped(description):
         return posting
+    # Stored without the provider's wrapper tag (#392).
+    description = unwrapped(description)
     record = _mapping(detail_row.get("client_record"))
     hire_percent = parse_number(record.get("hire_rate_percent"))
     return replace(
         posting,
         description=description,
+        stated=text_price(description, posting.budget_min, posting.budget_max),
         client_spend=_kept(
             parse_number(record.get("spend_total")), posting.client_spend
         ),

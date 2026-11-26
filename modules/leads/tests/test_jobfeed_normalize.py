@@ -19,12 +19,14 @@ from rheo_leads.jobfeed.normalize import (
     BODY_KEYS,
     COMPARABLE_FIELDS,
     POSTING_ID_PATTERN,
+    STATED_KEYS,
     NormalizedPosting,
     apply_detail,
     normalize_invitation,
     normalize_row,
     parse_number,
 )
+from rheo_leads.jobfeed.stated_price import StatedPrice
 from rheo_leads.pipeline_evidence import validate_value
 
 HOSTS = ("www.example.com", "example.com")
@@ -80,16 +82,23 @@ def _migration(name: str) -> ModuleType:
 
 def preset_kinds() -> dict[str, dict[str, Any]]:
     """The Job search preset's field kinds, read from its frozen migrations: the
-    seed, and the boolean ``invited`` that 0018 adds."""
+    seed, the boolean ``invited`` that 0018 adds, the stated price 0021 adds and the
+    boolean ``saved`` that 0023 adds."""
     kinds: dict[str, dict[str, Any]] = {
         name: {"type": kind, "enum_values": list(values)}
         for name, kind, values in _migration("0007_jobsearch_preset.py").FIELDS
     }
-    added = _migration("0018_invited_jobs.py").FIELD
-    kinds[added.removeprefix(JOBSEARCH_TARGET_PREFIX)] = {
-        "type": "boolean",
-        "enum_values": [],
-    }
+    for migration in ("0018_invited_jobs.py", "0023_saved_jobs.py"):
+        added = _migration(migration).FIELD
+        kinds[added.removeprefix(JOBSEARCH_TARGET_PREFIX)] = {
+            "type": "boolean",
+            "enum_values": [],
+        }
+    for target, kind, values, _ in _migration("0021_stated_price.py").FIELDS:
+        kinds[target.removeprefix(JOBSEARCH_TARGET_PREFIX)] = {
+            "type": kind,
+            "enum_values": list(values),
+        }
     return kinds
 
 
@@ -421,7 +430,9 @@ def test_parse_number(value: object, expected: Decimal | None) -> None:
 
 
 def full_posting(flag: bool) -> NormalizedPosting:
-    """Every field carried; ``invited`` is delivered only when true, so it is."""
+    """Every field carried; ``invited`` is delivered only when true, so it is, and
+    ``saved`` only when known, so it carries the flag. The stated price is set by
+    hand: a real posting with a budget never reads one."""
     base = posting(
         proposal_count=None if flag else 12,
         proposals_tier="10 to 15",
@@ -435,7 +446,8 @@ def full_posting(flag: bool) -> NormalizedPosting:
         },
     )
     described = apply_detail(base, detail(hire_rate_percent=40), HOSTS)
-    return replace(described, invited=True)
+    stated = StatedPrice(Decimal("25"), Decimal("40.5"), "hour")
+    return replace(described, invited=True, saved=flag, stated=stated)
 
 
 @pytest.mark.parametrize("flag", [True, False])
@@ -498,6 +510,10 @@ def test_body_keys_are_exactly_what_the_installed_mapping_reads() -> None:
         "client_hire_rate",
         "applied",
         "invited",
+        "saved",
+        "stated_price_min",
+        "stated_price_max",
+        "stated_price_unit",
         "observed_at",
     }
     assert set(BODY_KEYS) <= read
@@ -514,6 +530,9 @@ def test_comparable_fields_omit_observation_times_and_nulls() -> None:
     assert all(type(value) is str for value in fields.values())
     assert fields["proposal_count"] == "12"
     assert fields["client_hire_rate"] == "0.4"
+    # Read from the description, which is compared already: a job stored before
+    # the stated price existed is not delivered again only to gain one.
+    assert not {name for name in fields if name.startswith("stated_price")}
     thin = posting(proposals_tier=None, client={}).comparable_fields()
     assert "proposal_count" not in thin
     assert "client_spend" not in thin
@@ -735,3 +754,89 @@ def test_invited_is_delivered_only_when_true() -> None:
     flagged = replace(plain, invited=True)
     assert flagged.to_body()["invited"] == "true"
     assert flagged.comparable_fields()["invited"] == "true"
+
+
+# --- the stated price (#503) -------------------------------------------------------
+
+
+def described(text: str) -> dict[str, object]:
+    return {
+        "status": "ok",
+        "data": {"marketplaceJobPosting": {"content": {"description": text}}},
+        "client_record": {},
+    }
+
+
+def test_a_detail_reads_the_price_its_text_states_when_the_feed_has_none() -> None:
+    bare = posting(budget=None, job_type=None)
+    result = apply_detail(
+        bare, described("Pay: $3 per project. Each takes 20 minutes."), HOSTS
+    )
+    assert (result.budget_min, result.budget_max) == (None, None)
+    body = result.to_body()
+    assert body["stated_price_min"] == "3"
+    assert body["stated_price_unit"] == "item"
+    assert body["stated_price_max"] is None
+    assert "budget_min" not in body and "budget_max" not in body
+
+
+def test_a_feed_budget_wins_and_no_stated_price_is_read() -> None:
+    result = apply_detail(posting(), described("We pay $25" + "/" + "hr"), HOSTS)
+    assert result.budget_min == Decimal("500")
+    assert result.stated is None
+    # Sent as nulls: a price an earlier read stored is cleared once a budget shows.
+    body = result.to_body()
+    assert {key: body[key] for key in STATED_KEYS} == dict.fromkeys(STATED_KEYS)
+
+
+def test_a_text_without_an_amount_stores_no_price() -> None:
+    result = apply_detail(
+        posting(budget=None),
+        described("Our channel has 5,000 subscribers. Tell us your rate."),
+        HOSTS,
+    )
+    assert result.stated is None
+
+
+def test_a_later_detail_without_the_price_sends_explicit_nulls() -> None:
+    first = apply_detail(posting(budget=None), described("$40 an" + " hour"), HOSTS)
+    assert first.stated is not None
+    later = apply_detail(first, described("Rate to be agreed."), HOSTS)
+    assert later.stated is None
+    body = later.to_body()
+    # Sent as nulls, so the mapping clears what the earlier read stored.
+    assert {key: body[key] for key in STATED_KEYS} == dict.fromkeys(STATED_KEYS)
+    # A range read before and a single amount now: the old high end is cleared.
+    narrowed = apply_detail(
+        apply_detail(posting(budget=None), described("$25-40 an" + " hour"), HOSTS),
+        described("$50 an" + " hour"),
+        HOSTS,
+    ).to_body()
+    assert (narrowed["stated_price_min"], narrowed["stated_price_max"]) == ("50", None)
+    assert "stated_price_max" in narrowed
+
+
+def test_a_row_whose_description_was_never_read_says_nothing_of_a_price() -> None:
+    body = posting(budget=None).to_body()
+    assert not set(STATED_KEYS) & set(body)
+
+
+# --- the provider's wrapper tag (#392) ------------------------------------------
+
+WRAPPED = (
+    "<untrusted_participant_content>\n"
+    "Build a <b>shop</b> page.\nShip by Friday.\n"
+    "</untrusted_participant_content>"
+)
+
+
+def test_a_detail_description_is_stored_without_the_wrapper_tag() -> None:
+    result = apply_detail(posting(), described(WRAPPED), HOSTS)
+    assert result.description == "Build a <b>shop</b> page.\nShip by Friday."
+    assert result.to_body()["description"] == result.description
+
+
+def test_a_wrapper_with_nothing_inside_is_no_description() -> None:
+    before = posting()
+    empty = "<untrusted_participant_content> </untrusted_participant_content>"
+    assert apply_detail(before, described(empty), HOSTS) == before

@@ -55,7 +55,7 @@ import hashlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Final, Literal, cast, get_args
 from uuid import UUID
 
@@ -122,6 +122,10 @@ COMPLETE_AUTHORIZATION: Final = "leads.jobfeed.complete_authorization"
 COMPLETE_PASTED: Final = "leads.jobfeed.complete_pasted"
 REVOKE: Final = "leads.jobfeed.revoke"
 SELECT_ACCOUNT: Final = "leads.jobfeed.select_account"
+COLLECT_NOW: Final = "leads.jobfeed.collect_now"
+COLLECT_NOW_GAP: Final = timedelta(minutes=10)
+"""How long after a run's claim a collect-now is refused: longer than a run's
+whole budget, so a run is never started while one is still going."""
 _AUTH_METHODS: Final[frozenset[str]] = frozenset(get_args(ClientAuthMethod))
 
 # One fixed, content-free text per refusal code.
@@ -136,6 +140,9 @@ _DETAILS: Final[dict[str, str]] = {
     "registration_unsupported": "client registration is not supported",
     "record_stale": "the job feed changed; start again",
     "address_invalid": "that is not the address the provider sent you back to",
+    "not_connected": "the job feed is not connected",
+    "backing_off": "the job feed is waiting out a provider limit; try again later",
+    "run_recent": "the job feed ran in the last few minutes; try again shortly",
 }
 
 
@@ -1112,6 +1119,59 @@ def select_account(
     return AccountSelected(state=current.authorization_state)
 
 
+# --- collect now ---------------------------------------------------------------------
+
+
+class CollectNowInput(Strict):
+    pass
+
+
+class CollectQueued(Strict):
+    """When the next run is due: now, picked up on the scheduler's next pass."""
+
+    due_at: datetime
+
+
+def collect_now(
+    ctx: WorkspaceContext, uow: UnitOfWork, m: CollectNowInput
+) -> CollectQueued:
+    """Make the next collector run due now, on the dispatcher's transaction: the
+    Job feed's "Sync saved jobs" button. Every run lists the saved jobs, so this is
+    a run like the scheduled ones, only sooner. It calls nothing upstream itself.
+
+    Refused when the feed is not connected, while it waits out a provider backoff
+    (that wait protects the account), and within :data:`COLLECT_NOW_GAP` of the last
+    claim, so a run never starts while another may still be going. Otherwise the
+    last claim is moved back to the edge of its window, so the run claims at once,
+    and the schedule row is made due now."""
+    _require_capability(ctx, uow)
+    lock(uow)
+    current = read_connection(uow.connection, for_update=True)
+    if current is None or current.authorization_state != "connected":
+        raise _refused("not_connected")
+    now = dependencies().now()
+    if current.not_before is not None and now < current.not_before:
+        raise _refused("backing_off")
+    claimed = current.run_claimed_at
+    if claimed is not None and now - claimed < COLLECT_NOW_GAP:
+        raise _refused("run_recent")
+    table = j.jobfeed_connection
+    if claimed is not None and claimed > now - RUN_CLAIM_WINDOW:
+        uow.connection.execute(
+            update(table)
+            .where(table.c.connection_id == current.connection_id)
+            .values(run_claimed_at=now - RUN_CLAIM_WINDOW)
+        )
+    ensure_module_schedule(
+        uow.connection,
+        module_id=MODULE_ID,
+        name=SCHEDULE_NAME,
+        enabled=True,
+        due_at=now,
+    )
+    return CollectQueued(due_at=now)
+
+
 OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = (
     *(
         (
@@ -1178,5 +1238,19 @@ OPERATIONS: tuple[tuple[OperationDeclaration, Handler], ...] = (
             audit=AuditSpec(subject_field=None),
         ),
         select_account,
+    ),
+    (
+        OperationDeclaration(
+            name=COLLECT_NOW,
+            safety_class=SafetyClass.MUTATE,
+            # It spends a run of the owner's job feed account.
+            roles=frozenset({Role.OWNER}),
+            input_model=CollectNowInput,
+            output=CollectQueued,
+            # A second call makes the same run due again.
+            idempotency=Idempotency.NATURAL,
+            audit=AuditSpec(subject_field=None),
+        ),
+        collect_now,
     ),
 )

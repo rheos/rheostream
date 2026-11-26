@@ -24,6 +24,7 @@ from rheo_core.work.cancellation import CancellationToken
 from sqlalchemy import and_, func, or_, select, update
 
 from rheo_leads import model_calls
+from rheo_leads.participant_text import unwrapped
 from rheo_leads.proposals import job as drafting
 from rheo_leads.proposals import milestones, pricing, prompts
 from rheo_leads.proposals.pipeline import AnswerUnusable
@@ -242,7 +243,7 @@ def price_one(
     policy = profile.policy.pricing
     if policy is None:
         return PRICING_NOT_SET
-    description = claimed.fields.get("message", "")
+    description = unwrapped(claimed.fields.get("message", ""))
     if not description.strip():
         return drafting.NO_DESCRIPTION
     if runner is None:

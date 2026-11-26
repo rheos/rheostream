@@ -1,0 +1,45 @@
+Sumd Name:   SAMPLE CUSTOMER
+   Boxwood ref no
+s
+
+Bill Day:   MAR-14-2031
+Bill Span:   JAN-12-2031 to MAR-14-2031   9990001234
+   Pay By
+Earlier statement   212.40   APR-09-2031
+Payment got Feb-03-2031 — Lorem ipsum   150.00 CR   Owing Now
+Carried over   62.40   $301.95
+
+Lorem late fee   1.10   Sumdolo rsitam
+Boxwood Charges   Sumdo rsitam: 9990001
+999 SAMPLE RD,SAMPLETOWN (Sumdo 9990001)   Mar 14 2031   9990123
+   Jan 12 2031   9990045
+Sumdol Rsitam Tcon Rate   61 days   1234 kWh
+Lorem Block 1: 1,000 kWh @ $0.10000/kWh   100.00
+Lorem Block 2: 234 kWh @ $0.50000/kWh   117.00   Next lorem on or about May 14 2031
+   217.00
+
+Taxes
+GST (5% on 217.00)   10.85
+   10.85
+New charges total   239.55
+Owing Now   $301.95
+
+Lorem ipsum dolor: sit amet consectetur adipiscing elit sed do
+eiusmod tempor incididunt.
+
+   Payment return slip
+   Sumdolo rsitam tconse teturad ipis.   Boxwood ref no
+   9990001234
+   Pay By
+   APR-09-2031   9990001234_0001.pdf.0001.0001
+   Owing Now
+   $301.95
+   9990001234_0001.pdf   0001   Amount Paid
+
+   SAMPLE CUSTOMER
+   PO BOX 999
+   SAMPLETOWN ZZ   Z0Z 9Z9
+
+   999000123 4 9990030195
+Boxwood ref no: 9990001234 Continued Page 2/2
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.

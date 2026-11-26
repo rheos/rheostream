@@ -160,9 +160,10 @@ The overlay is `deploy/compose.flagship.yaml`; every variable it interpolates is
 documented in `deploy/.env.flagship.example` (not re-listed here). The reference
 instance at `rheo.stream` runs this overlay under Coolify, with GitHub sign-in on.
 
-It routes seven hosts, each on `${RHEO_BASE_HOST}`: `circuit`, `auth`, `recall`
-(Recallatron's screens), `leads` and `current` (the Current work queue) reach `web`
-for everything except `/auth/*`, which core serves on all five of those hosts;
+It routes eight hosts, each on `${RHEO_BASE_HOST}`: `circuit`, `auth`, `recall`
+(Recallatron's screens), `leads`, `current` (the Current work queue) and `finance`
+(the owner's ledger screens) reach `web` for everything except `/auth/*`, which core
+serves on all six of those hosts;
 `api` and `mcp` each reach `core` directly, over token auth. The apex host is not
 routed by this overlay.
 
@@ -170,7 +171,10 @@ A module host follows the modules the overlay installs (`RHEO__modules__installe
 Naming a module there loads its operations, tools and web surface into each process
 at start; it does not install the module in any workspace or run its migrations.
 Its screens appear only in a workspace where an owner has installed and enabled the
-module; elsewhere its pages answer 404.
+module; elsewhere its pages answer 404. The overlay's list is
+`recallatron,relationships,leads,current,finance`. Relationships and Finance have no
+screens, so they add no host; Finance is reached through its own `finance` command and
+opt-in MCP reads (see [Finance](#finance) below).
 
 Recallatron's host was `recallatron` until issue #158. That name is now
 redirect-only: `recallatron.${RHEO_BASE_HOST}`, over https or plain http, gets a
@@ -418,6 +422,55 @@ with the matching previous image; merely switching to older code can leave its
 schema incompatible. Destructive upgrades require the future export/approval
 workflow and are not supported by this command.
 
+### Model runs
+
+Module jobs that ask a model a question (Leads scoring and proposals, Recallatron's
+evidence extraction, Finance's document steps) run the Claude CLI in the worker. The
+deployment settings that shape them, all empty or off by default:
+
+- `runtime.claude_cli.executable`, `runtime.claude_cli.credential_kind` (`login`,
+  `api_key` or `oauth_token`) and `runtime.claude_cli.credential_ref`. An `oauth_token`
+  credential is read only from a file under `secret://file/runtime/claude-cli/` or from
+  `secret://env/RHEO_CLAUDE_OAUTH_TOKEN`; an `api_key` only from that file prefix or
+  `secret://env/RHEO_ANTHROPIC_API_KEY`. A subscription credential is bound to one
+  account (`runtime.claude_cli.credential_account_id`), and a run started for anyone
+  else fails `credential_not_owned`.
+- The model each job asks for: `leads.scoring.model_id`, `leads.proposals.model_id`,
+  `leads.proposals.analysis_model_id`, `automatic_memory.extraction.model_id` and
+  Finance's `finance.model.*_model_id`. Empty leaves the CLI on its own default.
+  `automatic_memory.extraction.provider` (default `none`) turns extraction on.
+- A run the provider refuses for the account's usage limit fails `usage_limited`, and
+  the job waits without spending an attempt.
+
+The optional Jev pre-filter for Leads scoring is a separate HTTPS provider with its own
+key file and a `[runtime.jev]` block in `<data root>/config/deployment.toml`; the
+[runtimes README](../runtimes/README.md#jev-typed-judgments) has the setup and rollback.
+It stays off for a workspace until its owner sets `leads.scoring.prefilter_enabled`.
+
+### Alert writers
+
+An outside service that opens and closes alert items in Current holds a token from the
+`alert_writer` set, which carries exactly `current.item.create` and
+`current.item.close_by_source`:
+
+```sh
+rheo token issue --account <account id> --workspace <workspace id> --set alert_writer --kind cli
+```
+
+The [Current guide](../docs/guide/current.md) describes what such an item looks like.
+
+### Finance
+
+Finance is loaded on the flagship but does nothing in a workspace until an owner
+installs and enables it there, and its 15-minute tick enqueues nothing until that
+workspace sets `finance.jobs.enabled` to true. Roll it back by closing that gate or by
+restoring a backup, not by removing `finance` from `modules.installed`: a schedule row
+for a module that is no longer loaded is not gated. Its ledger state is not part of a
+workspace export. Install, the data layout, the database roles it needs under a
+non-superuser application role, the laptop's `finance remote` commands over SSH and the
+`module_read:finance` token for agent reads are all in the
+[Finance README](../modules/finance/README.md).
+
 ### Backups
 
 A host cron job runs `deploy/backup/rheostream-pgdumpall.sh` once a night. It
@@ -643,15 +696,15 @@ command. The copy sits outside `/etc/cron.d` on purpose. Debian's cron skips a f
 there whose name has a dot, but other cron daemons run such files, and a backup
 there would run the old doctor next to the new one.
 
-The previous version of this script read a key file for the legacy ticket service
-(`/root/.config/rheostream-doctor.env`). This version never reads it. Leave it in
-place, unread, until the operator's migration window ends, then delete it. Until
-then a rollback needs no new key. Reinstall the previous script with the block's
-`curl`, `sha256sum` and `install` lines, pinned to the prior `main` SHA, but do not
-run its cron step. Instead restore the old cron file from the backup with
-`install -m 0644 -o root -g root`, from
+The version before the page command read a key file for a legacy ticket service
+(`/root/.config/rheostream-doctor.env`). This version never reads it. Rolling back to
+that version needs the key file and the old cron file, so keep both only while that
+rollback is still wanted, then delete them. To roll back, reinstall the previous script
+with the block's `curl`, `sha256sum` and `install` lines, pinned to the prior `main`
+SHA, but do not run its cron step. Instead restore the old cron file from the backup
+with `install -m 0644 -o root -g root`, from
 `/var/lib/rheostream-doctor/cron.pre-page-command` to
-`/etc/cron.d/rheostream-doctor`. Delete the backup once the migration window ends.
+`/etc/cron.d/rheostream-doctor`.
 
 ### Signed website receiver migration
 
@@ -715,8 +768,8 @@ RHEO__leads__jobfeed__list_tools=false
   error and dropped; stored posting URLs are rebuilt on the first host in the list.
   Empty (the default) also stops a run before it starts.
 - `leads.jobfeed.tool_prefix` (default empty) goes in front of each tool name a run
-  calls, so `acme__` sends `acme__list_accounts`, `acme__list_freelancer_proposals`
-  and `acme__find_jobs`. A provider may
+  calls, so `acme__` sends `acme__list_accounts`, `acme__list_freelancer_proposals`,
+  `acme__find_saved_jobs` and `acme__find_jobs`. A provider may
   name its tools with a prefix; set this to match what its `tools/list` or a working
   client uses. Letters, digits, `_` and `-` only, at most 64; any other value makes a
   run record `endpoint_misconfigured` before it sends anything.
@@ -851,9 +904,10 @@ else: an existing authorization keeps collecting.
 
 ### Connecting for the first time
 
-1. Deploy with the settings above, then run the Leads module upgrade that adds
-   `0009_jobfeed_collector` (see [Upgrading installed modules](#upgrading-installed-modules)).
-   Deployment registers nothing and connects nothing.
+1. Deploy with the settings above. A workspace whose Leads schema is older than
+   `0009_jobfeed_collector`, where the job feed arrived, needs the Leads module upgrade
+   to the new image's head first (see [Upgrading installed modules](#upgrading-installed-modules));
+   a new install is already at head. Deployment registers nothing and connects nothing.
 2. An owner turns the workspace capability on: `core.settings.set` with
    `leads.capabilities.jobsearch` `true`. An operator value of `false` vetoes it for
    every workspace.
@@ -978,6 +1032,16 @@ The collector writes ten health codes to `last_error`:
 A completed run without a partial result clears the collector's own codes and leaves
 intake's alone.
 
+A run that finishes or stops writes one row to `leads.jobfeed_run` in the workspace
+database: when it finished, its outcome (`completed`, `partial` or `stopped`), the code it
+stopped on, the nine counts, and the failed detail reads counted by reason (for example
+`tool_error:<code>`, `no_description` or `invitations:<code>`). A run that ends because
+the connection moved on (revoked or reconnected meanwhile), or on an internal error,
+writes no row, so a gap in the history does not prove no run happened. Rows hold only
+fixed codes and counts, never a posting, a token or provider text, and are deleted after
+90 days. Leads > Scoring > Job feed shows the last 12. Read the reasons there before
+turning on the wire trace below.
+
 ### Schedule, limits and backoff
 
 - **Schedule.** The collector's schedule runs every two hours, on the hour. A completed
@@ -989,13 +1053,22 @@ intake's alone.
 - **One run.** One token refresh, never retried; the MCP session set-up; the account
   check; one page (at most 10) of the account's pending invitations, best effort,
   through the read-only invitations action of `list_freelancer_proposals`, the only
-  action of that tool the collector may call; three searches (one page of best
-  matches, up to five pages of the newest postings, one page of postings above 50
-  proposals), at most 80 rows in all; one detail read for each invited job and each
-  discovered posting that has 50 or fewer proposals and is not marked applied, at
-  most 60, invited jobs first; then the deliveries and the report, committed together.
-  A failed invitations listing never stops the run: it completes as
-  `collection_partial` with the reason `invitations:<code>` in its history.
+  action of that tool the collector may call; up to five pages (10 each) of the jobs
+  the owner saved, then up to two pages of jobs saved and later removed, best effort,
+  through the `list` action of `find_saved_jobs`, the only action of that tool the
+  collector may call (never `save_job`); the workspace's search presets (by
+  default three searches: one page of best matches, up to five pages of the newest
+  postings, one page of postings above 50 proposals; at most 8 pages of 10 rows with
+  configured presets); one detail read for each invited job, each saved job not
+  delivered before, and each discovered posting that has 50 or fewer proposals and is
+  not marked applied, at most 60, invited and saved jobs first; then the deliveries,
+  the report and the run's history row, committed together. An invited job is
+  delivered flagged as invited, whatever its proposal count and even when it is
+  marked applied; a saved job not delivered before is delivered flagged as saved,
+  whatever its proposal count. A failed invitations or saved-jobs listing never stops
+  the run: it completes as `collection_partial` with the reason `invitations:<code>`
+  or `saved:<code>` in its history (`saved:more` when more saved jobs wait than one
+  run reads).
 - **Deadline and pacing.** A run has 420 seconds from its claim. Search and detail
   requests start at least 5.3 seconds apart, and none starts with too little of the
   deadline left; a cut run completes as `collection_partial`. Each MCP request has a
@@ -1106,10 +1179,10 @@ when you have what you need; it adds a few lines per run and nothing else.
 - No MCP tool exists for connect, reconnect, the callback completion, revoke, account
   selection or the health read. They work only for the owner on a browser session.
 
-### Unknown until the first live connection
+### Check on each new provider
 
 These depend on the provider and cannot be settled before an owner's first real
-consent:
+consent with it. Check them on each new provider:
 
 - whether the provider accepts a plain public-client registration (method `none`, no
   initial access token) and which redirect URI rules it applies;

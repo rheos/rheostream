@@ -85,6 +85,21 @@ const SESSION_MISSING = "session_missing";
  */
 const WORKSPACE_UNSELECTED = "workspace_unselected";
 
+/**
+ * Whether a refusal means the cookie's session is gone: unknown, expired or revoked.
+ * Any other refusal (`membership_missing`, `workspace_unavailable`) is a live session
+ * pointed at a workspace it can no longer open, which clearing a dead cookie cannot
+ * help. Listed this way round so a refusal added later gets sign-out, which always
+ * leaves a way forward, and not a link that would do nothing.
+ */
+export function isDeadSessionRefusal(refusal: string): boolean {
+  return (
+    refusal === SESSION_MISSING ||
+    refusal === "session_expired" ||
+    refusal === "session_revoked"
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

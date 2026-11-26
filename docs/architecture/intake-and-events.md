@@ -6,9 +6,13 @@ FR 31 to FR 39, FR 46, R2, R4, and criteria 11 to 14 and 38 to 49. Answers idea-
 **Decisions:** A7 (intake lives in Leads; transports are connectors), A8 (outbox, envelope,
 worker, audit shapes). See the [decision list](README.md#architecture-decisions).
 **Built so far:** outbox, jobs, worker, operations, audit, Leads intake and pipelines,
-contact permission records, manual/paste capture, and signed website intake with
-owner-managed connections. Import runners, email adapters and external destinations
-remain follow-up work; a deployed receiver does not activate a live source.
+contact permission records, manual/paste capture, signed website intake with
+owner-managed connections, the job feed collector (the `poll` transport) and job paste,
+keyed idempotency, and external actions with Current as the one destination. Work also
+reaches Current without passing through Leads: alert writers file items with an
+`alert_writer` token, and email is filed by an agent routine through Current's tools
+([intake into Current](#intake-into-current)). The CSV and JSON import runner and a built-in
+email adapter remain follow-up work; a deployed receiver does not activate a live source.
 
 ## Part one: the intake contract
 
@@ -62,7 +66,7 @@ CloudEvents-compatible in the attributes that matter and carries Rheo-specific e
 | `time` | source occurrence time from `occurred_at_path`, else receipt time | Both are stored; `time` is the source's. |
 | `subject` | the external subject id when the mapping yields one | Subject identity, separate from event identity. |
 | `datacontenttype` | `application/json` | |
-| `data.transport` | `webhook`, `import`, `manual` | Delivery transport (FR 36). |
+| `data.transport` | `webhook`, `import`, `manual`, `poll` | Delivery transport (FR 36). `poll` is the job feed collector's scheduled poll, below. |
 | `data.funnel_ref`, `data.campaign_ref` | resolved from the connection, or chosen at manual capture | Acquisition attribution, stored in columns distinct from transport (criterion 46). |
 | `data.facts` | list of `{ target, value_kind, value, source_path, transform }` | What the mapping produced. |
 | `data.completeness` | count of `value` facts | Used by field derivation. |
@@ -205,7 +209,7 @@ same operation:
 | Transport | Binding | Actor when `accept_delivery` runs |
 | --- | --- | --- |
 | `webhook` | Route `POST /api/v1/intake/webhook/<connection_id>` on the `api` surface, calling `leads.intake.accept_delivery` | A `connection` actor, role `service`, built after the signature verified |
-| `import` | No route. The `leads.import.run` job hands each row to the import connector, which calls `leads.intake.accept_delivery` | The job's `system` actor, role `service` |
+| `import` | No route. Designed: a `leads.import.run` job would hand each row to the import connector, which calls `leads.intake.accept_delivery`. No such job is registered yet; see CSV and JSON import below | The job's `system` actor, role `service` |
 | `manual` | No route. `leads.intake.capture` hands the form to the manual connector, which calls `leads.intake.accept_delivery` | The capturing account, in its own context |
 
 **Scheduled poll.** A fourth binding, `poll`, has no route. The job feed collector's
@@ -219,8 +223,17 @@ the actor is exactly that connection's own; there is no signing generation to ch
 The collector builds the source event id (`<posting id>.<sequence>.<body digest>`) and
 the connection owns its funnel and mapping, as for every non-manual transport.
 Migration `0009_jobfeed_collector` adds `poll` to the transport CHECK; it is additive,
-and the three existing values keep their meaning. Operator detail is in
-[Job feed collector](../../deploy/README.md#job-feed-collector).
+and the three existing values keep their meaning. The job runs every two hours
+(`interval_seconds = 7200`), gated on `leads.capabilities.jobsearch`. Each run first lists
+the account's pending invitations, then the searches in the workspace setting
+`leads.jobfeed.presets` (the defaults when it is empty); an invited job is delivered with
+`ext.jobsearch.invited` set. A run that finishes or stops also writes one content-free
+`leads.jobfeed_run` row (migration `0016_jobfeed_runs`): its outcome, stop code, counts and
+the reason codes of failed detail reads, never a posting or an upstream message. A run
+whose connection moved on meanwhile, or that hit an internal error, writes none. Rows
+older than 90 days are deleted as each new one is written. Operator detail is in
+[Job feed collector](../../deploy/README.md#job-feed-collector), and the owner's side in the
+[Leads README](../../modules/leads/README.md#job-feed).
 
 **Job paste.** `leads.jobfeed.paste` (owner or member, job search on) takes a Job
 search pipeline and either a copied search-results page or one full posting with its
@@ -321,7 +334,9 @@ already accepted under the old generation fails at processing step 1. Criterion 
 is refused at processing with no observation, the delivery signed with the old secret afterward
 is refused at the receiver with no receipt, and both count on the connection's health.
 
-**CSV and JSON import.** An owner uploads a file against a connection with `transport = import`.
+**CSV and JSON import** (not built: the `import_batch` table and the `import` binding exist,
+but no `leads.import.run` job is registered). An owner uploads a file against a connection
+with `transport = import`.
 The importer streams rows, derives each row's `source_event_id` from `event_id_path` (for CSV a
 column; absent, the SHA-256 of the row), and calls `accept_delivery` per row inside the batch.
 A file whose columns do not match the mapping version's rules is refused whole, naming the first
@@ -340,6 +355,26 @@ must name a funnel from the workspace's funnels; a capture with none is refused 
 exists (criterion 40). The core generates the `source_event_id` (a UUIDv7) and the capture goes
 through `accept_delivery` and processing like any delivery, so criterion 39's "identical apart
 from transport" holds by construction.
+
+### Intake into Current
+
+Current has no intake contract of its own; work arrives through its ordinary operations,
+and `current.item.create`'s source dedup (`source_kind`, `source_ref`, an optional
+`fingerprint`) is what makes a repeat safe ([Current](../../modules/current/README.md#source-dedup)).
+
+- **Alert writers.** A service that files alerts (a health probe, a disk guardrail, a support
+  form) holds a `cli` token from the `alert_writer` set, which is exactly
+  `current.item.create` and `current.item.close_by_source` and is enumerated so it never
+  grows (`alert_writer` in `rheo_core/tokens/sets.py`). The writer opens an item when a check
+  fails and closes it by source when the check recovers, over
+  `POST /api/v1/operations/<operation>`. Its results carry an action and at most a ref, never
+  item content ([external writers](../../modules/current/README.md#external-writers-and-readers)).
+- **Email.** There is no built-in email adapter. An agent with mail access reads a lookback
+  window and files one item per actionable thread through the `current_*` tools, keyed by the
+  thread so a re-run folds into the existing item; the general rules are in the
+  [email intake guide](../guide/email-intake.md).
+- **Leads handoffs.** An approved `leads.handoff.request` creates one item through the
+  `current.item.create_external` destination ([external actions](#external-actions)).
 
 ## Part two: events, durable work, operations, audit
 
@@ -429,9 +464,9 @@ failed job has no retry operation, and its way out is enqueuing the work again.
 **A failed head is surfaced, not merely recorded.** Head-of-line blocking is deliberate — order is
 never broken silently — but every route out of it needs a person, and a design where the only
 route *in* is a screen nobody has opened is a queue that stops for two and a half hours and then
-stays stopped. So the failure is pushed to the two places a person already is (neither is
-built yet: `core.work.failure_summary` is registered, but its cache setting and the banner
-do not exist, and the connection half waits on Leads):
+stays stopped. So the failure is pushed to the two places a person already is. The connection
+half is built; the shell half is not (`core.work.failure_summary` is registered, but its cache
+setting and the banner do not exist):
 
 - **The shell.** `core.work.failure_summary` (read class, roles `owner`, `operator`) returns
   `{ failed_count, blocked_count, oldest_failed_at }` for the session's active workspace, and the
@@ -543,15 +578,15 @@ their `data` fields, each declared as a model in the owning manifest:
 | --- | --- |
 | `leads.delivery.received` | `receipt_ref`, `connection_ref`, `transport` |
 | `leads.observation.accepted` | `observation_ref`, `receipt_ref`, `connection_ref`, `funnel_ref`, `campaign_ref null`, `party_ref null`, `completeness` |
-| `leads.opportunity.created` | `opportunity_ref`, `observation_ref`, `pipeline_ref`, `preset_version`, `stage_id` |
-| `leads.opportunity.transitioned` | `opportunity_ref`, `from_stage_id`, `to_stage_id`, `outcome null` |
-| `leads.opportunity.migrated` | `opportunity_ref`, `from_version`, `to_version` |
-| `leads.handoff.requested` | `handoff_ref`, `opportunity_ref`, `purpose`, `destination_ref null`, `state` |
-| `leads.contact_permission.withdrawn` | `party_ref`, `purpose`, `channel null` |
-| `leads.contact_permission.suppressed` | `party_ref` |
+| `leads.opportunity.created`, `.transitioned`, `.qualified`, `.migrated` | `ref`, `related_ref null`, `revision` (one `ReferenceEvent` model; `related_ref` is the observation for `created` and the qualification for `qualified`) |
+| `leads.handoff.requested` | `ref` (the handoff), `related_ref` (the opportunity), `revision` |
+| `leads.contact_permission.withdrawn`, `.suppressed` | `ref` (the party), with `related_ref` null and `revision` 1; no purpose or channel |
 | `relationships.party.merged`, `.unmerged` | `survivor_ref`, `merged_ref`, `merge_record_ref` |
 | `recallatron.memory.recorded`, `.invalidated` | `memory_ref`, `kind`, `reason null` |
+| `current.item.created`, `.completed`, `.reopened` | `ref`, `revision` |
+| `current.source_item_link.changed` | the whole link: `source_ref`, `item_ref`, `project_ref null`, `last_project_ref null`, `item_state`, `project_state`, `revision`, `changed_at` |
 | `core.record.deleted` | `ref`, `deletion_record_ref` |
+| `core.evidence.recorded` | none: `data` is exactly `{}`, and the subject is the first evidence unit a recording attempt inserted |
 
 A manifest whose event model declares a field of a `restricted` tier fails registration, which is
 the static half of the rule. An event's `data` model tiers a field with the `Tiered` marker
@@ -560,8 +595,7 @@ the model, nested models included, and refuses one that marks any field `restric
 the event type and the field; a manifest that breaks the rule cannot be constructed, so it is
 never loaded or composed. The marker rather than the record-type `sensitivity` map, because a
 contact-permission record is `restricted` whole and `leads.contact_permission.withdrawn` still
-carries its `party_ref` and `purpose` by design; matching field names across the two would
-refuse it. The marker is found in any spelling (`X | None`, `Optional[X]`, a union arm, a
+carries the party reference by design; matching field names across the two would refuse it. The marker is found in any spelling (`X | None`, `Optional[X]`, a union arm, a
 container element) and inside nested models, dataclasses, `TypedDict`s and `NamedTuple`s,
 the same traversal the tool-output renderer uses, and a model whose forward references do not resolve is refused, since
 the guard cannot see a field pydantic cannot type. Nothing checks an unmarked field: the rule
@@ -571,18 +605,19 @@ should type its fields, and the ones the table lists are all references and scal
 loader re-runs the check over the loaded set before it registers anything, so a manifest built
 with `model_construct`, which skips validators, is refused there instead.
 
-Of the types above, only `recallatron.memory.recorded`, `.invalidated` and
-`core.record.deleted` are published today, and the worker registers no consumer at all until
-Leads ships. Release one's only production consumer is `leads.process_delivery`;
-the other types are published so that the phase-one deduplicating test consumer and the later
-modules (work-in-motion, channels) have real events to subscribe to, and an event with no enabled
-consumer is complete on commit with zero deliveries.
+All of the types above are published today. Three production consumers subscribe:
+`leads.process_delivery` (`leads.delivery.received`, not replay-safe),
+`leads.current_links` (`current.source_item_link.changed`, replay-safe, so Leads keeps its
+projection of a handed-off item's project current), and `recallatron.automatic_memory`
+(`core.evidence.recorded`, replay-safe, which only enqueues a drain job). The other types have
+no consumer yet; an event with no enabled consumer is complete on commit with zero
+deliveries.
 
 ### Jobs and the worker (FR 16)
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `job` | `id uuid`, `kind text`, `state text`, `input jsonb`, `operation_id uuid null`, `depends_on_ref text null`, `attempts`, `max_attempts`, `next_run_at`, `lease_owner null`, `lease_until null`, `cancel_requested boolean`, `last_error null`, `created_at`, `finished_at null` | `state` in `queued`, `leased`, `succeeded`, `failed`, `cancelled`. `input` is the job kind's declared model serialised and never queried. `depends_on_ref` lets the deletion coordinator cancel dependents (not built yet: that cancellation is criterion 65's work). |
+| `job` | `id uuid`, `kind text`, `state text`, `input jsonb`, `operation_id uuid null`, `depends_on_ref text null`, `attempts`, `max_attempts`, `next_run_at`, `lease_owner null`, `lease_until null`, `cancel_requested boolean`, `last_error null`, `created_at`, `finished_at null` | `state` in `queued`, `leased`, `succeeded`, `failed`, `cancelled`. `input` is the job kind's declared model serialised and never queried. `depends_on_ref` lets the deletion coordinator cancel dependents: erasure sets every `queued` or `leased` job naming the reference `cancelled` (`rheo_core/deletion/dependents.py`). |
 | `schedule` | `id`, `module_id`, `name`, `job_kind`, `cron text`, `enabled`, `last_run_at null`, `next_run_at` | Created at module enable from the manifest. |
 
 Discovery is the control plane's due-work index, `control.workspace_work_due`, read through
@@ -601,10 +636,15 @@ workspace in the registry in turn, with a one-second idle interval:
    fires ends `cancelled`, not succeeded and not retried (criterion 12).
 4. Success sets `succeeded`; an exception sets `queued` with backoff or `failed` when the budget
    is spent.
-5. Schedules: a due `schedule` enqueues its job kind and advances `next_run_at` by one day.
-   Release one does not parse the stored `cron`. Only `recallatron.retention_sweep` is
-   coalesced: its row is not enqueued again while one of its jobs is still queued or leased.
-   Every other kind is enqueued on each due tick whatever is already queued.
+5. Schedules: a due `schedule` enqueues its job kind and advances `next_run_at` by one day,
+   or by the manifest's `interval_seconds` when the declaration sets one (the job feed's two
+   hours, Finance's fifteen minutes). Release one does not parse the stored `cron`. A
+   declaration's `gate_setting` names a workspace setting that must be true for the enqueue
+   to happen; otherwise the tick only advances `next_run_at` (`finance.jobs.enabled` for
+   Finance's `tick`, `leads.capabilities.jobsearch` for the job-search schedules). Only
+   `recallatron.retention_sweep` is coalesced: its row is not enqueued again while one of its
+   jobs is still queued or leased. Every other kind is enqueued on each due tick whatever is
+   already queued.
 
 The same loop serves event deliveries, using the delivery table instead of the job table.
 Restart recovery is the expired-lease path and nothing else.
@@ -649,12 +689,14 @@ Because the sweep skips locked rows, a still-pending row whose lock holder rolls
 left for a later daily sweep; expiry therefore has no hard one-sweep-interval upper bound.
 It also deletes settled outbox events past `work.outbox_retention_days`, as described
 under [Events and the outbox](#events-and-the-outbox-fr-15), before the session-file
-walk for the same reason. Each workspace is provisioned a
+walk for the same reason, and expired keyed-result envelopes not referenced by a
+pending, executing, or unresolved external action, as described under
+[Idempotency](#idempotency). Each workspace is provisioned a
 `core.schedule` row at migrate time; the worker's schedule ticker enqueues
 `RetentionSweepPayload(workspace_id)` when the row is due
-([module contract](module-contract.md#operations-tools-events)). `core.exports.sweep`, not
-built yet (no such job kind is registered), is a job kind and never a schedule: the
-deletion coordinator enqueues it when an artifact could not be removed
+([module contract](module-contract.md#operations-tools-events)). `core.exports.sweep`
+(registered by the worker, `rheo_core/exports/erasure.py`) is a job kind and never a
+schedule: the deletion coordinator enqueues it when an artifact could not be removed
 ([deletion](deletion-export-migration.md#the-cascade)), and the job table's attempts and backoff
 are its retry. Module sweeps (the memory retention sweep) are the module's own schedules.
 
@@ -677,8 +719,9 @@ are its retry. Module sweeps (the memory retention sweep) are the module's own s
 set when an external effect's outcome is unknown after a timeout and the provider offers neither
 idempotency nor status lookup. It is read through `core.operation.list` and `.get` (and is to
 be listed by `core.work.failures`, which does not list operations yet) and cleared only by
-`core.operation.resolve` with an explicit outcome and a note, which is audited. Nothing sets
-it today: release one has no external effect whose outcome can be unknown yet.
+`core.operation.resolve` with an explicit outcome and a note, which is audited. The external
+action continuation sets it when a destination's effect can be proved neither present nor
+absent ([external actions](#external-actions)).
 
 ### Audit (FR 18)
 
@@ -705,17 +748,38 @@ same rule that keeps them out of operation records
 
 ### Idempotency
 
-Release one has natural idempotency only. An operation declared `NATURAL` names the unique index
+An operation declared `NATURAL` names the unique index
 under which a repeat is the same row, and its handler returns that row on a repeat:
 `leads.intake.accept_delivery` on `(connection_id, source_event_id)` (the branch table above),
 `leads.handoff.request` on `(opportunity_id, idempotency_key)`
 ([handoffs](confirmation-and-safety.md#the-handoff-operation-fr-45-criterion-64)), and
-`relationships.party.resolve_or_create` through the per-receipt consumer dedup. There is no
-keyed idempotency and no stored-result table, because nothing in release one must return a
-*created* reference on a retry whose natural key does not already carry the answer. Phase five's
-`current.work.create_from_handoff` is the first operation that must, and `KEYED` idempotency
-with its result table and retention setting arrive with it
-([later phases](later-phases.md#phase-5-the-work-in-motion-module)).
+`relationships.party.resolve_or_create` through the per-receipt consumer dedup.
+
+`KEYED` operations declare the validated string field carrying the key and positive request and
+result schema versions. The public dispatcher stores `core.idempotency_result` in the same
+transaction as a synchronous effect: canonical UTF-8 JSON of the validated input fields and values
+(defaults and explicit nulls included), its SHA-256 digest, the schema versions, and the terminal
+result or stable error. A retained same-request repeat returns that envelope without invoking the
+handler; a changed protected request refuses `idempotency_key_reused`; a missing or failing adapter
+path refuses `idempotency_schema_incompatible`. The default retention window is 90 days, with a
+hard 30-day minimum, and `retained_until` never changes after reservation. The daily sweep removes
+an expired envelope only when no pending, executing, or unresolved external action references it.
+After module composition and backend opening, both the Core and worker startup roots scan every
+active workspace's nonexpired retained rows before serving or leasing. Each retained operation
+must still be declared `KEYED`, and its request version and any stored result version must have a
+unique registered adapter path to the declaration's current versions. Adapter graphs themselves
+must terminate at those current versions. A registered operation that no longer has a keyed
+contract, a missing path, or a graph that continues past current fails startup rather than
+silently weakening the replay promise. Retained rows for operations absent from the selected final
+composition are not callable there and are not part of that composition's scan.
+Revision `0015_terminal_action_history` removes the original composite foreign key: a terminal
+action keeps its copied operation name and key as immutable history without pinning the expired
+envelope, while the sweep's explicit state predicate preserves every live or unknown outcome. After
+removal, core makes no generic stored-envelope replay promise: generic keyed dispatch reserves the
+swept key afresh and runs the handler again, and only a domain's own durable source identity may
+still describe the earlier outcome. External staging is stricter: a key whose envelope was swept
+but whose external action survives as history refuses `idempotency_key_reused` and writes nothing,
+so another external effect requires a new intentional key/source identity.
 
 ### External actions
 
@@ -726,15 +790,42 @@ Introduced here because they are durable work; their approval is in
 | --- | --- |
 | `id uuid`, `operation_id`, `approval_id` | |
 | `destination_ref text` | A party reference, a connector destination, or the recording sink. |
-| `payload_digest bytea`, `payload_ref` | The approved payload; the digest is rechecked at execution. |
+| `approval_payload_digest bytea`, `approval_payload_ref` | The approved payload; the digest is rechecked at execution. |
 | `state` | `pending`, `executing`, `succeeded`, `failed`, `refused`, `unresolved`, `cancelled`. |
 | `provider_request_id null`, `attempts` | |
 
-Execution is a job of kind `core.external_action.execute` with `depends_on_ref = destination_ref`,
-so withdrawing a destination party's permission or deleting the party cancels or refuses it
-(criteria 61 and 65). Concurrent execution of one action is prevented by the job lease; a retry
-after an unknown outcome first reconciles by `provider_request_id` when the provider allows, and
-otherwise sets `unresolved`.
+Migration `0014_external_actions` creates this table together with the keyed envelope; the
+append-only `0015_terminal_action_history` correction makes terminal operation/key fields
+historical rather than a live foreign key. No migration was added for continuation.
+
+Approving a staged keyed action queues exactly one `core.external_action.execute` job whose
+payload is only `{"external_action_id": ...}`, with `operation_id` and `depends_on_ref` null.
+The worker looks that core-only continuation kind up before its cancellation and budget gates,
+mints an `ExternalContinuationGrant` only after locking and matching the action, approval,
+operation, pending keyed envelope and leased job, and the continuation rechecks the held caller,
+payload digest, readiness and every guard before invoking the registered destination at most
+once. It settles the action, approval, operation, keyed envelope and audit row in the same
+transaction as the job write, returning one of `succeeded`, `handled_terminal`, `retry`,
+`failed_terminal` or `cancelled_terminal`; a lost lease finish rolls all of it back.
+Cancellation and exhausted-budget leases reconcile and never invoke. A provider destination is
+always reconciled there with its deterministic request id, because a run that invoked it and
+then rolled back left no marker on the action but kept the effect; a destination that is no
+longer registered settles `unresolved`. A retried run lease (the job's lease count is above
+one, so an earlier lease may have invoked) does the same before any effect-time refusal:
+proven success settles success, an unprovable answer or an unregistered destination settles
+`unresolved`, and only proven absence lets the refusal stand. A cancellation whose job was
+never leased settles `cancelled` without a destination lookup. Only an in-process
+destination, whose effect commits with its settlement, proves absence from an open action.
+`failure_class` is one of `destination_unavailable_no_effect`, `permanent_refusal_no_effect`,
+`retryable_no_effect`, `outcome_unknown` and `cancelled_no_effect`. A `failed` action is
+always proven no-effect; a
+possibly effective one is `unresolved` until `core.operation.resolve` moves it, which needs the
+destination's confirmed result ref for success and its proof of absence for failure. Callers
+read the outcome through `core.external_action.get` (roles owner, member, operator and service;
+a service context reaches it only when its operation set names it), whose `restage_eligible`
+is true only for `failed` and for a destination-unavailable refusal. The read is not limited to
+actions the reading module staged: a context that may call it reads any action in its workspace,
+and today the only service context that names it is Leads' handoff repair job.
 
 ## Contact permission records (FR 46)
 

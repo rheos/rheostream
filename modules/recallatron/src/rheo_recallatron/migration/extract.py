@@ -194,10 +194,13 @@ def _location(item: Mapping[str, Any]) -> str:
 
 def _locations(error: ValidationError) -> str:
     """Field locations and error types only; never ``input``, ``msg`` or an
-    unknown key's name."""
+    unknown key's name. Sorted, so the text does not change with pydantic's
+    error order (2.14 moved nested errors first)."""
     return ", ".join(
-        f"{_location(item)}={item['type']}"
-        for item in error.errors(include_url=False, include_input=False)
+        sorted(
+            f"{_location(item)}={item['type']}"
+            for item in error.errors(include_url=False, include_input=False)
+        )
     )
 
 

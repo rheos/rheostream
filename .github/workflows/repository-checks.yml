@@ -76,6 +76,24 @@ jobs:
               /opt/claude/bin/claude --version
             ' | tee /tmp/claude-cli-version.txt
           grep -q '^2\.1\.257 ' /tmp/claude-cli-version.txt
+      # #533: statement parsers shell out to pdftotext, so it must run in the
+      # built image with no network. The step also reports the image's size and
+      # the packages the apt layer adds over the slim base, with their installed
+      # size, so a later change to that line shows what it costs.
+      - name: pdftotext runs offline in the core image
+        run: |
+          docker run --rm --network none rheo-core sh -c 'pdftotext -v 2>&1' \
+            | tee /tmp/pdftotext-version.txt
+          grep -q '^pdftotext version ' /tmp/pdftotext-version.txt
+          echo "core image size: $(docker image inspect -f '{{.Size}}' rheo-core) bytes"
+          base=$(sed -n 's/^FROM //p' Dockerfile)
+          docker run --rm "$base" dpkg-query -W -f '${Package}\n' \
+            | sort > /tmp/base-packages.txt
+          docker run --rm --network none rheo-core \
+            dpkg-query -W -f '${Package}\t${Installed-Size}\n' \
+            | sort > /tmp/core-packages.txt
+          echo "packages over $base (name, installed KiB):"
+          join -t "$(printf '\t')" -v 1 /tmp/core-packages.txt /tmp/base-packages.txt
       - name: Build the web image
         run: docker build -t rheo-web -f apps/web/Dockerfile .
       # A web image that builds is not yet one that serves: `next start` must
@@ -184,7 +202,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: "0.11.29"
       # With the extra: Recallatron's real-provider tests fail, never skip, when the
@@ -236,14 +254,53 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The service cluster is thrown away with the job, so it needs no crash
+      # safety. Each Postgres test creates and drops its own workspace database,
+      # and with fsync on every one of those waits on the disk. All three settings
+      # reload without a restart, and the step fails unless they read back as set.
+      # max_connections stays at the image's stock 100: test_cli.py runs doctor's
+      # connection-budget check against a stock cluster.
+      - name: Turn off durability on the throwaway CI cluster
+        env:
+          PG: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$PG" psql -U rheo -d rheo -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET fsync = off" \
+            -c "ALTER SYSTEM SET synchronous_commit = off" \
+            -c "ALTER SYSTEM SET full_page_writes = off" \
+            -c "SELECT pg_reload_conf()"
+          # The reload is asynchronous, so give it a few seconds to land.
+          for _ in $(seq 1 10); do
+            now=$(docker exec "$PG" psql -U rheo -d rheo -At \
+              -c "SHOW fsync" -c "SHOW full_page_writes" | tr '\n' ' ')
+            [ "$now" = "off off " ] && break
+            sleep 1
+          done
+          echo "fsync, full_page_writes: $now"
+          [ "$now" = "off off " ]
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: "0.11.29"
       # With the extra: Recallatron's real-provider tests fail, never skip, when the
       # local embedding runtime is missing, and mypy type-checks against it.
       - name: Sync (frozen)
         run: uv sync --frozen --extra local-embeddings
+      # The finance parser tests call the real pdftotext, which the runner image lacks (#533).
+      # A mirror outage must not block the database suite; a missing pdftotext still fails the parser tests red, since pdf_to_text raises.
+      - name: Install poppler-utils
+        timeout-minutes: 6
+        continue-on-error: true
+        run: |
+          for try in 1 2 3; do
+            if sudo apt-get -o Acquire::Retries=3 update \
+                && sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends poppler-utils; then
+              exit 0
+            fi
+            echo "apt try $try failed"
+            [ "$try" = 3 ] || sleep $(( try * 40 ))
+          done
+          exit 1
       # Keyed on the model identifier, so a model change misses the cache instead of
       # restoring the old artifact under the new name. The identifier is
       # embedding/local.py's MODEL_ID and retrieval/rerank.py's immutable revision;
@@ -256,11 +313,14 @@ jobs:
       # scripts/ci_pytest_shard.py keeps this shard's files and deselects the rest;
       # the five shards together select every collected test once. Loaded with -p
       # here only, so the suite's own pytest subprocesses still see everything.
+      # Within the shard, xdist spreads whole files over four workers (one per
+      # runner core); each worker is its own pytest session with its own
+      # rheo_control_test_* database and data root, as two developers' runs are.
       - name: Pytest
         env:
           RHEO_TEST_SHARD: ${{ matrix.shard }}/5
           PYTHONPATH: scripts
-        run: uv run pytest -p ci_pytest_shard --durations=10
+        run: uv run pytest -p ci_pytest_shard -n 4 --dist loadfile --durations=10
 
   python-criterion-31:
     name: Criterion 31
@@ -291,8 +351,32 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The service cluster is thrown away with the job, so it needs no crash
+      # safety. Each Postgres test creates and drops its own workspace database,
+      # and with fsync on every one of those waits on the disk. All three settings
+      # reload without a restart, and the step fails unless they read back as set.
+      # max_connections stays at the image's stock 100: test_cli.py runs doctor's
+      # connection-budget check against a stock cluster.
+      - name: Turn off durability on the throwaway CI cluster
+        env:
+          PG: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$PG" psql -U rheo -d rheo -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET fsync = off" \
+            -c "ALTER SYSTEM SET synchronous_commit = off" \
+            -c "ALTER SYSTEM SET full_page_writes = off" \
+            -c "SELECT pg_reload_conf()"
+          # The reload is asynchronous, so give it a few seconds to land.
+          for _ in $(seq 1 10); do
+            now=$(docker exec "$PG" psql -U rheo -d rheo -At \
+              -c "SHOW fsync" -c "SHOW full_page_writes" | tr '\n' ' ')
+            [ "$now" = "off off " ] && break
+            sleep 1
+          done
+          echo "fsync, full_page_writes: $now"
+          [ "$now" = "off off " ]
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: "0.11.29"
       # With the extra: Recallatron's real-provider tests fail, never skip, when the
@@ -369,8 +453,32 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The service cluster is thrown away with the job, so it needs no crash
+      # safety. Each Postgres test creates and drops its own workspace database,
+      # and with fsync on every one of those waits on the disk. All three settings
+      # reload without a restart, and the step fails unless they read back as set.
+      # max_connections stays at the image's stock 100: test_cli.py runs doctor's
+      # connection-budget check against a stock cluster.
+      - name: Turn off durability on the throwaway CI cluster
+        env:
+          PG: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$PG" psql -U rheo -d rheo -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET fsync = off" \
+            -c "ALTER SYSTEM SET synchronous_commit = off" \
+            -c "ALTER SYSTEM SET full_page_writes = off" \
+            -c "SELECT pg_reload_conf()"
+          # The reload is asynchronous, so give it a few seconds to land.
+          for _ in $(seq 1 10); do
+            now=$(docker exec "$PG" psql -U rheo -d rheo -At \
+              -c "SHOW fsync" -c "SHOW full_page_writes" | tr '\n' ' ')
+            [ "$now" = "off off " ] && break
+            sleep 1
+          done
+          echo "fsync, full_page_writes: $now"
+          [ "$now" = "off off " ]
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: "0.11.29"
       - name: Sync (frozen)
@@ -390,9 +498,9 @@ jobs:
       # pnpm before setup-node: setup-node's `cache: pnpm` needs pnpm on PATH.
       # The pnpm version comes from the `packageManager` field in package.json.
       - name: Install pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # Node 24, from .nvmrc, matching the root package.json engines.
           # Vite 7 needs ^20.19.0 || >=22.12.0, which every 24.x satisfies.
@@ -406,7 +514,7 @@ jobs:
       # The same SHA-pinned action and the same version the `python` job uses —
       # this repository pins every action by SHA.
       - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: "0.11.29"
       - name: Sync (frozen)

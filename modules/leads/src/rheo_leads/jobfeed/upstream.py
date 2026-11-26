@@ -10,11 +10,11 @@ session method, then the ordinary ``token.checkpoint()`` straight after it retur
 or fails, before any parse, pacing wait or retry delay. A call starts with a full
 lease, and a long call is followed at once by a fresh one.
 
-**Pacing.** ``find_jobs`` calls, all three actions, and the invitations listing
-start at least :data:`FIND_JOBS_SPACING` seconds apart, start to start. When the
-wait would reach the deadline, or less than :data:`START_SECONDS` would remain at
-the start (checked before the wait and again after the forced checkpoint), the call
-is not made and :class:`RunCut` is raised.
+**Pacing.** ``find_jobs`` calls, all three actions, the invitations listing and
+the saved-jobs pages start at least :data:`FIND_JOBS_SPACING` seconds apart, start
+to start. When the wait would reach the deadline, or less than
+:data:`START_SECONDS` would remain at the start (checked before the wait and again
+after the forced checkpoint), the call is not made and :class:`RunCut` is raised.
 
 **Exactly one retry.** A paced call's tool error whose code is
 :data:`SENSITIVE_RATE_LIMIT` is retried once with the same arguments, starting at
@@ -62,6 +62,8 @@ LIST_ACCOUNTS: Final = "list_accounts"
 FIND_JOBS: Final = "find_jobs"
 PROPOSALS: Final = "list_freelancer_proposals"
 INVITATIONS: Final = "invitations"
+SAVED_JOBS: Final = "find_saved_jobs"
+SAVED_LIST: Final = "list"
 TOOL_PREFIX: Final = re.compile(r"[A-Za-z0-9_-]{0,64}")
 """What the ``leads.jobfeed.tool_prefix`` setting may hold; anything else is a
 misconfigured endpoint."""
@@ -70,12 +72,14 @@ misconfigured endpoint."""
 def read_only_policy(prefix: str = "") -> ToolPolicy:
     """The only tools and actions the collector may call, named on the wire with
     ``prefix`` in front; the session refuses anything else before a byte is sent.
-    Of the proposals tool, only the read-only invitations listing is allowed."""
+    Of the proposals tool, only the read-only invitations listing is allowed; of
+    the saved-jobs tool, only its read-only listing (never ``save_job``)."""
     return ToolPolicy(
         {
             LIST_ACCOUNTS: None,
             FIND_JOBS: {"smart_search", "search", "get"},
             PROPOSALS: {INVITATIONS},
+            SAVED_JOBS: {SAVED_LIST},
         },
         prefix=prefix,
     )
@@ -322,6 +326,7 @@ class Upstream:
         self._list_accounts = tool_prefix + LIST_ACCOUNTS
         self._find_jobs = tool_prefix + FIND_JOBS
         self._proposals = tool_prefix + PROPOSALS
+        self._saved_jobs = tool_prefix + SAVED_JOBS
         self._token = token
         self._deadline = deadline
         self._monotonic = monotonic
@@ -437,6 +442,17 @@ class Upstream:
             "params": dict(params),
         }
         return self._paced(self._proposals, arguments, self._deadline)
+
+    def saved_jobs(
+        self, org_uid: str, params: Mapping[str, object]
+    ) -> dict[str, object]:
+        """One paced page of the account's saved jobs and its JSON document."""
+        arguments = {
+            "action": SAVED_LIST,
+            "org_uid": org_uid,
+            "params": dict(params),
+        }
+        return self._paced(self._saved_jobs, arguments, self._deadline)
 
     def _paced(
         self, name: str, arguments: Mapping[str, object], cutoff: float

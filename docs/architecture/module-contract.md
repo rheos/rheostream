@@ -11,7 +11,9 @@ A module is an ordinary Python distribution that publishes one `rheo.modules` pa
 point, and that entry point resolves straight to a **manifest**: a `ModuleManifest`, the typed,
 validated model in `packages/core` the next section describes. The core's own `_register`
 (`packages/core/src/rheo_core/modules/loader.py`) is what attaches the manifest's operations,
-resolvers, tools, job kinds, subscriptions, settings keys and audit sink to the live registries,
+execution guards, destinations, keyed-compatibility adapters, resolvers, tools, job kinds,
+subscriptions, owned-delete pairs, short-ID tail lookups, model renderings, settings keys and
+audit sink to the live registries,
 by iterating the manifest's own tuples, and records the manifest itself — the routing surface
 nested in the `web` contribution (`manifest.web.surface`, a `WebSurface`) is read back off that
 record by `module_surfaces()` rather than registered anywhere. Loading is
@@ -58,18 +60,21 @@ that argument in full.
 | `events` | list of `EventDeclaration(type, schema_version, data)` | Events the module publishes. **Named deviation:** the third field is `data`, not the `data_model` this row once printed — the shorter name is what the code carries, what every later run types, and what the namespacing check reads past, so the row was corrected to the code rather than the other way round. |
 | `subscriptions` | list of `ConsumerSubscription(consumer_id, event_type, module_id, replay_safe, handler)` | Events the module consumes. The type is `rheo_core.events.consumers.ConsumerSubscription`: the ratified three fields plus the `module_id` fan-out needs and the handler the deliverer runs. Each `consumer_id` starts with `<module_id>.`. |
 | `jobs` | list of `JobKind(name, input_model, handler, max_attempts, cancellable)` | Background work kinds. Each `name` starts with `<module_id>.`. **Named deviation:** this row once omitted `input_model`. `JobKindRegistry.register(kind, input_model, handler)` (`packages/core/src/rheo_core/work/kinds.py`) takes exactly those three positional arguments, so a `JobKind` carrying no input model could not be registered at all; the row gained the field rather than the registry losing it. **`max_attempts` and `cancellable` are carried on the declaration and read by nothing in release one:** the loader passes the registry only the three arguments it takes, and widening a shipped signature for a caller that does not exist is what this deliberately does not do. Each has a named future reader — an enqueue call site for `max_attempts` (today each enqueue call site names its own budget, Recallatron's passing the same constants its declarations carry, and the core's `enqueue` falls back to `work.max_attempts` when a call names none; the job row's own column is the authority from then on), and Disable for `cancellable`, whose contract below already says each job kind's flag decides which queued jobs are cancelled and which drain. |
-| `schedules` | list of `Schedule(name, job_kind, cron, enabled_by_default)` | Per-workspace schedules created at enable. |
+| `schedules` | list of `Schedule(name, job_kind, cron, enabled_by_default, interval_seconds?, gate_setting?)` | Per-workspace schedules. Enable writes the rows declared `enabled_by_default`; a schedule declared `False` gets its row from the module's own lifecycle through `rheo_core.work.schedules.ensure_module_schedule` (Leads' job feed collector, handoff routing, scoring and proposal sweeps do this), which refuses an `enabled_by_default` declaration because enable owns that row. The ticker (`run_due_schedules`) does not parse `cron`: a row advances one day per run unless its declaration names `interval_seconds`. `gate_setting` names a `bool` key in the module's own `configuration_schema`; while the workspace has not itself set it to true (a deployment or package default never opens it), a due tick enqueues nothing and still moves `next_run_at` on. Leads gates its job feed collector, scoring and proposal sweeps on `leads.capabilities.jobsearch`; Finance gates its `tick` (every 900 seconds) on `finance.jobs.enabled`. A row whose declaration is not loaded, because the deployment dropped the module from `modules.installed`, advances a day and enqueues on every due tick with no gate, so a gated module is paused by closing its gate, never by unloading it. |
 | `resolvers` | mapping of record type to resolver | One per owned record type ([identifiers](identifiers.md#resolution-under-permission)). |
 | `deletion_participants` | list of `DeletionParticipant(record_types, handler)` | Hooks the [deletion coordinator](deletion-export-migration.md#the-cascade) calls. `handler` was narrowed in run 1a1 from an untyped callable to `(ctx, uow, ref, *, disposition) -> RemovedMemories`, read off its first real caller rather than guessed. A participant that raises aborts the whole deletion, so a handler has no refusal channel of its own and needs none; `disposition` is keyword-only, so a handler that ignores it still reads as one that was offered it. |
 | `export` | `ExportDeclaration(format_version, schema_path, exporter, importer)` | The module's versioned export format and compatibility contract. A change to the exported row shape requires a `format_version` bump; restore refuses a manifest whose version differs from the host's. **Both callables were narrowed in run 1a1, when the export collector became their first caller.** `exporter` receives only `rheo_core.exports.artifact.ExportSnapshot` — the sealed view of one source transaction, carrying the connection, a fixed `snapshot_at` and the transaction-bound settings source — and never a bare connection, which would let a module read a second, later view into the same artifact. `importer` receives the restore transaction's unit of work and the already-validated rows, and owns upgrading older rows within the declared format it accepts. It returns the **second pass** the core calls after core's own deletion evidence has landed: restore is two passes with the ledger between them, so parents go in with their self-references null and only then are those references resolved and marked ancestry validated against that evidence. A module cannot schedule that itself without committing or reaching into the core's ordering, and an importer never commits, because the whole restore is one transaction and a module ending it would take the rollback guarantee with it. The manifest's recorded `schema_version` does not select an export-row migration point. |
-| `web` | optional `WebContribution(surface, package_name, navigation, routes, record_views, forms, search_providers)` | The TypeScript contribution composed into `apps/web` ([extension points](#extension-points)). `package_name` starts with `@rheo-stream/`; `navigation` is `NavigationEntry(id, label, path, roles)`, `routes` is `WebRoute(id, path, screen)`, `record_views` is `RecordView(record_type, component)`, `forms` is `FormDeclaration(operation, component)`, `search_providers` is `SearchProvider(id, operation)`. The manifest refuses, by name, a duplicate id or route path, two record views for one record type, two forms for one operation, a navigation entry whose `path` no route declares, a form or search provider naming an operation this manifest does not declare, a search provider whose operation is not `READ`-class, and a record view of a type that is not `<module_id>.<name>` for one of this manifest's own record types. Across modules, a surface name belongs to exactly one module: `check_web_surfaces` (`packages/core/src/rheo_core/modules/loader.py`) refuses two manifests whose `surface.surface` collide, naming both module ids, and runs from both `rheo web compose` and `load_modules()`, so the generated file and the runtime routing configuration cannot disagree (issue #123). `screen` and `component` are TypeScript identifiers because the generated file emits them as property accesses. **Two named deviations:** `surface` (a `WebSurface`: surface name, host label, path prefix) is not in the ratified field list and is added because the internal listener's `routing_config()` (`apps/core/src/rheo_app_core/internal_routes.py`) is a live consumer of the module's surface with no other source; and a navigation entry carries `path` and no per-entry `surface`, because a module contributes navigation only under its own single surface. |
+| `web` | optional `WebContribution(surface, package_name, navigation, routes, record_views, forms, search_providers, record_routes)` | The TypeScript contribution composed into `apps/web` ([extension points](#extension-points)). `package_name` starts with `@rheo-stream/`; `navigation` is `NavigationEntry(id, label, path, roles)`, `routes` is `WebRoute(id, path, screen)`, `record_views` is `RecordView(record_type, component)`, `forms` is `FormDeclaration(operation, component)`, `search_providers` is `SearchProvider(id, operation)`, and `record_routes` (default empty) is `RecordRoute(record_type, route_id, ref_query)`: which of the module's own routes shows a record of that type, and the query key that carries its reference, so another module's screen can link one ([extension points](#extension-points)). The manifest refuses, by name, a duplicate id or route path, two record views for one record type, two forms for one operation, a navigation entry whose `path` no route declares, a form or search provider naming an operation this manifest does not declare, a search provider whose operation is not `READ`-class, and a record view of a type that is not `<module_id>.<name>` for one of this manifest's own record types. Across modules, a surface name belongs to exactly one module: `check_web_surfaces` (`packages/core/src/rheo_core/modules/loader.py`) refuses two manifests whose `surface.surface` collide, naming both module ids, and runs from both `rheo web compose` and `load_modules()`, so the generated file and the runtime routing configuration cannot disagree (issue #123). `screen` and `component` are TypeScript identifiers because the generated file emits them as property accesses. **Two named deviations:** `surface` (a `WebSurface`: surface name, host label, path prefix) is not in the ratified field list and is added because the internal listener's `routing_config()` (`apps/core/src/rheo_app_core/internal_routes.py`) is a live consumer of the module's surface with no other source; and a navigation entry carries `path` and no per-entry `surface`, because a module contributes navigation only under its own single surface. |
 | `agent_guidance` | optional path | Text a runtime may include as tool guidance. It describes use; it grants nothing (idea document). |
 | `secret_scopes` | list of scope prefixes | Empty for domain modules in release one. Only components that present secrets declare any. |
 | `connector_bindings` | list of `ConnectorBinding(transport, service_operation, route, read_connection?, record_refusal?)` | Which of the module's operations a transport connector may call, and the HTTP route the binding registers on the `api` surface when the transport has one (`route` is null otherwise). Leads declares three bindings naming `leads.intake.accept_delivery`. Its webhook binding provides the authoritative connection-state reader and debounced refusal recorder; core owns key resolution and HTTP authentication. The callbacks receive a workspace-bound unit of work. Routes must be canonical API connection routes and unique across loaded modules; operations must be owned by the declaring module and allow the service role ([the three bindings](intake-and-events.md#transports)). |
-| `health_checks` | list of callables | Run by the install job in every profile but `test` ([install](#install-and-enable-release-one-in-code) step 6). Nothing else calls them yet: `rheo doctor` and the workspace status operation are their planned later readers. |
+| `health_checks` | list of callables | Run by the install job in every profile but `test` ([install](#install-and-enable-release-one-in-code) step 6), and by `core.module.upgrade` after its migrations ([upgrades](#explicit-non-destructive-upgrades-and-readiness)). `rheo doctor` and the workspace status operation do not call them. |
 | `contract_tests` | path | The module's behavioural suite entry: a repo-relative directory. **Named deviation:** this row once said the suite is "run by the install path in test profile and by CI". Install **validates the path and does not run the suite** — see § Install step 6 for why — and CI runs it, through the `testpaths` widening that puts `modules/` in `make test`. The row is corrected here as well as there because it is the line a module author reads first, and leaving it would have this document asserting the superseded behaviour in its most-read table. |
 | `sensitivity` | mapping of record type to field tiers | Which fields are `public`, `internal`, `restricted` for the [redaction contract](runtime-and-mcp.md#the-redaction-contract). Read by the context builder, through the rendering the loader registers for each tiered record type. The manifest refuses a key that is not one of its own record types, an empty tier map, a tiered type with no `load_for_model`, a `load_for_model` on an untiered type, an event whose `data` model (nested models included) marks a field `restricted`, and a `configuration_schema` key under `<module_id>.redaction.`, which the core declares (`exclude_types`). A model's fields (an event's `data`, an operation's output) are tiered with the `Tiered` marker rather than here; see [tiers](runtime-and-mcp.md#tiers). |
 | `audit_sink` | optional `AuditSink` | The writer for the module's own audit rows, installed under the module's id by `_register` in `packages/core/src/rheo_core/modules/loader.py`. **Not one of the twenty-three ratified fields**, and added because it is the only channel a module has: `rheo_core.operations.dispatch` resolves a sink by the *operation's* owning module and refuses every above-`READ` operation with `AUDIT_SINK_MISSING` when that module has none. Optional, because a module declaring only `READ` operations needs no sink. |
+| `execution_guards`, `destinations`, `keyed_compatibility` | optional lists, default empty | The module's side of external execution. `GuardRegistration(name, guard)` supplies the implementation behind a qualified domain-guard name an operation's `guards` lists. `DestinationRegistration(destination_ref, operation_name, mode, is_installed, is_enabled, is_ready, credentials_available?, execute, reconcile?)` is the one exact destination an `EXTERNAL` operation's `ExternalSpec` names; mode `in_process` is a destination inside this deployment, the only mode production admits; mode `provider` is a remote service and must also supply the credentials check and a `reconcile` callback that asks it, under a provider request id, what an earlier attempt did. `KeyedCompatibilityRegistration(operation_name, kind, from_version, to_version, adapter)` is a pure adapter that moves a retained `KEYED` request or result from one wire version to another ([idempotency](intake-and-events.md#idempotency)). Current registers the one shipped destination, `current`, for `current.item.create_external` in `in_process` mode; no shipped module registers a guard or an adapter yet. **Not among the twenty-three ratified fields.** |
+| `authorization_completion` | optional operation name | The operation an external OAuth callback dispatches to finish a connector authorization. It must be one of the module's own operations, declared for the owner alone, because the callback runs on the owner's browser session and a member able to complete it would bind a credential the owner never approved. Leads sets it for the job feed's connection. **Not among the twenty-three ratified fields.** |
+| `package_sets` | `default` or `explicit_only`, default `default` | Whether the named package sets reach the module's operations ([package sets](identity-and-topology.md#the-named-package-operation-sets)). `explicit_only` keeps every one of them off the module's own operations: `read_only`, `agent_default`, `cli_full` and `alert_writer` each subtract them, so no rule-set issuance or connector grant reaches it. A token issued from a named set before the switch loses the module's operations at presentation; a `module_read` token or an explicit list keeps what it was issued. A token reaches it only by naming it: `module_read:<module_id>` (its `read` operations, issuable by the operator command) or an explicit operation list. It does not cover core operations that act on any module's records, such as `core.record.delete`, `core.audit.list`, `core.workspace.export`, `core.operation.get` and `core.operation.list`; those keep their own sets and roles. The flag is recorded with each registered operation, so the sets never read it from the loader's manifest table. Its tools must name its own operations: the facade offers a tool to any token holding the tool's operation, so an opt-in module's tool naming a core operation would ride on another module's grant of it. **Not one of the twenty-three ratified fields**: added for a module that is opt-in for every agent. |
 
 The manifest is code, not a sidecar file: one source of truth, type-checked, no cross-validation
 between two declarations. The export `schema_path` is the one static file: a JSON Schema for the
@@ -193,17 +198,19 @@ OperationDeclaration
   output: type[BaseModel]
   handler: Callable[[WorkspaceContext, UnitOfWork, input], output]   # travels beside the declaration, not in it
   roles: set[Role]                          # who may call; Role in {owner, member, operator, service}; default {owner, member}
-  idempotency: Idempotency                  # NONE | NATURAL(unique index); KEYED arrives with phase five
+  idempotency: Idempotency                  # NONE | NATURAL(unique index) | KEYED(retained result)
+  keyed: KeyedSpec | None                   # key field plus positive request/result schema versions
   audit: AuditSpec | None                   # required unless safety_class is READ
-  guards: list[ExecutionGuard]              # domain rechecks added to the core's; not declared yet
+  guards: tuple[str, ...]                    # ordered qualified domain-guard names
+  external: ExternalSpec | None             # exact destination and returned-reference fields
   long_running: bool                        # returns an operation id and runs as a job
 ```
 
-The shipped `rheo_contracts.OperationDeclaration` carries neither `handler` nor `guards`. The
-handler is the second half of the manifest's `(OperationDeclaration, Handler)` pair, for the
-reason [the manifest](#the-manifest) gives. `guards` has no field yet: the core's own guards are
-attached by `core_guards_for` (`packages/core/src/rheo_core/approvals/guards.py`), and the first
-module that needs a domain guard adds the field.
+The shipped `rheo_contracts.OperationDeclaration` does not carry its `handler`; the handler is
+the second half of the manifest's `(OperationDeclaration, Handler)` pair, for the reason
+[the manifest](#the-manifest) gives. Its guard names are ordered and qualified, and each
+resolves to a `GuardRegistration` the owning manifest's `execution_guards` supplies. No shipped
+operation lists a domain guard yet; the core's own guards (below) cover every gated call.
 
 `roles` is checked by the dispatcher against `ctx.role` on every call. `service` is the role a
 `connection` actor at `entry = intake` and a `system` actor at `entry = job` carry
@@ -222,15 +229,20 @@ The release-one operations and their roles are listed in the document that owns 
 | `core.settings.set` (workspace keys), `core.settings.set_member` (member keys) | mutate | owner; owner, member |
 | `core.token.issue` (for the calling account), `.revoke` | mutate | owner, member (a token never exceeds its account's role and never exceeds its issuer's own permitted set); operator for another account. Non-token-issuable: no token can issue or revoke a token ([tokens](identity-and-topology.md#what-a-token-can-never-carry-and-what-it-holds-for-a-gated-operation)). |
 | `core.approval.approve`, `.refuse` | mutate | owner, member. Non-token-issuable, so reachable only from a web session in release one: the only contexts that carry one of those roles and hold the operation. |
+| `core.approval.preview` | read | owner, member. The held call's full payload for the person deciding, read by the shell's approval page. Non-token-issuable (#481), because no model may read what it is asking a person to approve. |
+| `core.external_action.get` | read | owner, member, operator, service. One external action's state and outcome; `service` so a module's repair job can read an action it staged ([external actions](intake-and-events.md#external-actions)). |
 | `core.standing_grant.create`, `.revoke` | mutate | owner. Non-token-issuable. |
 | `core.audit.list`, `core.work.failures` | read | owner, operator |
 | `core.oauth_event.list` | read | owner, operator. The read of the control-plane `oauth_event` trail (issue #287), newest first, `limit` 1 to 500 (default 50), content-free columns only. An owner sees their own workspace's rows; the operator also sees the rows bound to no workspace (registrations, a refusal before a workspace was chosen). Not non-token-issuable. |
 | `core.work.failure_summary` | read | owner, operator. The counts the shell's banner is to read ([events and the outbox](intake-and-events.md#events-and-the-outbox-fr-15)); a summary rather than a listing so the layout costs one bounded read. Registered; the banner itself is not built. |
-| `core.operation.resolve` | mutate | owner, operator |
+| `core.operation.resolve` | mutate | owner, operator. Non-token-issuable: it is the act that settles an unresolved external action. |
 | `core.work.retry`, `.skip`, `.replay` | mutate | owner, operator, and never a token of any kind but `cli`: each handler refuses `mcp`, `runtime` and any later kind `operation_not_permitted` (an allow-list, `tokens.policy.PERSON_HELD_TOKEN_KINDS`), because every way out of a failed head is a person's act. They are not in the non-token-issuable set, so an owner's `cli` token holds them. Registered since issue #131, with their models and handlers in `rheo_core.work.operations` ([events and the outbox](intake-and-events.md#events-and-the-outbox-fr-15) has what each does and refuses). `core.retention_sweep`, named as a daily core schedule under [jobs and the worker](intake-and-events.md#jobs-and-the-worker-fr-16), is a job kind rather than an operation: it is registered on the worker, provisioned as a daily `core.schedule` row per workspace, and ticked by `run_due_schedules`. |
 | `core.workspace.export`, `.digest` | mutate, long-running; read | owner, operator |
 | `core.workspace.restore` | mutate, long-running | owner, operator. A restore into a workspace the control plane does not yet know goes through the operator CLI, `rheo workspace restore <artifact>`, which provisions the artifact's recorded workspace |
 | `core.runtime.run` | mutate, long-running | owner, member, operator ([runtime](runtime-and-mcp.md#runtime-contract-version-1)) |
+| `core.evidence_enrollment.create`, `.rotate`, `.revoke` | mutate | owner, member, operator. A local bridge's enrollment; `create` and `rotate` mint its token and are non-token-issuable, `revoke` only removes capability ([the local bridge](runtime-and-mcp.md#the-local-claude-code-bridge)). |
+| `core.evidence.ingest` | mutate | owner, member. The one operation a bridge token holds. |
+| `core.tool.call` | read | owner, member, operator, service. The discover-then-call grant: holding it is the mode, and dispatching it directly refuses `tool_facade_only` ([discover-then-call](runtime-and-mcp.md#discover-then-call)). |
 | `core.record.delete` | destructive | the record type's `delete_roles`: owner, member for `recallatron.memory`; owner for `leads.observation`, `leads.opportunity`, `relationships.party`, `current.item`, `current.project` |
 
 Registration rules the core enforces at startup (criterion 18, criterion 14, criterion 6):
@@ -239,8 +251,8 @@ Registration rules the core enforces at startup (criterion 18, criterion 14, cri
 - Class above `READ` with `audit = None`: refused, naming the operation.
 - Class in `DESTRUCTIVE`, `EXTERNAL`, `FINANCIAL`: the core attaches `ActorPermissionGuard`,
   `WindowGuard`, and, when the declaration's `AuditSpec` names a subject field (this tree's
-  spelling of "the input names a `subject_ref`"), `RecordStateGuard`; a module `guards` list is
-  to add domain guards once the field exists
+  spelling of "the input names a `subject_ref`"), `RecordStateGuard`; a declaration's `guards`
+  list adds the module's own domain guards after them
   ([confirmation](confirmation-and-safety.md#execution-guards)). There is no "no guards" refusal,
   because the core's guards make that state unreachable.
 - An input model with a reserved field name (`workspace_id`, `workspace`, `actor_id`, `actor`,
@@ -255,9 +267,10 @@ Registration rules the core enforces at startup (criterion 18, criterion 14, cri
   handler is what returns the existing row on a repeat, and the declaration exists so the
   registry can assert the index is present in the module's schema at install. That assertion is
   not written yet: `Idempotency.NATURAL` carries no index name, and registration accepts it
-  without checking any schema. Release one has no
-  keyed idempotency and no stored-result table; the first operation that must return a created
-  reference on a retry is phase five's ([idempotency](intake-and-events.md#idempotency)).
+  without checking any schema. `KEYED` instead declares a validated string key field and
+  positive request/result wire versions. Core retains the canonical request identity and the
+  terminal result or error; compatibility across retained versions is explicit through pure
+  adapters ([idempotency](intake-and-events.md#idempotency)).
 - A tool registered by a module may name a core operation (the deletion tools do) only when its
   input restricts the reference to the module's own record types. This one is a contract rule
   rather than a registration check: the tool's own narrower `input_model` is what carries the
@@ -334,6 +347,14 @@ revision checks and transactional writes. Destructive or external operations are
 by this form path. A successful submission refreshes server reads; a refusal remains visible
 and does not clear the user's input.
 
+Compose carries the manifest's `record_routes` as `recordRoutes`, and the shell uses them for
+`ShellApi.recordHref(ref)`: given a canonical reference, it finds the owning module's published
+route for that record type and builds the URL through the routing configuration, or answers
+null when that module is not composed, not enabled in the workspace, or not routed. A screen
+links another module's record this way without knowing its host or path (Leads links the
+Current item and project a handoff produced). `ShellApi.approvalHref(id)` does the same for the
+shell's own approval review page, `/approvals/detail` on the shell surface.
+
 **A route is an exact path with no parameters**: `/` or `/segment(/segment)*`, each segment
 `[a-z0-9-]+`. Parameters travel in the query string, so one path names one screen and nothing
 has to match a pattern to find it.
@@ -399,14 +420,20 @@ At process start, in `core` and `worker` alike:
    registered" are both unreachable rather than refused. `tests/test_module_registration.py` pins
    the property instead of building a second mechanism for it. A future run that lets a module
    supply registration code of its own is the run that has to build the check.
-5. The production-profile rule (criterion 18): under `RHEO_PROFILE=production` the registry
-   must contain no item whose `origin` is `test_harness` and no operation in the `EXTERNAL` or
-   `FINANCIAL` classes. At runtime the only gate is the first half: every registry refuses the
-   `test_harness` origin unless the profile is `test`. The whole assertion is a CI check,
-   `tests/test_production_registration.py`, which starts a real production-profile process and
-   enumerates what it registered; no startup code refuses an `EXTERNAL` or `FINANCIAL`
-   operation. Test fixtures register with `origin=test_harness` by calling the harness's own
-   `register_harness()` (`tests/harness/`), which no production process imports.
+5. The final production-composition rule (criterion 18) is shipped code, not only a CI
+   enumeration. After all selected modules load, both the Core startup root and the worker root
+   call the same fail-closed assertion. It rejects every `FINANCIAL` declaration and every
+   `EXTERNAL` declaration or destination registration except the one exact tuple
+   `current.item.create_external` / owner `current` / destination `current` / in-process mode /
+   `ExternalSpec(destination_field="destination_ref", destination_ref="current",
+   result_ref_field="item_ref")`. The operation must be `KEYED`; an unkeyed upper-class inline
+   hold is not a production alternative. Wrong or missing specs and destinations, owner,
+   operation or mode mismatches, and orphan registrations all fail startup. Current may be absent
+   only as the wholly absent declaration-and-registration pair. There is no wildcard, prefix,
+   class-wide, profile or test bypass. Separately, every registry refuses the `test_harness`
+   origin unless the profile is `test`; test fixtures register through `register_harness()` in
+   `tests/harness/`, which no production process imports. Production-profile tests drive the real
+   Core and worker roots for both rules.
 
 The registry is global to the process. Per-workspace activation is applied at every boundary by
 `WorkspaceContext.enabled_modules`, so a tool listing, a route resolution, an event fan-out, a
@@ -562,9 +589,9 @@ destructive-upgrade or other lifecycle behavior.
 | **Purge** | Destructive class, per-action confirmation. Requires state `removed` and a retained export newer than the removal. Runs the deletion coordinator for every deletable record type the module owns (so derived memories, queued actions, and held exports cascade under the R5 rules), then `DROP SCHEMA <module> CASCADE`, then deletes `module_state` and `module_schema_version` rows. |
 | **Restore** | From an export whose manifest lists the module at the host's `export_format_version`: migrate the installed schema to the host's head, then import through the module's `importer`, which owns upgrades for older rows it accepts. A differing format version is refused. Pending approvals inside the import are written `requires_reapproval` ([export and restore](deletion-export-migration.md#export-and-restore-fr-52)). |
 
-Host-level package removal is a separate operator concern: `rheo module hosts <id>` lists every
-workspace still in a state other than `absent` for the module, and the operator removes those
-first.
+Host-level package removal is a separate operator concern: a `rheo module hosts <id>` command is
+to list every workspace still in a state other than `absent` for the module, so the operator
+removes those first. It is not built; `rheo module` has `check` and `upgrade` only.
 
 ## Capability and version compatibility
 
@@ -595,12 +622,13 @@ never installed. Structurally that holds because:
 - The composition root reads `modules.installed` from configuration. The absence proof compares
   two configurations node by node: Recallatron remains installed on disk while the setting is
   empty, then a detached checkout removes the distribution before syncing and running the same
-  phase-one demonstrators. `relationships`, `leads` and `current` publish `rheo.modules` entry
-  points, but `modules.installed` names none of them in that comparison, so the loader admits
+  phase-one demonstrators. `relationships`, `leads`, `current` and `finance` publish
+  `rheo.modules` entry points, but `modules.installed` names none of them in that comparison, so the loader admits
   none and the phase-one demonstrators run with no domain module present.
-- `leads`, once phase three builds it, declares `recallatron` as an optional dependency and
-  calls it only through `ctx.enabled_modules` checks around a registered operation name, never
-  an import.
+- No module imports another module's package. `leads` declares only `relationships` as a
+  dependency and does not call `recallatron` at all. It reaches `current` only by registered
+  operation names and the core's external-action path, and `finance` reaches `current` the same
+  way, so both run with Current absent.
 - Event fan-out at write time consults the workspace's enabled consumers, so an event nobody
   subscribes to is written to the outbox with zero deliveries and is complete on commit.
 

@@ -1,0 +1,32 @@
+   Sample Dental Clinic   Visit Slip
+   100-999 Sample Ave   Slip printed:   24-May-2036
+   Sampletown, ZZ Z0Z9Z9
+   Sum: (999)RSI-TCON
+
+   Sample Patient
+   Box 99
+   Sampletown, ZZ
+   Canada Z0Z 9Z9
+
+Slip On   Slip Kind   Slip Detail   Slip Sum
+
+22-May-36   Cash   Sample Provider #999123 - Sample Visit   $230.80
+23-May-36   Debit   Sample Provider #999124 - Sample Visit   $31.97
+
+   Slip paid total   $262.77
+
+   SUM RSITAME   $0.00
+
+On   Code Detail   No   Ti   Sum   Cover   Own
+
+Visitor, Sample (9991)
+22-May-36   999001   Sumd / Rsitam Tcon   99   89.67   -   89.67
+22-May-36   999002   X-Sum Rsi Tcons   99   57.70   -   57.70
+23-May-36   999003   Sumdolo Rsi Tcon   99   115.40   -   115.40
+23-May-36   999124   Sample Provider <Sample> - Sample Visit Two   -262.77   -   -262.77
+
+   $0.00   $0.00   $0.00
+
+ Note:
+
+   Page 1 of 1

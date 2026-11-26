@@ -128,13 +128,24 @@ def _routing_config() -> RoutingConfig:
 
 
 def _return_host(return_target: str) -> str:
-    return normalize_host(urlsplit(return_target).hostname or "")
+    """``return_target``'s host, or ``""`` when it has none or does not parse
+    (``https://[x/`` raises in ``urlsplit``). Every caller refuses an empty host:
+    the return-link GETs as ``invalid_return``, ``_check_origin`` as
+    ``origin_not_allowed``. A bad header or link is a refusal, not a 500."""
+    try:
+        return normalize_host(urlsplit(return_target).hostname or "")
+    except ValueError:
+        return ""
 
 
 def _path_and_query(url: str) -> str:
-    """The same-host tail of ``url``: its path, and its query string if any."""
+    """The same-host tail of ``url``: its path, and its query string if any.
+
+    Exactly one leading slash, whatever the path started with: a ``return`` of
+    ``https://host//evil.test`` passes every host check, and its path used as a
+    ``Location`` is scheme-relative, which a browser follows off this host (#528)."""
     parts = urlsplit(url)
-    tail = parts.path or "/"
+    tail = "/" + parts.path.lstrip("/\\")
     return f"{tail}?{parts.query}" if parts.query else tail
 
 
@@ -183,7 +194,9 @@ def _check_origin(request: Request, config: RoutingConfig) -> Response | None:
     ``rheo_core.boundary.context`` (07 already declared every constant this
     listener needs; this file does not touch that module)."""
     origin = request.headers.get("origin")
-    host = normalize_host(urlsplit(origin).hostname or "") if origin else ""
+    # ``_return_host`` answers "" for an Origin ``urlsplit`` cannot parse
+    # (``https://[x``), so a hand-made header is refused, not a 500 (#530).
+    host = _return_host(origin) if origin else ""
     if not host or not is_application_host(config, host):
         return _refused(ORIGIN_NOT_ALLOWED, status_code=403)
     return None
@@ -425,6 +438,34 @@ def continue_flow(
         "set-cookie", build_cookie(SESSION_COOKIE, secret.hex(), scheme=config.scheme)
     )
     response.headers.append("set-cookie", _clear(CONTINUE_COOKIE, config))
+    return response
+
+
+# --- GET /auth/restart ------------------------------------------------------
+
+
+@router.get("/auth/restart")
+def restart_sign_in(
+    request: Request,
+    return_target: str = Query(alias="return"),
+) -> Response:
+    """The signed-out panel's way out: forget a dead session cookie on this host, then
+    go back to the page, where the web tier starts ``/auth/continue`` (#528).
+
+    The web tier only checks that a cookie is present, so a dead one never reaches
+    ``/auth/continue``, and signing in cannot replace it: the callback sets the identity
+    host's cookie, and a host-only cookie can only be cleared from its own host.
+
+    A GET anyone can link to, so it clears nothing that is still live, and it stays on
+    the host it was asked on: ``return`` must name this host, and only its path and
+    query are used."""
+    config = _routing_config()
+    host = _current_host(request)
+    if _return_host(return_target) != host or not is_application_host(config, host):
+        return _refused(INVALID_RETURN, status_code=400)
+    response = RedirectResponse(_path_and_query(return_target), status_code=302)
+    if _session_row_from_cookie(request, host) is None:
+        response.headers.append("set-cookie", _clear(SESSION_COOKIE, config))
     return response
 
 

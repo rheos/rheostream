@@ -4,22 +4,25 @@ from collections.abc import Callable
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import BeforeValidator, PlainSerializer
+from pydantic import BeforeValidator, PlainSerializer, ValidationInfo
 from rheo_contracts import RecordRef
+from rheo_core.refs.short import ref_value
 
 MODULE_ID = "current"
 DELETABLE = frozenset({"item", "project"})
 
 
-def _parse(kinds: frozenset[str]) -> Callable[[object], RecordRef]:
-    def validate(value: object) -> RecordRef:
-        reference = RecordRef.parse(value) if isinstance(value, str) else value
+def _parse(kind: str) -> Callable[[object, ValidationInfo], RecordRef]:
+    # A full reference parses; a short ID (#587), typed or bare since the field knows
+    # its type, resolves through dispatch's validation context.
+    def validate(value: object, info: ValidationInfo) -> RecordRef:
+        reference = ref_value(value, info, MODULE_ID, kind)
         if (
             not isinstance(reference, RecordRef)
             or reference.module != MODULE_ID
-            or reference.record_type not in kinds
+            or reference.record_type != kind
         ):
-            raise ValueError("expected a " + " or ".join(sorted(kinds)) + " reference")
+            raise ValueError(f"expected a {kind} reference")
         return reference
 
     return validate
@@ -31,12 +34,12 @@ def _wire(value: RecordRef) -> str:
 
 ItemRef = Annotated[
     RecordRef,
-    BeforeValidator(_parse(frozenset({"item"})), json_schema_input_type=str),
+    BeforeValidator(_parse("item"), json_schema_input_type=str),
     PlainSerializer(_wire, return_type=str),
 ]
 ProjectRef = Annotated[
     RecordRef,
-    BeforeValidator(_parse(frozenset({"project"})), json_schema_input_type=str),
+    BeforeValidator(_parse("project"), json_schema_input_type=str),
     PlainSerializer(_wire, return_type=str),
 ]
 

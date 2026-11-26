@@ -1,0 +1,244 @@
+{
+  "about": [
+    "Issuer description patterns (SPEC 'Files, paths and settings' > Reference data in the repo).",
+    "Reference data only: issuer wording, never a person's name, an account number or an amount.",
+    "Each wording is matched against a line's description_norm (casefolded, whitespace collapsed),",
+    "as a whole-token run: a match never starts or ends inside a word. Every part of 'all' must",
+    "match and no part of 'unless' may. 'issuers' and 'account_kinds', when present, limit an entry",
+    "to lines of those issuer keys and account kinds. In each section the first matching entry wins.",
+    "A reversal entry with direction 'sign' names no direction: the line's sign settles it (a credit is 'out').",
+    "A counterpart is an issuer key from the archive's issuer map (rheo_finance.documents.issuers).",
+    "A wording may be a stand-in: identities.real gives the owner's own wording for it."
+  ],
+  "transfer": [
+    {
+      "kind": "card_payment",
+      "note": "card side: the payment credit on the card",
+      "all": ["card paid in"],
+      "account_kinds": ["credit_card"],
+      "issuers": ["alder-neem"],
+      "counterpart": "alder"
+    },
+    {
+      "kind": "card_payment",
+      "note": "card side on a card whose wording names no paying bank",
+      "all": ["card paid in"],
+      "account_kinds": ["credit_card"]
+    },
+    {
+      "kind": "card_payment",
+      "note": "card side, the closing courtesy form",
+      "all": ["paid in", "noted"],
+      "account_kinds": ["credit_card"]
+    },
+    {
+      "kind": "card_payment",
+      "note": "card side: the payment prints as a short wording of its own",
+      "all": ["sumac paid"],
+      "unless": ["fee", "fees", "plan", "interest", "protection", "reversal"],
+      "account_kinds": ["credit_card"],
+      "issuers": ["sumac"]
+    },
+    {
+      "kind": "card_payment",
+      "note": "chequing side: a bill payment naming the card, 'alder neem' or 'alder <product> neem'",
+      "all": ["settle to", "alder", "neem"],
+      "account_kinds": ["chequing", "savings"],
+      "counterpart": "alder-neem"
+    },
+    {
+      "kind": "card_payment",
+      "note": "chequing side: a bill payment to a Neem card; the only Neem issuer in the map",
+      "all": ["settle to", "neem"],
+      "account_kinds": ["chequing", "savings"],
+      "counterpart": "alder-neem"
+    },
+    {
+      "kind": "card_payment",
+      "note": "chequing side: a bill payment naming the Sumac card",
+      "all": ["settle to", "sumac"],
+      "account_kinds": ["chequing", "savings"],
+      "counterpart": "sumac"
+    },
+    {
+      "kind": "hazel_preauthorized",
+      "note": "chequing side of a Hazel pre-authorized pull, or of a Hazel withdrawal to the bank",
+      "all": ["autopull", "hazel"],
+      "account_kinds": ["chequing", "savings"],
+      "counterpart": "hazel"
+    },
+    {
+      "kind": "hazel_preauthorized",
+      "note": "the hyphenated form",
+      "all": ["auto-pull", "hazel"],
+      "account_kinds": ["chequing", "savings"],
+      "counterpart": "hazel"
+    },
+    {
+      "kind": "hazel_preauthorized",
+      "note": "Hazel side: the bank funding a payment; the wording names no bank",
+      "all": ["hz load"],
+      "issuers": ["hazel"]
+    },
+    {
+      "kind": "juniper_payout",
+      "note": "Fig side: the payout deposit from Juniper",
+      "all": ["juniper"],
+      "issuers": ["fig"],
+      "counterpart": "juniper"
+    },
+    {
+      "kind": "juniper_payout",
+      "note": "Juniper side: the payout debit to the bank (Fig)",
+      "all": ["payout"],
+      "issuers": ["juniper"],
+      "counterpart": "fig"
+    }
+  ],
+  "reversal": [
+    {
+      "direction": "out",
+      "note": "the owner's own payment cancelled: the reversal is a credit",
+      "all": ["out undone"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "out",
+      "all": ["by sender"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "in",
+      "note": "a received payment clawed back: the reversal is a debit",
+      "all": ["in undone"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "in",
+      "all": ["return"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "sign",
+      "note": "the wording prints no direction, the line's sign settles it",
+      "all": ["returned"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "sign",
+      "note": "the wording prints no direction, the line's sign settles it",
+      "all": ["reversed"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "in",
+      "all": ["recall"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "in",
+      "all": ["recalled"],
+      "account_kinds": ["chequing", "savings"]
+    },
+    {
+      "direction": "in",
+      "note": "an NSF fee is a charge, not a reversal",
+      "all": ["nsf"],
+      "unless": ["fee", "fees"],
+      "account_kinds": ["chequing", "savings"]
+    }
+  ],
+  "conversion": [
+    {
+      "all": ["turned"],
+      "issuers": ["fig"]
+    },
+    {
+      "note": "Fig side: a move between currency balances",
+      "all": ["swapped"],
+      "issuers": ["fig"]
+    },
+    {
+      "all": ["hz rate"],
+      "issuers": ["hazel"]
+    }
+  ],
+  "fee": [
+    {"fee_type": "nsf_fee", "all": ["nsf", "fee"]},
+    {"fee_type": "overdraft_fee", "all": ["overdraft fee"]},
+    {"fee_type": "overdraft_interest", "all": ["overdraft interest"]},
+    {"fee_type": "annual_fee", "all": ["yearly card fee"]},
+    {"fee_type": "late_fee", "all": ["late payment fee"]},
+    {"fee_type": "late_fee", "all": ["late fee"]},
+    {"fee_type": "foreign_transaction_fee", "all": ["foreign transaction fee"]},
+    {
+      "fee_type": "overlimit_fee",
+      "note": "its adjustment (a credit) carries it too",
+      "all": ["overlimit fee"]
+    },
+    {
+      "fee_type": "interest",
+      "note": "Alder Neem side: the interest charged on a balance",
+      "all": ["neem carry charge"],
+      "account_kinds": ["credit_card"]
+    },
+    {"fee_type": "atm_fee", "all": ["atm", "fee"]},
+    {"fee_type": "service_charge", "all": ["service charge"]},
+    {"fee_type": "service_charge", "all": ["alder unnamed charge"]},
+    {
+      "fee_type": "service_charge",
+      "note": "Olive side: the monthly service cost",
+      "all": ["olive service cost"]
+    },
+    {
+      "fee_type": "interest",
+      "note": "on a card, interest is a charge; on a bank account it may be interest earned",
+      "all": ["interest"],
+      "account_kinds": ["credit_card"]
+    },
+    {
+      "fee_type": "fee",
+      "note": "a bare fee word on an account whose lines are not merchant purchases",
+      "all": ["fee"],
+      "account_kinds": ["chequing", "savings", "wallet", "payment_processor"]
+    },
+    {
+      "fee_type": "fee",
+      "all": ["fees"],
+      "account_kinds": ["chequing", "savings", "wallet", "payment_processor"]
+    }
+  ],
+  "etransfer": [
+    {"wording": "e-send from", "name": "after"},
+    {"wording": "sent to:", "name": "after"},
+    {
+      "wording": "came from:",
+      "name": "after",
+      "note": "the incoming form of the outgoing wording above"
+    },
+    {"wording": "move to", "name": "after"},
+    {"wording": "move from", "name": "after"},
+    {
+      "wording": "e-send returned",
+      "name": "parenthesized",
+      "note": "the name in brackets after the wording"
+    },
+    {
+      "wording": "esend",
+      "name": "parenthesized",
+      "note": "the name in brackets after the wording, either direction"
+    },
+    {"wording": "e-send", "name": "after"},
+    {
+      "wording": "carob",
+      "name": "after",
+      "unless": ["purchase", "retail"],
+      "note": "a Carob debit-card purchase is not an e-Transfer"
+    },
+    {
+      "wording": "mail send",
+      "name": "none",
+      "note": "the name follows the wordings matched above; alone it introduces none"
+    }
+  ]
+}

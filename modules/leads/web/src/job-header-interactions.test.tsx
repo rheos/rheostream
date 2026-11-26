@@ -25,6 +25,20 @@ const job: Row = {
   dismiss: { stage_id: "passed", label: "Passed" },
 };
 
+const DISMISSED =
+  "/leads/?pipeline=jobs&dismissed=leads.opportunity%3A01a133b6-b93c-73c0-975f-cf6437992a85&from=review";
+
+/** The same job after the dismiss: closed, with only the way back. */
+const passed: Row = {
+  ...job,
+  stage_id: "passed",
+  stage_label: "Passed",
+  stage_kind: "terminal",
+  revision: 4,
+  transitions: [{ stage_id: "review", label: "Review", kind: "open" }],
+  dismiss: null,
+};
+
 let host: HTMLDivElement;
 let root: Root;
 const assign = vi.fn();
@@ -47,11 +61,11 @@ afterEach(() => {
   host.remove();
 });
 
-function mount(submit: ReturnType<typeof vi.fn>) {
+function mount(submit: ReturnType<typeof vi.fn>, item: Row = job) {
   const send = submit as unknown as NonNullable<ShellApi["submit"]>;
   act(() =>
     root.render(
-      <JobHeader item={job} now={0} submit={send} back="/leads/?pipeline=jobs" />,
+      <JobHeader item={item} now={0} submit={send} back="/leads/?pipeline=jobs" />,
     ),
   );
 }
@@ -71,7 +85,8 @@ describe("the job header's controls", () => {
       revision: 3,
       to_stage_id: "passed",
     });
-    expect(replace).toHaveBeenCalledWith("/leads/?pipeline=jobs");
+    // The queue gets the job and the stage it left, so it can offer Undo.
+    expect(replace).toHaveBeenCalledWith(DISMISSED);
     expect(reload).not.toHaveBeenCalled();
   });
   it("reloads after a stage change from the select", async () => {
@@ -95,7 +110,7 @@ describe("the job header's controls", () => {
       select.value = "passed";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    expect(replace).toHaveBeenCalledWith("/leads/?pipeline=jobs");
+    expect(replace).toHaveBeenCalledWith(DISMISSED);
   });
   it("holds the controls while a move is in flight", async () => {
     let settle: (value: unknown) => void = () => {};
@@ -116,5 +131,25 @@ describe("the job header's controls", () => {
     expect(host.textContent).toContain("Reload to change its stage.");
     expect(replace).not.toHaveBeenCalled();
     expect(dismissButton().disabled).toBe(false);
+  });
+  it("reopens a closed job in the select's place and stays on the page", async () => {
+    const submit = vi.fn().mockResolvedValue({ state: "ok", result: { revision: 5 } });
+    mount(submit, passed);
+    expect(host.querySelector("select")).toBeNull();
+    expect(host.querySelector('button[aria-label^="Dismiss"]')).toBeNull();
+    // The closed stage still shows beside Reopen.
+    expect(host.textContent).toContain("Passed");
+    const reopen = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="Reopen Example data service (move to Review)"]',
+    );
+    if (!reopen) throw new Error("no reopen");
+    await act(async () => reopen.click());
+    expect(submit).toHaveBeenCalledWith("leads.opportunity.transition", {
+      ref: job.ref,
+      revision: 4,
+      to_stage_id: "review",
+    });
+    expect(reload).toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
   });
 });

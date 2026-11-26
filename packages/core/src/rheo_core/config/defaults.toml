@@ -143,6 +143,7 @@ secret_ref = ""
 due_reconcile_seconds = 900
 max_attempts = 8
 outbox_retention_days = 30
+idempotency_retention_days = 90
 
 # The approval record's two bounds (C6, run 0c3). max_payload_bytes bounds the stored
 # snapshot of one approved operation's input — what a person reads at the point of
@@ -163,6 +164,11 @@ max_context_bytes = 200000
 transcript_retention_days = 90
 allowed_runtimes = ["claude_cli"]
 allowed_models = ["sonnet"]
+
+[runtime.jev]
+enabled = false
+credential_ref = ""
+model_id = "jev-latest"
 
 [runtime.claude_cli]
 executable = ""

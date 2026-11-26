@@ -738,3 +738,32 @@ def test_an_invited_new_client_keeps_every_condition() -> None:
         *held.failed,
         f"More than {policy.max_proposals} proposals already.",
     )
+
+
+WRAPPED_MESSAGE = (
+    "<untrusted_participant_content>\nBuild a shop.\nShip by Friday.\n"
+    "</untrusted_participant_content>"
+)
+
+
+def test_a_stored_wrapper_tag_never_reaches_the_scorer() -> None:
+    """#392: rows stored before collection dropped the feed's wrapper still carry
+    it. The scorer reads the text without it, and its numbered excerpts start at
+    the posting's first real line."""
+    job = JobFacts.from_fields("Example", {"message": WRAPPED_MESSAGE})
+    assert job.description == "Build a shop.\nShip by Friday."
+    excerpts = tier2.job_excerpts(tier2.source_text(job))
+    assert list(excerpts.values()) == ["Example", "Build a shop.", "Ship by Friday."]
+    assert "untrusted_participant_content" not in tier2.job_text(
+        job, cap=50, new_client=False
+    )
+
+
+def test_the_fingerprint_is_taken_from_the_stored_text() -> None:
+    """``refresh`` fingerprints ``read_fields``' stored values, not ``JobFacts``.
+    A wrapped and an unwrapped text fingerprint differently, so unwrapping inside
+    the fingerprint would queue every wrapped row scored before #392 to score
+    again; unwrapping in ``JobFacts.from_fields`` moves nothing."""
+    assert input_digest("Example", {"message": WRAPPED_MESSAGE}, 50) != input_digest(
+        "Example", {"message": "Build a shop.\nShip by Friday."}, 50
+    )

@@ -146,6 +146,7 @@ function Batch({
       ["paused", "paused"],
       ["needs_posting", "need the posting"],
       ["failed", "failed"],
+      ["too_old", "too old"],
     ] as const
   )
     .filter(([key]) => typeof counts[key] === "number" && counts[key] > 0)
@@ -260,9 +261,9 @@ function Calls({
         </h2>
         <InfoTip label="About the model call log" wide>
           <p>
-            One row for each model call Leads makes: scoring a job, the steps of
-            drafting a proposal, and pricing. Tokens and time only; the calls
-            run on your subscription login, not a metered API.
+            One row for each model call Leads makes: pre-filtering, full scoring,
+            drafting a proposal, and pricing. Tokens and time only. Jev uses a
+            metered API; its provider account reports the charges.
           </p>
           <p>
             No posting text, prompt or answer is kept. Rows older than 90 days
@@ -404,9 +405,45 @@ function Calls({
   );
 }
 
+function SyncIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6 3h12v18l-6-4-6 4z" />
+      <path d="M12 7v6M9.5 10.5 12 13l2.5-2.5" />
+    </svg>
+  );
+}
+
+/** The owner's "Sync saved jobs": a collector run now (#594). */
+interface FeedSync {
+  run: () => void;
+  busy: boolean;
+  notice: string;
+}
+
 /** The job feed's recent runs: what each brought in, and why any detail read
  * failed, so a bad stretch can be read after the fact (#377). */
-function FeedRuns({ view, now, zone }: { view: Row; now: number; zone: string }) {
+function FeedRuns({
+  view,
+  now,
+  zone,
+  sync,
+}: {
+  view: Row;
+  now: number;
+  zone: string;
+  sync?: FeedSync;
+}) {
   const runs = rows(view.feed_runs);
   return (
     <>
@@ -419,11 +456,33 @@ function FeedRuns({ view, now, zone }: { view: Row; now: number; zone: string })
             description, until a later run reads it.
           </p>
           <p>
+            Every run also brings in the jobs you saved on Upwork, whatever
+            their competition, and tags them Saved. Sync saved jobs runs the
+            feed now instead of waiting for the next run.
+          </p>
+          <p>
             Only counts and fixed reasons are kept, never a posting. Runs older
             than 90 days are removed.
           </p>
         </InfoTip>
+        {sync ? (
+          <button
+            type="button"
+            className={styles.syncButton}
+            title="Run the job feed now to bring in your saved Upwork jobs"
+            disabled={sync.busy}
+            onClick={sync.run}
+          >
+            <SyncIcon />
+            Sync saved jobs
+          </button>
+        ) : null}
       </div>
+      {sync?.notice ? (
+        <p className={styles.quiet} role="status">
+          {sync.notice}
+        </p>
+      ) : null}
       {!runs.length ? (
         <p className={styles.quiet}>No runs recorded yet.</p>
       ) : (
@@ -499,6 +558,8 @@ function Status({
 export function ScoringView(props: ScoringProps) {
   const { view, tab, now, zone, refresh } = props;
   const [retrying, setRetrying] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const root = useRef<HTMLDivElement | null>(null);
   const live = busy(view, now);
@@ -553,14 +614,14 @@ export function ScoringView(props: ScoringProps) {
     };
   }, [live, refresh]);
 
-  async function retry() {
+  async function retry(operation: string, failure: string) {
     const submit = props.submit;
     if (!submit || retrying) return;
     setRetrying(true);
     setError("");
     let outcome;
     try {
-      outcome = await submit("leads.jobscoring.retry_failed", {});
+      outcome = await submit(operation, {});
     } catch {
       outcome = { state: "unavailable" as const };
     }
@@ -571,13 +632,43 @@ export function ScoringView(props: ScoringProps) {
       return;
     }
     setRetrying(false);
-    setError("Could not put the failed jobs back in line. Try again.");
+    setError(failure);
+  }
+
+  async function syncSaved() {
+    const submit = props.submit;
+    if (!submit || syncing) return;
+    setSyncing(true);
+    setError("");
+    setNotice("");
+    let outcome;
+    try {
+      outcome = await submit("leads.jobfeed.collect_now", {});
+    } catch {
+      outcome = { state: "unavailable" as const };
+    }
+    setSyncing(false);
+    if (outcome.state === "ok") {
+      setNotice(
+        "Sync requested. The next run should start within a minute or two; reload this tab to see it.",
+      );
+      return;
+    }
+    setError(
+      outcome.state === "refused" && outcome.text
+        ? `${outcome.text.charAt(0).toUpperCase()}${outcome.text.slice(1)}.`
+        : "Could not start a sync. Try again.",
+    );
   }
 
   const queued = typeof view.queued_total === "number" ? view.queued_total : 0;
   const waiting =
     typeof view.waiting_total === "number" ? view.waiting_total : 0;
   const failed = typeof view.failed_total === "number" ? view.failed_total : 0;
+  const tooOld =
+    typeof view.too_old_total === "number" ? view.too_old_total : 0;
+  const maxAge =
+    typeof view.max_age_hours === "number" ? view.max_age_hours : 0;
   const eta = typeof view.eta_seconds === "number" ? view.eta_seconds : null;
   const perJob =
     typeof view.median_call_seconds === "number"
@@ -596,15 +687,26 @@ export function ScoringView(props: ScoringProps) {
         <InfoTip label="About scoring" wide>
           <p>
             New jobs are scored one at a time, newest first. The client filters
-            decide first; a job they let through goes to the model with your
-            profile, and its score lands on the job.
+            decide first. When enabled, Jev pre-filters eligible jobs against your
+            profile before full scoring. Held jobs remain in the Review queue;
+            Promote requests full scoring. A Jev failure falls through to the
+            full scorer. Its final score lands on the job.
           </p>
           <p>
             When the usage limit stops a call, every waiting job pauses and
-            scoring tries again on its own. A job that fails five times is
+            scoring tries again on its own, or when an owner retries the
+            waiting jobs here. A job that fails five times is
             marked failed until its posting changes, or until an owner puts it
             back in line here.
           </p>
+          {maxAge > 0 ? (
+            <p>
+              A job still waiting {maxAge} {maxAge === 1 ? "hour" : "hours"}{" "}
+              after it arrived is set aside unscored, so scoring that resumes
+              after a pause starts with the recent jobs. Promoted and invited
+              jobs are exempt from the age cutoff.
+            </p>
+          ) : null}
         </InfoTip>
       </div>
       <Status status={row(view.status)} now={now} zone={zone} />
@@ -614,7 +716,28 @@ export function ScoringView(props: ScoringProps) {
           {eta !== null ? ` · up to about ${span(eta)} to clear` : ""}
         </span>
         {perJob !== null ? <span>{span(perJob)} per job lately</span> : null}
-        {waiting > 0 ? <span>{waiting} waiting to retry</span> : null}
+        {waiting > 0 ? (
+          <span className={styles.waitingTotal}>
+            {waiting} waiting to retry
+            {props.canRetry && props.submit ? (
+              <button
+                type="button"
+                className={styles.iconButton}
+                aria-label={`Retry ${waiting} waiting ${waiting === 1 ? "job" : "jobs"} now`}
+                title={`Retry ${waiting} waiting ${waiting === 1 ? "job" : "jobs"} now`}
+                disabled={retrying}
+                onClick={() =>
+                  retry(
+                    "leads.jobscoring.retry_waiting",
+                    "Could not retry the waiting jobs. Try again.",
+                  )
+                }
+              >
+                <RetryIcon />
+              </button>
+            ) : null}
+          </span>
+        ) : null}
         {failed > 0 ? (
           <span className={styles.failedTotal}>
             <strong>{failed}</strong> failed
@@ -625,13 +748,19 @@ export function ScoringView(props: ScoringProps) {
                 aria-label={`Put ${failed} failed ${failed === 1 ? "job" : "jobs"} back in line`}
                 title={`Put ${failed} failed ${failed === 1 ? "job" : "jobs"} back in line`}
                 disabled={retrying}
-                onClick={retry}
+                onClick={() =>
+                  retry(
+                    "leads.jobscoring.retry_failed",
+                    "Could not put the failed jobs back in line. Try again.",
+                  )
+                }
               >
                 <RetryIcon />
               </button>
             ) : null}
           </span>
         ) : null}
+        {tooOld > 0 ? <span>{tooOld} too old to score</span> : null}
       </p>
       {error ? (
         <p className={styles.error} role="alert">
@@ -653,7 +782,16 @@ export function ScoringView(props: ScoringProps) {
       {tab === "calls" ? (
         <Calls view={view} now={now} zone={zone} hrefs={props.hrefs} />
       ) : tab === "feed" ? (
-        <FeedRuns view={view} now={now} zone={zone} />
+        <FeedRuns
+          view={view}
+          now={now}
+          zone={zone}
+          sync={
+            props.canRetry && props.submit
+              ? { run: () => void syncSaved(), busy: syncing, notice }
+              : undefined
+          }
+        />
       ) : (
         <Queue
           view={view}

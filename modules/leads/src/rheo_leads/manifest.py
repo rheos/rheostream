@@ -27,6 +27,17 @@ from rheo_leads.connections import OPERATIONS as CONNECTION_OPERATIONS
 from rheo_leads.connections import TOOLS as CONNECTION_TOOLS
 from rheo_leads.connections import read_connection, record_refusal
 from rheo_leads.contracts import CaptureInput
+from rheo_leads.current_links import (
+    LINK_CHANGED,
+    LINK_CONSUMER_ID,
+    RECONCILE_INTERVAL_SECONDS,
+    RECONCILE_JOB_KIND,
+    RECONCILE_MAX_ATTEMPTS,
+    RECONCILE_SCHEDULE,
+    ReconcilePayload,
+    on_link_changed,
+    reconcile_job,
+)
 from rheo_leads.events import CONSUMER_ID, DELIVERY_RECEIVED, EVENTS
 from rheo_leads.export import export_records, import_records
 from rheo_leads.intake.process import process_delivery
@@ -145,6 +156,9 @@ MANIFEST = ModuleManifest(
             "person.phone and organization.name. "
             "Do not infer consent or verified identity. "
             "To add only a contact, use relationships_create_contact instead. "
+            "Pass source_event_id (such as a mail message id) when the same event "
+            "may be captured again: a repeat id records nothing and returns "
+            "outcome duplicate with the first capture's receipt_ref. "
             "A funnel is required; "
             "missing or malformed arguments return input_invalid, "
             "unavailable attribution returns not_found, "
@@ -166,11 +180,26 @@ MANIFEST = ModuleManifest(
                     f"{RELATIONSHIPS}.party.resolve_or_create",
                     "leads.opportunity.create_from_observation",
                     "leads.opportunity.attach_observation",
+                    # The first follow-up, when leads.intake.followup_business_days
+                    # asks for one (pipeline_intake._first_followup).
+                    "leads.followup.schedule",
                 }
             ),
         ),
+        # Current is optional: with it absent no event arrives and nothing is lost,
+        # since the repair job reads the link again once Current is back.
+        ConsumerSubscription(
+            LINK_CONSUMER_ID, LINK_CHANGED, "leads", True, on_link_changed
+        ),
     ),
     jobs=(
+        JobKind(
+            name=RECONCILE_JOB_KIND,
+            input_model=ReconcilePayload,
+            handler=reconcile_job,
+            max_attempts=RECONCILE_MAX_ATTEMPTS,
+            cancellable=False,
+        ),
         JobKind(
             name=COLLECT_JOB_KIND,
             input_model=CollectPayload,
@@ -222,6 +251,14 @@ MANIFEST = ModuleManifest(
             interval_seconds=PROPOSE_INTERVAL_SECONDS,
             gate_setting=JOBSEARCH_KEY,
         ),
+        # Off until the first handoff to Current is staged, which turns it on.
+        Schedule(
+            name=RECONCILE_SCHEDULE,
+            job_kind=RECONCILE_JOB_KIND,
+            cron="*/15 * * * *",
+            enabled_by_default=False,
+            interval_seconds=RECONCILE_INTERVAL_SECONDS,
+        ),
     ),
     resolvers=tuple((name, resolve_record) for name in RECORD_TABLES),
     deletion_participants=(
@@ -233,7 +270,7 @@ MANIFEST = ModuleManifest(
         ),
     ),
     export=ExportDeclaration(
-        format_version=13,
+        format_version=17,
         schema_path="export.schema.json",
         exporter=export_records,
         importer=import_records,
@@ -273,12 +310,16 @@ MANIFEST = ModuleManifest(
                 "followup.draft",
                 "followup.schedule",
                 "followup.resolve",
+                "handoff.request",
+                "handoff.restage",
                 "jobfeed.connect",
                 "jobfeed.reconnect",
                 "jobfeed.complete_pasted",
                 "jobfeed.revoke",
                 "jobfeed.paste",
                 "jobfeed.select_account",
+                # The Job feed tab's "Sync saved jobs": a collector run now.
+                "jobfeed.collect_now",
                 # The job detail's proposal workflow: drafts and the answer library.
                 "jobproposal.request",
                 "jobproposal.update",
@@ -290,8 +331,9 @@ MANIFEST = ModuleManifest(
                 "proposalmilestone.set",
                 # The review queue's override.
                 "jobreview.promote",
-                # The Scoring view's re-queue of failed jobs.
+                # The Scoring view's re-queue of failed jobs and end of a wait.
                 "jobscoring.retry_failed",
+                "jobscoring.retry_waiting",
             )
         ),
     ),

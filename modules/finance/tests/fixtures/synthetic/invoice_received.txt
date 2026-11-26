@@ -1,0 +1,24 @@
+Inv number SP0042
+Inv issued: Mon, Jun 3, 2047
+   INV FROM
+Inv due: Mon, Jun 17, 2047
+   Sample Contractor
+
+   INV TO
+   Sample Customer
+
+  Inv Item   Inv Count   Inv Rate   Inv Sum
+
+  Sumd rsit Tco 99th to Tet 99rd   12.5   $75.55   $552.00
+
+  Rsit tco Sumd 99th to Ipis 99th   3.50   $75.55   $276.00
+
+   Inv subtotal   $828.00
+
+   Inv total   $828.00
+
+   Inv paid   $110.40
+
+   Inv owing   $717.60
+
+ Sumd rsit   sample.test

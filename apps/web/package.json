@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@rheo-stream/current-web": "workspace:*",
+    "@rheo-stream/finance-web": "workspace:*",
     "@rheo-stream/recallatron-web": "workspace:*",
     "@rheo-stream/web-contract": "workspace:*",
     "next": "^16",
@@ -26,6 +27,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "^16",
+    "happy-dom": "^21",
     "openapi-typescript": "7.13.0",
     "typescript": "^5",
     "vite": "^8",

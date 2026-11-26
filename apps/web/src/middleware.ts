@@ -47,7 +47,8 @@ function isIdentityPath(config: RoutingConfig, pathname: string): boolean {
  * decision: `decideSurface` (`shell/render-surface.tsx`, behind both route files)
  * reads `/internal/v1/session` itself and fails closed, so a stale or forged cookie
  * gets past this function and is then shown the signed-out panel, with no module
- * screen. The convenience of not redirecting a request that merely *looks* signed in
+ * screen, whose sign-in link clears the cookie through `/auth/restart` (#528). A
+ * cookie core has cleared is an empty value, which counts as none here. The convenience of not redirecting a request that merely *looks* signed in
  * is all this buys.
  *
  * **The order of checks.** Routing loads first (`loadRoutingConfig` memoises a
@@ -125,8 +126,9 @@ export const config = {
   // browser is meant to land — without the exclusion it would bounce straight
   // through `/auth/continue` to the provider and never render. `healthz` is
   // excluded so the container health check (#156) reaches its route handler
-  // instead of being redirected to sign in.
+  // instead of being redirected to sign in. The three icon files (#616) are
+  // public brand images, so the sign-in page's tab gets its icon too.
   matcher: [
-    "/((?!login(?:/|$)|healthz$|_next/static|_next/image|favicon.ico).*)",
+    "/((?!login(?:/|$)|healthz$|_next/static|_next/image|favicon\\.ico$|icon\\.svg$|apple-icon\\.png$).*)",
   ],
 };

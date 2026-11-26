@@ -563,12 +563,18 @@ def _redact(text: str, secrets: tuple[str | None, ...]) -> str:
     return _TOKEN_RUN.sub(REDACTED, text)
 
 
+_NOT_VISIBLE: Final = re.compile(r"[^!-~]+")
+"""A run of anything but visible ASCII: whitespace, controls, non-ASCII."""
+
+
 def _error_text(body: bytes) -> str:
-    """The first characters of a short plain-text error, printable ASCII only."""
+    """The first characters of a short plain-text error, printable ASCII only.
+
+    One regex pass turns each run of non-visible characters into a single space, so a
+    large body never becomes a per-character or per-word list (#364)."""
     text = body.decode("utf-8", errors="replace")
-    kept = "".join(c if " " <= c <= "~" else " " for c in text)
     # Not cut to the limit yet: credentials are redacted first, then it is cut.
-    return " ".join(kept.split())
+    return _NOT_VISIBLE.sub(" ", text).strip(" ")
 
 
 def _field(value: str | int | bool | None) -> str:

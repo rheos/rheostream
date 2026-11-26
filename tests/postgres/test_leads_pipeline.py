@@ -1,11 +1,11 @@
 """Synthetic pipeline acceptance through installed modules and real dispatch."""
 
 import json
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import pytest
-from rheo_contracts import RecordRef, WorkspaceContext
+from rheo_contracts import ExternalSpec, RecordRef, WorkspaceContext
 from rheo_core.storage.routing import open_unit_of_work
 from rheo_core.storage.work_tables import audit_record
 from rheo_leads import pipeline_common as h
@@ -301,15 +301,28 @@ def test_handoff_has_snapshot_and_deduplicates_payload_destination_and_purpose(
         payload={"title": "Approved scope"},
         idempotency_key="one",
     )
+    # A handoff needs a qualification first.
+    assert intake.call("leads.handoff.request", **payload).state == (
+        "qualification_required"
+    )
+    assessed = ok(
+        intake,
+        "qualification.assess",
+        ref=current.ref,
+        revision=current.revision,
+        objective="Example objective",
+    )
+    payload["revision"] = one(intake).revision
     result = ok(intake, "handoff.request", **payload)
     assert (
         result.data["state"] == "unavailable"
         and result.data["result_detail"] == "no_destination"
     )
+    assert result.data["qualification_ref"] == assessed.ref
     assert ok(intake, "handoff.request", **payload).ref == result.ref
     for change in (
         {"purpose": "share_with_referral"},
-        {"destination_ref": "example.destination:one"},
+        {"destination_ref": "current"},
         {"payload": {"title": "Different"}},
     ):
         assert (
@@ -461,6 +474,31 @@ def test_tools_roundtrip_and_delete_requires_approval(intake: Intake) -> None:
         to_stage_id="discovery",
     )
     assert changed.ok, changed
+    # A tool call that leaves the value out keeps it: the facade passes only the
+    # arguments sent, so ``value_amount`` is not "set" to null behind the caller.
+    valued = tool(
+        "update",
+        ref=current.ref,
+        revision=changed.result.revision,
+        value_amount="900",
+        value_currency="USD",
+        value_basis="project_fee",
+    )
+    assert valued.ok, valued
+    retitled = tool(
+        "update",
+        ref=current.ref,
+        revision=valued.result.revision,
+        title="Renamed tool inquiry",
+    )
+    assert retitled.ok, retitled
+    kept = one(intake).data
+    assert (kept["value_amount"], kept["value_currency"], kept["value_basis"]) == (
+        valued.result.data["value_amount"],
+        "USD",
+        "project_fee",
+    )
+    assert kept["value_amount"] is not None
     assert tool("delete", ref=current.ref).state == "approval_required"
     assert (
         tool(
@@ -622,20 +660,28 @@ def test_contact_guard_blocks_held_sink_after_withdrawal(
         Role,
         SafetyClass,
     )
-    from rheo_core.approvals import gate
     from rheo_core.audit import CORE_AUDIT_SINK, install_sink
     from rheo_core.boundary import context_for_harness
+    from rheo_core.modules import (
+        DESTINATIONS,
+        EXECUTION_GUARDS,
+        DestinationMode,
+        DestinationRegistration,
+        GuardRegistration,
+    )
     from rheo_core.operations.registry import REGISTRY
     from rheo_core.settings import TEST_HARNESS_ORIGIN
     from rheo_leads.permissions import ContactPermissionGuard
     from rheo_leads.pipeline_contracts import PermissionCheck
 
     class SinkInput(PermissionCheck):
+        destination_ref: Literal["synthetic"] = "synthetic"
         message: str
 
     class Sent(BaseModel):
         model_config = ConfigDict(frozen=True)
         sent: bool
+        result_ref: str = "synthetic:sent"
 
     def send(ctx: Any, uow: Any, model: SinkInput) -> Sent:
         write_note(uow.connection, body=model.message)
@@ -649,21 +695,41 @@ def test_contact_guard_blocks_held_sink_after_withdrawal(
         output=Sent,
         idempotency=Idempotency.NONE,
         audit=AuditSpec(subject_field="party_ref"),
+        external=ExternalSpec(
+            destination_field="destination_ref",
+            destination_ref="synthetic",
+            result_ref_field="result_ref",
+        ),
+        # The Leads guard reaches the approval through the declared module-guard
+        # seam, after the core guards and DestinationGuard in the effective order.
+        guards=("harness.contact_permission",),
     )
     monkeypatch.setattr(REGISTRY, "_operations", dict(REGISTRY._operations))
     REGISTRY._operations.pop(declaration.name, None)
     REGISTRY.register(declaration, send, origin=TEST_HARNESS_ORIGIN)
     intake.surfaces.operations.register(declaration, send, origin=TEST_HARNESS_ORIGIN)
     install_sink("harness", CORE_AUDIT_SINK)
-    original = gate.core_guards_for
-    monkeypatch.setattr(
-        gate,
-        "core_guards_for",
-        lambda d: (
-            (*original(d), ContactPermissionGuard())
-            if d.name == declaration.name
-            else original(d)
+    monkeypatch.setattr(EXECUTION_GUARDS, "_guards", dict(EXECUTION_GUARDS._guards))
+    EXECUTION_GUARDS.register(
+        GuardRegistration(
+            name="harness.contact_permission", guard=ContactPermissionGuard()
         ),
+        origin="harness",
+    )
+    # DestinationGuard has no permissive fallback, so the synthetic sink's exact
+    # destination is registered and available; only the contact guard can refuse.
+    monkeypatch.setattr(DESTINATIONS, "_destinations", dict(DESTINATIONS._destinations))
+    DESTINATIONS.register(
+        DestinationRegistration(
+            destination_ref="synthetic",
+            operation_name=declaration.name,
+            mode=DestinationMode.IN_PROCESS,
+            is_installed=lambda: True,
+            is_enabled=lambda ctx: True,
+            is_ready=lambda ctx, uow: True,
+            execute=send,
+        ),
+        origin="harness",
     )
     with open_unit_of_work(intake.ctx) as uow:
         enable_harness_module(uow.connection)
@@ -1239,6 +1305,199 @@ JOBSEARCH_TABLES = (
 )
 
 
+def _undo_0022(connection: Any) -> None:
+    """Back to the Job search preset's version 3: version 4 is removed and what
+    0022 moved to it is moved back."""
+    preset = {"preset": str(h.JOBSEARCH_PRESET_ID)}
+    connection.execute(
+        text(
+            "UPDATE leads.opportunity SET preset_version = 3 "
+            "WHERE preset_id = :preset AND preset_version = 4"
+        ),
+        preset,
+    )
+    connection.execute(
+        text("UPDATE leads.pipeline_preset SET current_version = 3 WHERE id = :preset"),
+        preset,
+    )
+    for table in (
+        "preset_requirement",
+        "preset_transition",
+        "preset_field",
+        "preset_rubric",
+        "preset_template",
+        "preset_stage",
+        "preset_version",
+    ):
+        connection.execute(
+            text(
+                f"DELETE FROM leads.{table} WHERE preset_id = :preset AND version = 4"
+            ),
+            preset,
+        )
+
+
+def _undo_0020(connection: Any) -> None:
+    connection.execute(text("DROP TABLE leads.current_link_cursor"))
+    connection.execute(text("DROP INDEX leads.handoff_nonterminal_scan"))
+    connection.execute(text("DROP INDEX leads.handoff_succeeded_scan"))
+    connection.execute(
+        text(
+            "ALTER TABLE leads.handoff_snapshot "
+            "DROP CONSTRAINT handoff_snapshot_qualification, "
+            "DROP COLUMN qualification_ref, DROP COLUMN qualification_stale"
+        )
+    )
+    connection.execute(
+        text(
+            "ALTER TABLE leads.handoff "
+            + ", ".join(
+                f"DROP CONSTRAINT {name}"
+                for name in (
+                    "handoff_state_known",
+                    "handoff_attempts",
+                    "handoff_pending_staged",
+                    "handoff_success_result",
+                    "handoff_project_state",
+                    "handoff_project_live",
+                    "handoff_project_history",
+                    "handoff_link_revision",
+                    "handoff_link_projection",
+                )
+            )
+            + ", DROP COLUMN attempt_count, DROP COLUMN current_project_ref, "
+            "DROP COLUMN last_current_project_ref, DROP COLUMN current_project_state, "
+            "DROP COLUMN current_link_revision"
+        )
+    )
+
+
+def _undo_0023(connection: Any) -> None:
+    """Back to the Job search preset's version 4 and each job mapping's previous
+    version: what 0023 added is removed, and what it moved is moved back."""
+    preset = {"preset": str(h.JOBSEARCH_PRESET_ID)}
+    connection.execute(
+        text(
+            "UPDATE leads.opportunity SET preset_version = 4 "
+            "WHERE preset_id = :preset AND preset_version = 5"
+        ),
+        preset,
+    )
+    connection.execute(
+        text("UPDATE leads.pipeline_preset SET current_version = 4 WHERE id = :preset"),
+        preset,
+    )
+    for table in (
+        "preset_requirement",
+        "preset_transition",
+        "preset_field",
+        "preset_rubric",
+        "preset_template",
+        "preset_stage",
+        "preset_version",
+    ):
+        connection.execute(
+            text(
+                f"DELETE FROM leads.{table} WHERE preset_id = :preset AND version = 5"
+            ),
+            preset,
+        )
+    # Only versions 0023 made: a mapping written whole at version 4 by current
+    # code has no version 3 to go back to.
+    added = connection.execute(
+        text(
+            "SELECT r.mapping_id, r.version FROM leads.field_mapping_rule r "
+            "WHERE r.target = 'ext.jobsearch.saved' AND EXISTS ("
+            "SELECT 1 FROM leads.field_mapping m "
+            "WHERE m.id = r.mapping_id AND m.version = r.version - 1)"
+        )
+    ).all()
+    for mapping_id, version in added:
+        keys = {"mapping": mapping_id, "version": version}
+        connection.execute(
+            text(
+                "UPDATE leads.intake_connection SET mapping_version = :version - 1 "
+                "WHERE mapping_id = :mapping AND mapping_version = :version"
+            ),
+            keys,
+        )
+        for table, column in (
+            ("field_mapping_rule", "mapping_id"),
+            ("field_mapping_identity", "mapping_id"),
+            ("field_mapping", "id"),
+        ):
+            connection.execute(
+                text(
+                    f"DELETE FROM leads.{table} "
+                    f"WHERE {column} = :mapping AND version = :version"
+                ),
+                keys,
+            )
+
+
+def _undo_0021(connection: Any) -> None:
+    """Back to the Job search preset's version 2 and each job mapping's previous
+    version: what 0021 added is removed, and what it moved is moved back."""
+    preset = {"preset": str(h.JOBSEARCH_PRESET_ID)}
+    connection.execute(
+        text(
+            "UPDATE leads.opportunity SET preset_version = 2 "
+            "WHERE preset_id = :preset AND preset_version = 3"
+        ),
+        preset,
+    )
+    connection.execute(
+        text("UPDATE leads.pipeline_preset SET current_version = 2 WHERE id = :preset"),
+        preset,
+    )
+    for table in (
+        "preset_requirement",
+        "preset_transition",
+        "preset_field",
+        "preset_rubric",
+        "preset_template",
+        "preset_stage",
+        "preset_version",
+    ):
+        connection.execute(
+            text(
+                f"DELETE FROM leads.{table} WHERE preset_id = :preset AND version = 3"
+            ),
+            preset,
+        )
+    # Only versions 0021 made: a mapping written whole at version 3 by current
+    # code has no version 2 to go back to.
+    added = connection.execute(
+        text(
+            "SELECT r.mapping_id, r.version FROM leads.field_mapping_rule r "
+            "WHERE r.target = 'ext.jobsearch.stated_price_min' AND EXISTS ("
+            "SELECT 1 FROM leads.field_mapping m "
+            "WHERE m.id = r.mapping_id AND m.version = r.version - 1)"
+        )
+    ).all()
+    for mapping_id, version in added:
+        keys = {"mapping": mapping_id, "version": version}
+        connection.execute(
+            text(
+                "UPDATE leads.intake_connection SET mapping_version = :version - 1 "
+                "WHERE mapping_id = :mapping AND mapping_version = :version"
+            ),
+            keys,
+        )
+        for table, column in (
+            ("field_mapping_rule", "mapping_id"),
+            ("field_mapping_identity", "mapping_id"),
+            ("field_mapping", "id"),
+        ):
+            connection.execute(
+                text(
+                    f"DELETE FROM leads.{table} "
+                    f"WHERE {column} = :mapping AND version = :version"
+                ),
+                keys,
+            )
+
+
 def _undo_0018(connection: Any) -> None:
     """Back to the Job search preset's version 1 and each job mapping's previous
     version: what 0018 added is removed, and what it moved is moved back."""
@@ -1409,6 +1668,10 @@ def _undo_0005(connection: Any) -> None:
 # Newest first. Each step undoes one frozen Leads migration on a disposable
 # workspace that started at head, so a test can rebuild an exact predecessor.
 LEADS_REVISIONS = (
+    ("0023_saved_jobs", _undo_0023),
+    ("0022_reopen_closed_jobs", _undo_0022),
+    ("0021_stated_price", _undo_0021),
+    ("0020_current_handoff", _undo_0020),
     ("0018_invited_jobs", _undo_0018),
     ("0017_proposal_separate_answers", _undo_0017),
     ("0016_jobfeed_runs", _undo_0016),
@@ -1480,9 +1743,16 @@ def test_jobsearch_preset_is_refused_until_the_capability_is_on(
             .scalars()
             .all()
         )
-    # Version 1 (16 fields) and version 2 (the same plus ``invited``, from 0018).
-    assert "ext.jobsearch.posting_id" in fields and len(fields) == 16 + 17
-    assert fields.count("ext.jobsearch.invited") == 1
+    # Version 1 (16 fields), version 2 (the same plus ``invited``, from 0018) and
+    # version 3 (plus the three stated-price fields, from 0021), version 4 (the
+    # same as 3, with the reopen moves, from 0022) and version 5 (plus ``saved``,
+    # from 0023).
+    assert (
+        "ext.jobsearch.posting_id" in fields and len(fields) == 16 + 17 + 20 + 20 + 21
+    )
+    assert fields.count("ext.jobsearch.invited") == 4
+    assert fields.count("ext.jobsearch.stated_price_unit") == 3
+    assert fields.count("ext.jobsearch.saved") == 1
 
     ok(intake, "core.settings.set", key="leads.capabilities.jobsearch", value=False)
     again = intake.call("leads.pipeline.create", name="Another", preset="job_search")
@@ -1648,6 +1918,10 @@ def test_attach_by_field_survives_frozen_upgrade(intake: Intake) -> None:
     setup(intake)
     with open_unit_of_work(intake.ctx) as uow:
         assert rewind_leads(uow.connection, "0007_jobsearch_preset") == (
+            "0023_saved_jobs",
+            "0022_reopen_closed_jobs",
+            "0021_stated_price",
+            "0020_current_handoff",
             "0018_invited_jobs",
             "0017_proposal_separate_answers",
             "0016_jobfeed_runs",

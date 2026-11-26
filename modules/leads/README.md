@@ -23,7 +23,9 @@ ordinary source text is evidence and never an instruction or permission grant.
 The opportunity pins its preset version and stable stage ID. Display labels can change
 without changing that version's transition rules or terminal outcome. Preset edits
 publish a new immutable version; migration is an explicit revision-checked operation
-on one opportunity with a stage map. Removed extension fields remain readable and
+on one opportunity with a stage map. A terminal stage may have moves back to an open
+stage (a reopen), never to another terminal stage. Reopening is an ordinary transition:
+it clears the disposition and is audited and revision-checked like any other move. Removed extension fields remain readable and
 exportable as orphaned fields. User edits, stages and notes survive new intake. Source
 fields retain their winning observation and are deterministically re-derived from the
 linked set; see [field derivation](../../docs/architecture/intake-and-events.md#field-derivation-fr-37).
@@ -45,15 +47,70 @@ a person's judgment and reviewing prior assessments.
 
 Drafts are internal records. A handoff
 stores a bounded snapshot and idempotency binding to its exact body, destination and
-purpose; without a destination it records `unavailable`, creates no external effect and
-does not change the opportunity's disposition.
+purpose, and never changes the opportunity's stage or disposition. It needs a
+qualification: `leads.handoff.request` refuses `qualification_required` until the
+opportunity has one, records the latest one's ref in the snapshot, and records
+whether that qualification's evidence digest is stale. Stale is a warning only, and
+no score threshold applies. Without a destination it records `unavailable` with
+`no_destination` and creates no external effect.
+
+### Handing off to Current
+
+With `destination_ref` `current`, the payload is the item's `title`, `body`,
+`priority`, `area` and `due_on`; it may not name `destination_ref`, `source_ref` or
+`idempotency_key`, which Leads sets. In the same transaction as the handoff, Leads
+stages core's KEYED `current.item.create_external` under the requesting person's own
+context, so a person must approve it in the shell before Current creates anything.
+The core key of attempt *n* is `<handoff-ref>#<n>`, and Current's `source_ref` is the
+handoff ref on every attempt. The same idempotency key with the same request returns
+the same handoff, after copying core's outcome through `core.external_action.get`, so
+a lost response never stages twice; a changed payload, destination or purpose under a
+used key refuses `idempotency_key_reused`. A service context cannot stage.
+
+Current is optional. When it is absent, disabled, not ready or its destination is
+unavailable, the handoff is still recorded, as `unavailable` with
+`destination_unavailable`, and has no action, approval, job or effect.
+
+`leads.handoff.restage` stages the same handoff again under a new approval, with the
+attempt count the caller last read. Only four cases may restage: a request-time
+`destination_unavailable`, a core refusal `destination_unavailable_no_effect`, and a
+`failed` action (an exhausted `retryable_no_effect`, or a person's resolution to
+failed, both proven to have had no effect). Pending, succeeded, permanently refused,
+cancelled and unresolved handoffs refuse `handoff_not_restageable`; an effect whose
+outcome is unknown is unresolved and never restages. Each restage raises the attempt
+count and derives the next core key. `leads.handoff.list` pages an opportunity's
+handoffs, newest first, with their approval and action ids, item result, typed result
+detail and project projection; it never returns the payload or snapshot, and model
+views of `leads_get_handoff` withhold the snapshot.
+
+Leads keeps a minimal projection of Current's lasting source link on the handoff: the
+live project ref, the last project ref, the project state (`never_assigned`, `linked`,
+`cleared`, `deleted`) and the link revision. It never stores the item's state, Current
+content or availability. The `current.source_item_link.changed` consumer and the
+bounded `leads.current_links.reconcile` job copy only a strictly newer revision. The
+job, which the first staged handoff schedules every 15 minutes, runs two scans with
+one durable cursor each: pending handoffs, and unresolved ones whose core action still
+exists, read `core.external_action.get` first and reach `current.item.link_state`
+only after a proven success, so a person's later `core.operation.resolve` reaches
+Leads (a resolution to failed records `resolved_no_effect` and may restage), and
+succeeded handoffs read only `current.item.link_state`, so missed or reordered events and later
+assignments, moves, clears, item deletions and project deletions are repaired. Each
+scan pages strictly after its stored `(requested_at, id)` key, advances past every row
+it examined and wraps at the end. When Current is absent, disabled, denies the read
+or is not ready, the projection is kept as it was. The job runs as a restricted
+service context naming only those two reads, and Leads never imports Current or
+reads its tables.
+
+The synthetic acceptance fixtures and disposable review stack for this journey are
+described in [the acceptance stack](../../docs/testing/leads-current-acceptance.md).
+They prepare a manual browser review and do not claim that it has passed.
 
 Permission records are explicit and scoped by party, purpose and channel. Withdrawal
 and suppression deny subsequent permission checks. Recallatron's existing eligibility
 check consumes the registered permission operation when installed. `ContactPermissionGuard`
 rechecks permission under the lifecycle lock at execution; a test-only recording sink
-proves a held action cannot execute after withdrawal. No production destination or
-external-action operation is registered in this slice.
+proves a held action cannot execute after withdrawal. Leads registers no destination
+or external-action operation of its own; its one external route is Current's.
 
 Observation and opportunity erasure require owner approval through core. Deleting an
 observation clears its intake payload/conflict bodies, retains a delivery tombstone,
@@ -68,19 +125,30 @@ uses canonical references and Recallatron's own deletion rules; unrelated memori
 survive and any participant failure rolls back the transaction. Leads also works in
 workspaces where Recallatron was never installed.
 
-Export format seven covers the owned tables, including dated follow-up history,
-each assessment's evidence digest and the job feed's connection status, posting
-dedupe rows and account choices. It never carries the job feed's token reference,
-registered client, run claim, backoff or pending authorization: a restored collector
-reads "authorization required", has no schedule, and registers a fresh client when the
-owner reconnects. Older-format archives require a matching older
-host for restore; the core refuses format mismatches. Take a full database backup
-before upgrading from a previous Leads schema; rollback means restoring that backup
-with the previous image, not downgrading the additive 0005_followup_reminders or
+The Leads export (format fifteen, declared in the manifest) covers the owned tables,
+including dated follow-up history, each assessment's evidence digest and the job feed's
+connection status, posting dedupe rows and account choices. It never carries the job
+feed's token reference, registered client, run claim, backoff or pending authorization:
+a restored collector reads "authorization required", has no schedule, and registers a
+fresh client when the owner reconnects. Older-format archives require a matching older
+host for restore; the core refuses format mismatches. The schema head is
+`0021_stated_price`, after `0020_current_handoff`, which follows `0018_invited_jobs`
+directly. Take a full database
+backup before upgrading from a previous Leads schema; rollback means restoring that
+backup with the previous image, not downgrading the additive 0005_followup_reminders or
 0006_assessment_evidence_digest migrations. Restore preserves source identities,
 replaces only a fresh seed and strips deployment-local signing handles. The populated
-round-trip test also exercises Relationships through the real archive format. Signed website intake is available as described below. Import runners, email adapters,
-live source activation and the first external handoff destination remain separate work.
+round-trip test also exercises Relationships through the real archive format. Signed
+website intake is available as described below. Import runners, email adapters and live
+source activation remain separate work.
+
+Format fourteen added each handoff's attempt count, its Current project
+projection and the qualification its request was made against. A workspace export
+carries no core external action, so a handoff that was still pending restores as
+`unresolved` with `restored_unresolved`: nothing can prove whether its item was made,
+the repair job leaves it alone and it never restages; a new intent needs a new
+handoff. The repair scans' cursors are not exported; a restore that brings handoffs
+to Current turns the repair schedule on, so its successful handoffs are revisited.
 
 ## Job-search capability
 
@@ -116,17 +184,33 @@ can replace those three with their own list, keyword searches included, through 
 workspace setting `leads.jobfeed.presets` (see the deployment guide's
 [settings](../../deploy/README.md#settings) for its shape and bounds). A posting
 with 50 or fewer proposals that you have not applied to is a discovery: the collector
-reads its full description and delivers it, and routing either attaches it to the
+reads its full description and delivers it (once: a posting whose description is
+already stored is not read again, since the job service allows each account only so
+many detail reads a day, about 400 in November 2026), and routing either attaches it to the
 opportunity that already holds that posting id or creates a new one. A posting no
 opportunity tracks is otherwise skipped. Each run also lists the jobs clients have
 invited you to: an invited job is always read and delivered, whatever its
 competition, and its `ext.jobsearch.invited` field is set, so the queue tags it
 Invited and scoring never holds it back on the client filters: it is scored like a
 job that passed, and the filters it would have failed are kept on its assessment as
-conditions to check. A tracked posting is delivered again only
+conditions to check. Each run also lists the jobs you saved on Upwork (up to 50): a
+saved job the collector has not delivered before is read in full and delivered
+whatever its competition, and its `ext.jobsearch.saved` field is set, so the queue
+tags it Saved and scoring treats it like an invited job. A saved job already
+delivered is only refreshed, so a run does not read every saved job again, and a
+job you unsave on Upwork gets `ext.jobsearch.saved = false` on the next run. The
+**Sync saved jobs** button on Leads > Scoring > Job feed (owner only,
+`leads.jobfeed.collect_now`) makes the next run due now instead of at the next
+two-hour slot; it is refused while the feed waits out a provider backoff and within
+10 minutes of the last run. A tracked posting is delivered again only
 when one of its fields changed, so its proposal count, budget and client record stay
 current. Collected values fill the `ext.jobsearch.*` fields; no person or organization
-is created. Postings arrive through intake like any other source, so receipts,
+is created. When the feed gives no budget, the collector reads a price the description
+states ("$3 per project", "$25-40/hr", "$500 fixed") into
+`ext.jobsearch.stated_price_min`, `stated_price_max` and `stated_price_unit` (`hour`,
+`total` or `item`), never into the budget fields, so an hourly rate, a project total
+and a per-item price stay apart. Only money marked as money counts; a description
+that names no amount stores none. Pasted jobs get the same reading. Postings arrive through intake like any other source, so receipts,
 observations and processing work as described above.
 
 **Connections.** Open **Connections** in Leads. Before a connection exists, the Job
@@ -172,12 +256,39 @@ and while job search is turned off: the Job feed card then says collection is pa
 and offers **Revoke access** and nothing else.
 The card keeps showing the earlier state until you reload the page.
 
+**Undo and reopen.** Migration `0022_reopen_closed_jobs` gives the Job search preset
+moves from passed and lost back to every open stage that can close into them (passed
+to review and qualified; lost to review, qualified, applied and interviewing), so an
+undo returns a job to the stage it left. Hired stays final. After Dismiss, the
+queue card's place shows a one-line **Undo**, and a dismiss on the job page returns to
+the queue with the same Undo at the top. Later, a passed or lost job is found with the
+queue's **Show** filter set to Passed, Lost or All stages, and its card and page offer
+**Reopen** in place of the stage select. `leads.ui.queue` carries the way back: each
+item's `dismiss` names its `undo` stage (the stage it was dismissed from when the
+preset allows that move, else the first open one), and a closed item's `transitions`
+list its reopen moves; Reopen takes the first. A reopen brings back the follow-up the
+dismiss cancelled, with its action and due date; a follow-up cancelled by an earlier
+close stays cancelled.
+
 **Close versus erase.** Closing an opportunity (moving it to hired, lost or passed)
 keeps the posting attached: later sightings refresh the closed opportunity and never
 open a new one. Erasing it removes the collector's memory of that posting, so a later
 sighting is collected again and, if the posting still qualifies as a discovery, creates
 a new opportunity. Erasing only an observation also removes that memory; the next
 sighting is delivered again and refreshes the opportunity that still tracks it.
+
+**Pasting jobs.** Without a feed, or for a job the feed did not return, an owner or member
+can paste instead. `leads.jobfeed.paste` takes a Job search pipeline, a `kind` and the
+pasted `content`: `search_page` for a copied search-results page (its HTML), or `posting`
+for one full posting's copied text with its `posting_url`. The job queue's **Paste jobs**
+and the job page's **Paste the full posting** call it. Each job is keyed by the posting id
+in its link on a configured job host (`leads.jobfeed.job_hosts`); one without that id is
+skipped and counted. Pasted jobs go through intake on the pipeline's own job paste
+connection, created on first use, and route like the feed: they attach to the opportunity
+that already holds that posting id, else create one. A search tile is only a snippet and
+never becomes the description; only a full posting supplies one. Pasting identical content
+again counts a duplicate and records nothing new. The operation refuses
+`capability_disabled` while job search is off.
 
 ## Job scoring
 
@@ -202,6 +313,31 @@ value never fails a clause, a rating of 0 (no rating yet) is unknown, and so is 
 failing clauses as its reasons, and no score. Unknown payment is a condition to
 confirm, not a failure.
 
+**Optional Jev pre-filter** runs after tier 1 and before tier 2, once a full
+posting exists. It is off by default and needs both deployment enablement
+(`runtime.jev.enabled`) and an explicit workspace opt-in (`leads.scoring.prefilter_enabled`
+set to true). It sends the posting, candidate evidence and scoring
+policy to TypeSafe System One for typed judgments. Code combines those judgments
+into a preliminary estimate; only a confident estimate below the workspace threshold
+(`leads.scoring.prefilter_threshold`, 1 to 100, default 50) holds the job. Equality
+passes. Low-confidence experience judgments
+pass unless a separate clear exclusion, unmet mandatory requirement or goal mismatch
+already holds the job. Missing price alone never counts as poor economics.
+
+A Jev hold has **no final score** and appears in Review queue with a Jev badge,
+its estimate, threshold and reason. The qualification records the resolved Jev model,
+question/configuration versions and profile version. Invited and promoted jobs bypass
+Jev. A provider failure (including missing credentials, malformed output, oversized
+input, rate limits or timeout) falls through to tier 2 in the same attempt. Jev gets
+one bounded call, at most 30 seconds, with cancellation heartbeats and no tools.
+
+Disabling either gate, changing the threshold or configured model, or changing the
+profile reconsiders held jobs on the next sweep. An unchanged hold is not called again.
+Existing final scores are not replaced. This portable gate follows the workspace's
+policy; it does not ship personal rates, occupations or exclusions. Its estimates are
+heuristics, not calibrated final scores or a guarantee of savings/recall. Review held
+jobs when choosing a threshold. See [Jev setup](../../runtimes/README.md#jev-typed-judgments).
+
 **Tier 2** asks the model, through the `claude_cli` runtime with no tools, to judge
 the posting against the profile under a fixed response contract: it picks candidate
 evidence, numbered excerpts of the posting, recorded experience boundaries and fixed
@@ -221,6 +357,15 @@ status changes, or when its proposal count, spend, rating, reviews or hire rate 
 into another bracket; a profile change does not rescore jobs that already have a score.
 `leads.scoring.model_id` picks the model (empty uses the CLI's default).
 
+**Too old to score.** A job still waiting `leads.scoring.max_age_hours` (default 24)
+after it was imported is set aside without a model call: its scoring state is
+`failed` with the word `too_old`, and no assessment is written. This keeps a sweep
+that resumes after a long pause, such as the usage limit, on the recent jobs instead
+of the whole backlog. A job that already had a score keeps it. A job the owner
+promoted, one the client invited the owner to, and one that was waiting for its full
+posting (so a posting pasted days later still gets it scored) are never too old. Setting the profile and
+re-queueing failed jobs both leave these jobs aside. `0` turns the cutoff off.
+
 **Failures.** A failure of the model login or the deployment (a usage limit, an
 expired or refused login, a missing executable, a crashed or timed-out run) makes
 every waiting job wait 15 minutes without spending an attempt. A failure about the job
@@ -233,7 +378,7 @@ jobs and every job without a score yet, so changed thresholds apply to held jobs
 projects and quote the recorded experience boundaries they cite, and those reasons
 sit on the job's qualification record, which every workspace member can read.
 
-**The review queue.** Leads > Review queue lists the open Job search jobs tier 1 holds
+**The review queue.** Leads > Review queue lists the open Job search jobs tier 1 or Jev holds
 back, newest first, each with a badge for every clause that held it (unverified
 payment, client spend, rating, hire rate, too many proposals), decided again against
 the current profile. `leads.ui.queue` with `held_only` is its read; each item carries
@@ -250,16 +395,18 @@ are. A status line says whether a model call is running (and for which job and h
 long), whether every waiting job is paused on the usage limit and until when, or that
 scoring is idle, off, or waiting for a profile. Below it: how many jobs are queued, an
 upper bound on the time to clear (the median recent scoring call for each queued job),
-how many wait out a backoff, and how many failed (an owner can put failed open jobs back
-in line with `leads.jobscoring.retry_failed`). The Queue tab lists Job search jobs from
+how many wait out a backoff (an owner can end the wait with
+`leads.jobscoring.retry_waiting`, which keeps each job's attempts; if the limit still
+holds, the next call simply defers again), and how many failed (an owner can put failed
+open jobs back in line with `leads.jobscoring.retry_failed`). The Queue tab lists Job search jobs from
 the last 48 hours grouped into imports, each with its stage: queued with its position
 (newest first, as the sweep claims them), scoring now, scored with its score, retrying,
 paused, needs the full posting, failed, or held by the filters (folded away, with a link
 to the review queue). The Model calls tab is the call log: every model call Leads makes
-(`leads.model_call`, written around each one-shot run) with its purpose, model, input
+(`leads.model_call`, written around each inference call) with its purpose, model, input
 and output tokens, time and outcome, plus a seven-day summary by purpose and model.
-Tokens and time only: the calls run on a subscription login, so the adapter's cost
-figure is never stored. No task, answer or posting text is kept; rows older than 90 days
+Tokens and time only: no provider cost figure is stored. Claude calls use the
+subscription login; Jev uses a metered API billed by TypeSafe. No task, answer or posting text is kept; rows older than 90 days
 are deleted as new calls start; the log is not exported; and a deleted job leaves its
 rows without the link. `leads.ui.scoring` is the view's single read. The page reloads
 itself every 15 seconds while scoring is moving (a call running, or queued jobs with a
@@ -382,6 +529,13 @@ apply. Stale revisions cannot overwrite a newer reminder. Moving to a terminal
 stage cancels the pending reminder; closed opportunities refuse scheduling.
 Later source evidence leaves the user-selected reminder unchanged.
 
+A workspace can give every inquiry a first follow-up without anyone scheduling it:
+set `leads.intake.followup_business_days` (0 to 30, default 0, which schedules none)
+with `core.settings.set`. When routing creates a new opportunity, it schedules
+"Reply to the inquiry" due that many working days (Monday to Friday) after the UTC
+date rheoStream received the inquiry. Job search pipelines never get one, and a later
+observation that attaches to an existing opportunity leaves its follow-up alone.
+
 Pass `followup_due_by` to `leads_list` / `leads_search` for pending reminders due
 on or before that date, ordered by due date then stable opportunity creation/ID.
 The list and board expose the same cutoff and preserve it through pagination.
@@ -397,6 +551,19 @@ and note detail, allowed stage changes, qualification, dated follow-ups, saved d
 and processing receipts. The main navigation has one entry per module; list, pipeline,
 capture and connection controls stay inside Leads. Board counts describe the current page,
 not the entire pipeline. Drafts never send a message.
+
+The Leads home (`/`) is the job queue: pipeline, stage and sort choices (Score or Newest),
+then one card per opportunity with its badges (Invited, New client, Draft, Notes), score,
+stage select, open-posting link, Copy job ID and Dismiss. With a Job search pipeline it
+opens on that pipeline's first open stage; otherwise on open stages of all pipelines. The
+other routes are `/review` (the review queue), `/scoring` (the Scoring view),
+`/opportunities` (the list), `/board`, `/detail`, `/capture`, `/receipt` and
+`/connections`. A Job search job's detail page has Posting, Questions, Proposal and Pricing
+tabs, with notes and follow-up below them and edits in dialogs. Jobs show and link by a
+short ID: the last 8 hex characters of the opportunity's UUID (its random part), longer only
+when two opportunities share a tail. Every opportunity reference input, MCP tools included,
+takes the full reference, a typed `leads.opportunity:<tail>` or a bare tail, and refuses an
+ambiguous tail rather than guessing.
 
 In a workspace where an owner has installed and enabled Relationships and Leads:
 
@@ -419,7 +586,8 @@ remain readable and require the operation API. Routing edits include the ordered
 so a stale form cannot overwrite newer configuration. Opportunity edits use record revisions.
 
 Appearance, in the header's settings menu, offers GreenStream dark (default), Novadiem dark
-and Novadiem light. A cookie on the deployment's base host remembers the selection for every
+and Novadiem light, plus a time zone: Automatic (the browser's) or a fixed zone. Leads shows
+times in that zone. A cookie on the deployment's base host remembers each choice for every
 module host. All three use Geist; the Novadiem pair shares its corner geometry, and
 confirmation chrome stays identical across all themes.
 
@@ -436,6 +604,16 @@ been demonstrated.
 Agents can submit the same flat inquiry facts through `leads_capture`, keeping
 original text in `body.message`. To add only a person or organization, use
 `relationships_create_contact` instead; contact creation is independent of Leads.
+
+An agent that reads the same source more than once (a mailbox scan that rereads a
+window) passes its own `source_event_id`, such as the mail message id. A repeat id
+records nothing and returns `outcome` `duplicate` with the first capture's
+`receipt_ref`, even when the agent words the facts differently the second time.
+To fold later messages of one conversation into one opportunity, put the
+conversation's link in `source_url` and give the manual connection an
+`attach_by_field` rule on `source_url` ahead of its create rule. Unverified email
+never links two captures to the same person, so `attach_to_open_opportunity` does
+not fold captured mail.
 Website and email adapters call intake directly and do not require an agent runtime;
 those transports are not implemented by the paste UI.
 

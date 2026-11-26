@@ -94,7 +94,7 @@ host's cookie at once because every host's secret resolves to the one revoked se
 | Format | `rheo_<kind>_<43 base64url chars>`: 256 random bits from a CSPRNG. Only the SHA-256 is stored (`access_token.token_hash`). |
 | Scope | Exactly one account, one workspace, one operation set. The operation set is **snapshotted at issuance** into `control.access_token_operation`, one row per permitted operation name, and nothing widens it later; a new scope is a new token. The snapshot is expanded from a named package set ([below](#the-named-package-operation-sets)) or, for a run-scoped token, from an explicit list. |
 | Kinds | `cli` (a person's command-line token), `mcp` (a person's token for an MCP client), `runtime` (the run-scoped token the core issues for one model run, [runtime](runtime-and-mcp.md#the-run-scoped-token)). `access_token.kind` holds the value; `issued_from` records the issuing authority (`session`, `operator`, `runtime`, `connector`). |
-| Issuance | From one of four issuing authorities. Three go through `core.token.issue`: an authenticated web session (the account issuing for itself in a workspace it belongs to); the operator command on a headless install (`rheo token issue --account <id> --workspace <id> --set <name> --kind <cli\|mcp>`, against the control plane); or the core's `runtime` package, on behalf of the actor that started a run. The fourth, `connector`, is the OAuth code exchange of [connector sign-in](#connector-sign-in-oauth-for-mcp-clients): it mints an `mcp` token through `issue_connector_token` inside the exchange's own transaction, never through an operation, and only after the account approved it on the consent page. The value is shown once, or handed to the adapter or the connector once. No token can issue a token: `core.token.issue` is itself non-token-issuable (below), and the connector exchange takes no bearer. |
+| Issuance | From one of four issuing authorities. Three go through `core.token.issue`: an authenticated web session (the account issuing for itself in a workspace it belongs to); the operator command on a headless install (`rheo token issue --account <id> --workspace <id> --set <name> --kind <cli\|mcp>`, against the control plane); or the core's `runtime` package, on behalf of the actor that started a run. The fourth, `connector`, is the OAuth code exchange of [connector sign-in](#connector-sign-in-oauth-for-mcp-clients): it mints an `mcp` token through `issue_connector_token` inside the exchange's own transaction, never through an operation, and only after the account approved it on the consent page. The value is shown once, or handed to the adapter or the connector once. No token can issue a token: `core.token.issue` is itself non-token-issuable (below), and the connector exchange takes no bearer. A local bridge's token is minted outside `core.token.issue` too, by `core.evidence_enrollment.create` or `.rotate` (`rheo evidence enroll` and `rotate` for the operator): a `cli` token whose snapshot is exactly `core.evidence.ingest`, issued from a session or the operator ([the local bridge](runtime-and-mcp.md#the-local-claude-code-bridge)). |
 | Lifetime | `cli` default 90 days, `mcp` default 30 days (`identity.token_max_days.cli` and `identity.token_max_days.mcp`, floor `min`), `runtime` the run's deadline. A `connector` token's value lives `identity.oauth.access_token_minutes` (default 60) and is rotated in place on the same row at every refresh, so its id never changes; the grant behind it ends at `min(identity.oauth.grant_days, identity.token_max_days.mcp)` days (default 30) after issuance, and no refresh outlives that end. |
 | Presentation | `Authorization: Bearer` on the `api` and `mcp` surfaces, each accepting the kinds made for it: the `api` surface accepts `cli` only; the `mcp` surface accepts `mcp` and `runtime`. An `mcp` token on the `api` surface is `token_wrong_kind` (issue #130): it is a model's credential, and over HTTP it would receive an operation's raw output past the tool facade's redaction, so a `cli` token is the HTTP credential. Neither surface reads a cookie, and a session secret presented as a bearer value is `token_malformed` because it matches no token row. A person's `cli` token is refused on the `mcp` surface as `token_wrong_kind`, so a person's command-line credential handed to an MCP client is refused by kind before its scope is even read. No browser flow is ever involved after issuance. |
 | Refusal | Malformed, wrong kind for the surface, expired, revoked, scope-invalid, carrying an unusable stored purpose, and out-of-scope each return a distinct state (`token_malformed`, `token_wrong_kind`, `token_expired`, `token_revoked`, `token_scope_invalid`, `token_purpose_invalid`, `operation_not_permitted`) at the boundary, before any service runs, with no partial effect (criterion 9). `token_scope_invalid` is returned when a presented token's snapshot contains a non-token-issuable operation; it can only arise from a row written outside `core.token.issue`, and the boundary checks it anyway so that the rule below is enforced at both ends. |
@@ -104,9 +104,13 @@ host's cookie at once because every host's secret resolves to the one revoked se
 
 **The non-token-issuable set.** One rule, enforced by `core.token.issue` on every issuance
 whatever the kind and whoever the issuer: the operations that grant, waive, or exercise the right
-to let an effect proceed never appear in a token's snapshot. In release one that set is
-`core.approval.approve`, `core.approval.refuse`, `core.standing_grant.create`,
-`core.standing_grant.revoke`, `core.token.issue`, and `core.token.revoke`. An issuance whose
+to let an effect proceed never appear in a token's snapshot. The set is ten names
+(`rheo_core.tokens.policy.NON_TOKEN_ISSUABLE`): `core.approval.approve`, `core.approval.refuse`,
+`core.approval.preview` (it shows the whole held payload a person is about to approve, which no
+model may read), `core.operation.resolve` (the act that settles an unresolved external action),
+`core.standing_grant.create`, `core.standing_grant.revoke`, `core.token.issue`,
+`core.token.revoke`, and `core.evidence_enrollment.create` and `.rotate`, which each mint a
+local bridge's token. An issuance whose
 expanded set contains one of them is refused with `set_not_issuable` naming the operation, and
 `token_scope_invalid` at presentation is the same check from the other end. The consequence is
 that approval is an act of a web session (and, in phase six, of a channel confirmation by an
@@ -133,8 +137,8 @@ rechecked from `control.membership` at every presentation):
 | Issuing authority | Its permitted set | What `core.token.issue` does |
 | --- | --- | --- |
 | A web session | Every operation whose declared roles include the account's role in the target workspace. | Expands the named package set against the registry, intersects with that set, strips the non-token-issuable set, refuses `set_empty` if nothing remains, and snapshots the rest. A member's `cli_full` is therefore the member's full set, not the owner's. |
-| The operator command | The package sets, for the target account. | May name only a package set (never an explicit list); expands it, intersects with the operations the target account's role permits, strips the non-token-issuable set, and snapshots. `--discover` adds `core.tool.call` to the expansion ([discover-then-call](runtime-and-mcp.md#discover-then-call)). |
-| The core's `runtime` package, for a run | The permitted set of the actor that started the run: that actor's own token snapshot when it is a token, or the role-permitted set when it is an account. | Takes the explicit list of operations the run's permitted tools name, intersects with that set, strips the non-token-issuable set, and snapshots; a run can therefore never reach past the person or token that started it, however the operation's tool needs are declared. |
+| The operator command | The package sets, plus the `read` operations of every `explicit_only` module (so `module_read:<module_id>` can be issued), for the target account. | May name only a package set (never an explicit list); expands it, intersects with the operations the target account's role permits, strips the non-token-issuable set, and snapshots. `--discover` adds `core.tool.call` to the expansion ([discover-then-call](runtime-and-mcp.md#discover-then-call)). |
+| The core's `runtime` package, for a run | The permitted set of the actor that started the run: that actor's own token's effective scope when it is a token, or the role-permitted set when it is an account. | Takes the explicit list of operations the run's permitted tools name, intersects with that set, strips the non-token-issuable set, and snapshots; a run therefore never starts with more than the person or token that started it could call, however the operation's tool needs are declared. The snapshot is fixed for the run's life: a run token is an explicit list, so it keeps those operations until the run ends even if the starting token later narrows (a module switching to `explicit_only`). |
 | A connector grant (`connector`) | The `agent_default` set, for the approving account's role in the workspace chosen on the consent page. | Not `core.token.issue`: `issue_connector_token` computes `(agent_default & role-permitted) - non-token-issuable - {core.tool.call}`, the bound an operator issuance of `agent_default` gets minus the discover grant, refuses `set_empty` if nothing remains, and snapshots it once with `set_name = agent_default`. A refresh never re-snapshots, so a later role change narrows it only through the role recheck at presentation. |
 
 ### The named package operation sets
@@ -148,8 +152,28 @@ registry at issuance the same way:
 | --- | --- | --- |
 | `read_only` | Every registered operation of class `read`. | Workspace status, operation reads, audit (owner), every module read. |
 | `agent_default` | Every operation named by a registered MCP tool ([tool set](runtime-and-mcp.md#the-mcp-facade)). | The reads, drafts, and mutates a tool exposes, plus the request right for the three deletion tools' `core.record.delete`; by construction no configuration, token, grant, or approval operation, because none has a tool. |
-| `cli_full` | Every registered operation except the non-token-issuable set. | Everything the account's role permits, including configuration operations for an owner, minus the six operations no token may carry. |
+| `cli_full` | Every registered operation except the non-token-issuable set. | Everything the account's role permits, including configuration operations for an owner, minus the ten operations no token may carry. |
 | `alert_writer` | Exactly `current.item.create` and `current.item.close_by_source`, enumerated on purpose so the set never grows when an operation is added. | The two Current writes an external alert writer needs (a probe, a guardrail, a form): open an item and close it by its source pair. Issued per writer as a `cli` token by the operator command. Empty when Current is not installed, so issuance refuses `set_empty`. |
+
+A module can opt out of all four. A manifest that declares `package_sets = "explicit_only"` has
+every one of its own operations subtracted from each set, so no rule-set issuance and no connector
+grant (which is `agent_default`) reaches those operations, whatever the module adds later. The
+opt-out covers the module's own operations only: core operations that act on any module's records,
+such as `core.record.delete`, `core.audit.list`, `core.workspace.export`, `core.operation.get` and
+`core.operation.list`, keep their own sets and roles, so a module that must stay out of them keeps
+its records out of their reach. The flag travels with each registered operation, so the sets never
+depend on the loader's manifest table.
+A stored snapshot is never rewritten, but a token issued from a named set (a connector grant
+included) is narrowed each time it is presented, losing every operation of whatever module is
+`explicit_only` at that moment, so switching a loaded `default` module over takes it out of those
+tokens at once; a `module_read:<module_id>` token and an explicit operation list keep exactly what
+they were issued. The one named set that reaches it is
+`module_read:<module_id>`: that module's `read` operations and nothing else, resolved only for a
+registered `explicit_only` module and refused `set_not_issuable` for any other.
+It is how the operator command, which takes only a set name, issues the opt-in
+(`rheo token issue --set module_read:<module_id> --kind mcp`); the operator's permitted set holds
+those reads for that reason, never the module's writes. A session issuer can still name the
+module's operations in an explicit list its role permits.
 
 None of the four contains `core.tool.call`, the discover-then-call grant: each rule subtracts it
 and `alert_writer` does not name it, so it reaches a snapshot only when an issuance asks for it
@@ -392,11 +416,32 @@ reverse proxy cannot strip what is sent to a different server. This specificatio
   implementation (criterion 22); login CSRF in path mode is covered by the OAuth `state` cookie
   ([the identity-provider boundary](#the-identity-provider-boundary-d6-fr-3)).
 - Logout on any host revokes the session row; every other host's secret now resolves to a
-  revoked session and its cookie is cleared on its next request.
+  revoked session.
+- A dead cookie (expired or revoked session) on an application host passes the web tier, which
+  only checks that a cookie is present, and gets the signed-out panel. Its sign-in link is
+  `GET /auth/restart?return=<this page>` on that same host, because a host-only cookie can only be
+  cleared from its own host: the route refuses a `return` naming any other host with
+  `invalid_return`, clears the cookie only if its session is dead, and redirects to the return
+  path, where the steps above run as for a request with no cookie. A live session that core refuses
+  because it can no longer open its workspace gets sign-out on that panel instead.
+
+**Preference cookies are the one exception to host-only, and they carry no authority.** The
+web tier keeps two per-browser display preferences in cookies of its own: the theme
+(`rheo_theme_site`, a built-in theme id, [theme contract](theme-contract.md#the-built-in-themes))
+and the viewer's time zone (`rheo_tz_site`, `auto:<IANA zone>` when it follows the browser and
+`set:<IANA zone>` when the viewer chose one in settings). Screens render on the server, so these
+are how a choice reaches it. Both are written only by shell server actions, `HttpOnly`,
+`SameSite=Lax`, one year. In subdomain mode they are set with `Domain=<base_host>` so a choice made
+on `circuit.` holds on every module host; that also sends them to the apex and the other hosts
+under the base, which is acceptable only because neither names an account, a session or a
+workspace and core never reads them. In path mode, and for a bare name or an IP address, they are
+host-only. An unknown theme id falls back to the default, and an unrecognised time zone is
+ignored.
 
 CSRF: the `/auth/*` POSTs check `Origin` against the routing configuration's host set and refuse
-`origin_not_allowed` otherwise; they are the only state-changing browser requests today, and any
-Next.js server action or route handler the web tier later adds for a state change does the same.
+`origin_not_allowed` otherwise; apart from `GET /auth/restart`, which needs no such check because
+it only forgets a cookie whose session is already dead, they are the only state-changing browser
+requests today, and any Next.js server action or route handler the web tier later adds for a state change does the same.
 The `api` and `mcp` surfaces accept no cookie, so they need no CSRF defence. CORS: no
 `Access-Control-Allow-Origin` is emitted anywhere; `api.cors_origins` (a deployment setting,
 empty) is reserved for a later second front end and is not declared yet. The first-party web tier
@@ -519,7 +564,7 @@ Recorded from the ratified requirements; each is configuration a self-hoster may
 | apex `rheo.stream` | Project and marketing page | Not the application. Never receives the session cookie. |
 | `circuit.rheo.stream` | The application shell and the workspace switcher | `web` |
 | `auth.rheo.stream` | Login, the OAuth callback, the session grant, and connector sign-in's `/auth/oauth/*` (register, authorize, consent, token) | `core` |
-| `leads.`, `current.`, `recall.`, `relationships.` | Module surfaces | `web` |
+| `leads.`, `current.`, `finance.`, `recall.`, `relationships.` | Module surfaces | `web` |
 | `api.rheo.stream` | HTTP API and intake | `core`, token auth |
 | `mcp.rheo.stream` | MCP facade, and connector sign-in's two OAuth metadata documents when it is configured | `core`, token auth; the metadata is public `GET` |
 | `docs.rheo.stream` | Documentation | Not the application. |
@@ -529,7 +574,7 @@ Recorded from the ratified requirements; each is configuration a self-hoster may
 
 **What the flagship serves today.** Run 0d deployed the reference instance with
 `deploy/compose.flagship.yaml` (PR #144). It routes `circuit.`, `auth.`, `recall.`, `leads.`,
-`current.`, `api.` and `mcp.`, plus the `recallatron.` and `app.` redirects. Relationships has no
+`current.`, `finance.`, `api.` and `mcp.`, plus the `recallatron.` and `app.` redirects. Relationships has no
 web surface, so `relationships.` is not routed; `docs.` is not configured either. A routed module
 host shows a module's screens only in a workspace that has installed and enabled that module. The
 apex serves the project page from elsewhere.

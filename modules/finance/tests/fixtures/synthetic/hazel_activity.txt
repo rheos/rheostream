@@ -1,0 +1,52 @@
+Hz account AB12CD34   2030.11.02 - 2030.11.29
+
+Hz Report 2 November 2030 until 29 November 2030
+Sample Holder
+PO Box 1
+Z0Z0Z0 Anytown ZZ
+Hz Balances (2030.11.02 - 2030.11.29)
+
+   Sumdolors Rsitametc   Sumdolors Rsitam   Sumdolo Rsitametc   Sumdolo Rsitam
+ CAD balances   11.16   0.00
+
+ USD balances   5.58   21.89
+
+   Page 1
+
+Hz account AB12CD34   2030.11.02 - 2030.11.29
+
+Hz Ledger CAD
+ Hz When   Hz What   Sumd \ Rsita   Hz Net   Hz Gross   Hz Fee
+
+   HZ LOAD
+ 2030.11.03   33.48   33.48   0.00
+   Hz Ref: 40001
+
+   HZ RATE
+ 2030.11.03   -44.64   -44.64   0.00
+   Hz Ref: 40002
+
+   Page 2
+
+Hz account AB12CD34   2030.11.02 - 2030.11.29
+
+Hz Ledger USD
+ Hz When   Hz What   Sumd \ Rsita   Hz Net   Hz Gross   Hz Fee
+
+   HZ RATE
+ 2030.11.03   32.13   32.13   0.00
+   Hz Ref: 40003
+
+   HZ PLAN
+   Sample Streaming Co
+ 2030.11.04   -37.71   -37.71   0.00
+   billing@streaming.example.test
+   Hz Ref: 40004
+
+   HZ INFLOW   Sample Client Inc.
+ 2030.11.20   21.89   22.32   -0.43
+   Hz Ref: 40005   client@example.test
+
+To sumdol a rsi-tconsectet or teturadip ipiscin, gelits ddoeiu modt ori idu remipsumd mdolor.
+
+   Page 3

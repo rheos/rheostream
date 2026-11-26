@@ -65,6 +65,7 @@ from harness.jobfeed import (
     rate_limited_tool,
     refresh_requests,
     rpc_result,
+    saved_row,
     serve,
     slow,
     tick,
@@ -112,6 +113,7 @@ from postgres.test_jobfeed_connect import (
     capability,
     file_of,
     member_context,
+    refused,
     run,
     secret_files,
 )
@@ -1026,7 +1028,11 @@ def test_a_tool_prefix_sends_the_prefixed_names_and_the_run_succeeds(
     names = tool_names(mcp)
     assert names[0] == "acme__list_accounts"
     assert names.count("acme__list_accounts") == 1
-    assert set(names[1:]) == {"acme__list_freelancer_proposals", "acme__find_jobs"}
+    assert set(names[1:]) == {
+        "acme__list_freelancer_proposals",
+        "acme__find_saved_jobs",
+        "acme__find_jobs",
+    }
     assert last_error(c) is None
     quietly_succeeded(c)
 
@@ -1761,7 +1767,9 @@ DEFAULT_SEARCHES = [
 ]
 """An empty feed: one page per default search, none claiming more."""
 INVITATIONS = "list_freelancer_proposals:invitations"
-COLLECTION = [INVITATIONS, *DEFAULT_SEARCHES]
+SAVED_LISTING = "find_saved_jobs:list"
+# The saved jobs, then the removed ones: one page each when none are saved.
+COLLECTION = [INVITATIONS, SAVED_LISTING, SAVED_LISTING, *DEFAULT_SEARCHES]
 """What a run collects with no invitations and an empty feed: the listing, then
 one page per default search."""
 
@@ -2219,6 +2227,7 @@ ALLOWED_CALLS = {
     ("notifications/initialized", None, None),
     ("tools/call", "list_accounts", None),
     ("tools/call", "list_freelancer_proposals", "invitations"),
+    ("tools/call", "find_saved_jobs", "list"),
     ("tools/call", "find_jobs", "smart_search"),
     ("tools/call", "find_jobs", "search"),
     ("tools/call", "find_jobs", "get"),
@@ -2419,7 +2428,12 @@ def test_a_default_run_collects_reads_delivers_and_reports_within_its_bounds(
 
     receipts = intake.count(t.delivery_receipt)
     observations = intake.count(t.observation)
+    reads_before = len(gets(mcp))
     collected(c, clock, hours=2)
+    # #377: every eligible posting's description is stored now, so none is read
+    # again, and nothing looks changed: the daily allowance of detail reads goes
+    # only on postings not seen before.
+    assert len(gets(mcp)) == reads_before
     assert counts(c) == {
         "fetched": 70,
         "imported": 0,
@@ -2428,7 +2442,7 @@ def test_a_default_run_collects_reads_delivers_and_reports_within_its_bounds(
         "filtered": 10,
         "skipped_untracked": 10,
         "errors": 0,
-        "detail_reads": 60,
+        "detail_reads": 0,
         "pages": 7,
     }
     assert intake.count(t.delivery_receipt) == receipts
@@ -2486,10 +2500,11 @@ def test_failed_and_omitted_details_downgrade_and_only_refresh_tracked_postings(
 ) -> None:
     """AC 34, AC 37, AC 40, AC 46, I17: the first run creates an opportunity only
     for the eligible posting whose detail read succeeded (not the applied, the
-    over-cap or the failed one). In the second, the tracked posting's detail
-    fails: its count still refreshes, its other fields and the stored description
-    stay, and nothing carries a description; an untracked posting whose detail
-    carried none creates nothing. Both runs complete as ``collection_partial``."""
+    over-cap or the failed one). In the second, the tracked posting is not read
+    again since its description is stored (#377): its count still refreshes, its
+    other fields and the stored description stay, and nothing carries a
+    description; an untracked posting whose detail carried none creates nothing.
+    Both runs complete as ``collection_partial``."""
     c = connected_collector(intake, served)
     mcp.feeds = {
         "best_match": [
@@ -2538,7 +2553,9 @@ def test_failed_and_omitted_details_downgrade_and_only_refresh_tracked_postings(
         "301": answer(503),
         "305": tool_result({"status": "ok", "data": {}}),
     }
+    reads_before = gets(mcp)
     collected(c, clock, hours=2)
+    assert gets(mcp)[len(reads_before) :] == ["305"]
     assert counts(c) == {
         "fetched": 2,
         "imported": 0,
@@ -2546,12 +2563,12 @@ def test_failed_and_omitted_details_downgrade_and_only_refresh_tracked_postings(
         "refreshed": 1,
         "filtered": 0,
         "skipped_untracked": 1,
-        "errors": 2,
-        "detail_reads": 2,
+        "errors": 1,
+        "detail_reads": 1,
         "pages": 3,
     }
     assert last_error(c) == "collection_partial"
-    assert runs(c)[0]["read_failures"] == {"unavailable": 1, "no_description": 1}
+    assert runs(c)[0]["read_failures"] == {"no_description": 1}
     assert len(runs(c)) == 2
     assert len(opportunities(intake, "~02301")) == 1
     assert opportunities(intake, "~02305") == []
@@ -3075,6 +3092,32 @@ def test_a_listed_invitation_becomes_an_invited_opportunity(
     quietly_succeeded(c)
 
 
+def test_a_job_delivered_without_its_description_is_read_again(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """#377: only a posting whose description is stored skips its read. An invited
+    job is delivered even when its read fails, so it is stored without one; the
+    next run reads it again, and this time its description is delivered."""
+    c = connected_collector(intake, served)
+    mcp.invitations = [invitation_row(821)]
+    mcp.feeds = {}
+    mcp.details = {"821": answer(503)}
+    collected(c, clock)
+    assert gets(mcp) == ["821"]
+    assert len(opportunities(intake, "~02821")) == 1
+    assert "description" not in bodies(c)[-1]
+    mcp.details = {}
+    collected(c, clock, hours=2)
+    assert gets(mcp) == ["821", "821"]
+    assert bodies(c)[-1]["description"] == FEED_DESCRIPTION
+    # Read once with its description stored, it is not read a third time.
+    collected(c, clock, hours=4)
+    assert gets(mcp) == ["821", "821"]
+
+
 def test_a_tracked_job_that_is_later_invited_is_refreshed_as_invited(
     intake: Intake,
     served: FakeAuthorizationServer,
@@ -3197,3 +3240,222 @@ def test_a_refused_credential_on_the_listing_is_terminal(
     run_at(c, clock)
     assert "find_jobs:smart_search" not in mcp.names()
     assert stored(c.owner).authorization_state == "authorization_required"
+
+
+# --- saved jobs (#594) ---------------------------------------------------------------
+
+SAVED = SAVED_LISTING
+COLLECT_NOW = "leads.jobfeed.collect_now"
+
+
+def saved_calls(mcp: FakeMcpServer) -> list[dict[str, Any]]:
+    """The params of every saved-jobs page request, in order."""
+    found = []
+    for request in mcp.requests:
+        arguments = arguments_of(request)
+        if arguments.get("action") == "list" and "followed" in dict(
+            arguments.get("params") or {}
+        ):
+            found.append(dict(arguments["params"]))
+    return found
+
+
+def test_a_saved_job_becomes_a_saved_opportunity_and_is_read_once(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """The saved listing comes after the invitations and before the searches. A
+    saved job not delivered before is read first and delivered whatever its
+    competition, flagged saved; on the next run it is only refreshed."""
+    c = connected_collector(intake, served)
+    mcp.saved = [saved_row(901)]
+    mcp.feeds = {"best_match": [[feed_row(902), feed_row(901, proposals=70)]]}
+    collected(c, clock)
+    names = mcp.names()
+    assert names.index(INVITATIONS) < names.index(SAVED)
+    assert names.index(SAVED) < names.index("find_jobs:smart_search")
+    assert [(p["offset"], p["followed"]) for p in saved_calls(mcp)] == [
+        (0, True),
+        (0, False),
+    ]
+    assert gets(mcp) == ["901", "902"]
+    assert len(opportunities(intake, "~02901")) == 1
+    assert states(intake, "~02901")["ext.jobsearch.saved"] == "true"
+    assert "ext.jobsearch.saved" not in states(intake, "~02902")
+    assert counts(c)["filtered"] == 0
+    assert last_error(c) is None
+
+    # The next run lists it again but never reads it again, and the search
+    # posting whose description is stored is not read again either (#377).
+    collected(c, clock, hours=2)
+    assert gets(mcp) == ["901", "902"]
+    assert len(opportunities(intake, "~02901")) == 1
+    quietly_succeeded(c, runs=2)
+
+
+def test_a_tracked_job_saved_later_is_flagged_and_unsaving_clears_it(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    c = connected_collector(intake, served)
+    mcp.feeds = {"best_match": [[feed_row(911)]]}
+    collected(c, clock)
+    assert "ext.jobsearch.saved" not in states(intake, "~02911")
+    mcp.feeds = {}
+    mcp.saved = [saved_row(911)]
+    collected(c, clock, hours=2)
+    assert len(opportunities(intake, "~02911")) == 1
+    assert states(intake, "~02911")["ext.jobsearch.saved"] == "true"
+    # Already delivered, so refreshed without a second detail read.
+    assert gets(mcp) == ["911"]
+    # Seen in a search without the listing, the flag stays.
+    mcp.saved = []
+    mcp.feeds = {"best_match": [[feed_row(911, tier="10 to 15")]]}
+    collected(c, clock, hours=4)
+    assert states(intake, "~02911")["ext.jobsearch.saved"] == "true"
+    # Unsaved on Upwork, the next run clears it.
+    mcp.feeds = {}
+    mcp.unsaved = [saved_row(911)]
+    collected(c, clock, hours=6)
+    assert states(intake, "~02911")["ext.jobsearch.saved"] == "false"
+    assert len(opportunities(intake, "~02911")) == 1
+    quietly_succeeded(c, runs=4)
+
+
+def test_an_unsaved_job_never_imports_an_untracked_posting(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    c = connected_collector(intake, served)
+    mcp.unsaved = [saved_row(921)]
+    collected(c, clock)
+    assert opportunities(intake, "~02921") == []
+    assert gets(mcp) == []
+    assert counts(c)["skipped_untracked"] == 1
+
+
+@pytest.mark.parametrize(
+    ("answer", "reason"),
+    [
+        (lambda r: httpx.Response(503), "saved:unavailable"),
+        (tool_result({"status": "ok", "data": {}}), "saved:protocol"),
+    ],
+)
+def test_a_failed_saved_listing_never_stops_collection(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+    answer: Responder,
+    reason: str,
+) -> None:
+    c = connected_collector(intake, served)
+    mcp.script[SAVED] = answer
+    mcp.feeds = {"best_match": [[feed_row(931)]]}
+    collected(c, clock)
+    assert len(opportunities(intake, "~02931")) == 1
+    (run,) = runs(c)
+    assert run["outcome"] == "partial"
+    # Both listings (saved and removed) failed.
+    assert run["read_failures"] == {reason: 2}
+
+
+def test_a_saved_job_is_delivered_even_when_every_search_failed(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    c = connected_collector(intake, served)
+    mcp.saved = [saved_row(941)]
+    for name in ("find_jobs:smart_search", "find_jobs:search"):
+        mcp.script[name] = lambda r: httpx.Response(503)
+    collected(c, clock)
+    assert states(intake, "~02941")["ext.jobsearch.saved"] == "true"
+    (run,) = runs(c)
+    assert run["read_failures"] == {"searches:unavailable": 3}
+
+
+def test_tracked_saved_jobs_do_not_stop_the_backoff_when_every_search_failed(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    """Saved jobs already tracked only refresh, and nearly every run lists some,
+    so they must not stand in for an invitation: a run whose every search failed
+    still backs off."""
+    c = connected_collector(intake, served)
+    mcp.saved = [saved_row(943)]
+    collected(c, clock)
+    assert states(intake, "~02943")["ext.jobsearch.saved"] == "true"
+    for name in ("find_jobs:smart_search", "find_jobs:search"):
+        mcp.script[name] = lambda r: httpx.Response(503)
+    collected(c, clock, hours=2)
+    after = stored(c.owner)
+    assert after.consecutive_failures == 1
+    assert after.not_before == clock.now() + TWO_HOURS
+
+
+def test_saved_jobs_past_ten_pages_wait_for_a_later_run(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    c = connected_collector(intake, served)
+    mcp.saved = [saved_row(9500 + n) for n in range(105)]
+    collected(c, clock)
+    assert [p["offset"] for p in saved_calls(mcp) if p["followed"]] == [
+        10 * page for page in range(10)
+    ]
+    (run,) = runs(c)
+    assert run["read_failures"].get("saved:more") == 1
+
+
+def test_collect_now_makes_the_next_run_due_and_guards_a_recent_run(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+    mcp: FakeMcpServer,
+) -> None:
+    c = connected_collector(intake, served)
+    collected(c, clock)
+    assert len(runs(c)) == 1
+
+    # Within ten minutes of the claim: refused, nothing changed.
+    clock.advance(5 * 60)
+    before = collect_schedule(c.owner)
+    refused(run(intake, owner_web(intake), COLLECT_NOW), "run_recent")
+    assert collect_schedule(c.owner) == before
+
+    # Later, but well inside the 60-minute claim window: due now, and it runs.
+    clock.advance(15 * 60)
+    mcp.saved = [saved_row(961)]
+    queued = run(intake, owner_web(intake), COLLECT_NOW)
+    assert queued.ok, queued
+    assert queued.result.due_at == clock.now()
+    assert collect_schedule(c.owner)["next_run_at"] == clock.now()
+    collected(c, clock)
+    assert len(runs(c)) == 2
+    assert states(intake, "~02961")["ext.jobsearch.saved"] == "true"
+
+
+def test_collect_now_is_refused_off_connection_and_during_a_backoff(
+    intake: Intake,
+    served: FakeAuthorizationServer,
+    clock: FakeClock,
+) -> None:
+    c = connected_collector(intake, served)
+    set_connection(c.owner, not_before=clock.now() + timedelta(hours=1))
+    refused(run(intake, owner_web(intake), COLLECT_NOW), "backing_off")
+    set_connection(
+        c.owner, not_before=None, authorization_state="authorization_required"
+    )
+    refused(run(intake, owner_web(intake), COLLECT_NOW), "not_connected")

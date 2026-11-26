@@ -223,7 +223,16 @@ def _fill_seed(path: Path, *, marker: str = "seed-login") -> Path:
     return path
 
 
-def drain_until_terminal(handle: object, *, timeout: float = 2.0) -> object:
+# How long a helper waits for the stub to reach its terminal event. The stubs answer in
+# milliseconds and the helpers return as soon as they do, so a generous bound costs a
+# passing test nothing; a 2 s bound failed under load (#512). ``poll`` itself blocks up
+# to ``POLL_WAIT_SECONDS`` between events, so the loops do not spin.
+TERMINAL_WAIT_SECONDS = 30.0
+
+
+def drain_until_terminal(
+    handle: object, *, timeout: float = TERMINAL_WAIT_SECONDS
+) -> object:
     deadline = time.monotonic() + timeout
     last = None
     while time.monotonic() < deadline:
@@ -567,6 +576,48 @@ def test_file_secret_resolves_into_the_expected_child_env(
     ).hexdigest()
     env_names = set((work / "env_names.txt").read_text().splitlines())
     assert env_names & _CREDENTIAL_VARIABLES == {variable}
+
+
+def test_a_replaced_token_file_reaches_the_next_spawn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The flagship's account switcher (rheos/reauth-web) relies on this: it moves
+    the deployment to another Claude account by replacing the token file, with no
+    restart, and the next run must pick the new token up (issue #596)."""
+    stub = _write_stub(tmp_path / "claude-stub", _CAPTURE_STUB)
+    credential_ref = "secret://file/runtime/claude-cli/oauth-token"
+    _configure(
+        monkeypatch,
+        tmp_path,
+        executable=stub,
+        kind="oauth_token",
+        credential_ref=credential_ref,
+    )
+    secret_path = (
+        tmp_path
+        / "data-root"
+        / "secrets"
+        / credential_ref.removeprefix("secret://file/")
+    )
+    secret_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime = ClaudeCliRuntime()
+    digests = []
+    for name, token in (("first", _OAUTH_SECRET), ("second", "sk-ant-oat-test-other")):
+        # Replace the way the switcher does: a new file renamed over the old one.
+        staged = secret_path.with_name("oauth-token.tmp")
+        staged.write_text(token)
+        staged.chmod(0o600)
+        staged.replace(secret_path)
+        (tmp_path / name).mkdir()
+        spawn = _spawn(tmp_path / name)
+        event = drain_until_terminal(runtime.start(_request(), spawn=spawn))
+        assert event.type == "final_output"
+        digests.append((Path(spawn.work_dir) / "oauth_token_sha256.txt").read_text())
+
+    assert digests == [
+        hashlib.sha256(_OAUTH_SECRET.encode()).hexdigest(),
+        hashlib.sha256(b"sk-ant-oat-test-other").hexdigest(),
+    ]
 
 
 def test_empty_api_key_ref_is_credential_invalid_before_spawn(
@@ -993,7 +1044,9 @@ def test_structured_output_match_emits_final_output(
     assert event.structured == {"ok": True}
 
 
-def _events_until_terminal(handle: object, *, timeout: float = 2.0) -> list[object]:
+def _events_until_terminal(
+    handle: object, *, timeout: float = TERMINAL_WAIT_SECONDS
+) -> list[object]:
     """Every event up to and including the terminal one, in order."""
     deadline = time.monotonic() + timeout
     events: list[object] = []

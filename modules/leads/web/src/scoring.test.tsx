@@ -57,6 +57,8 @@ const VIEW: Row = {
   queued_total: 1,
   waiting_total: 0,
   failed_total: 2,
+  too_old_total: 3,
+  max_age_hours: 24,
   median_call_seconds: 40,
   eta_seconds: 40,
   batches: [
@@ -152,6 +154,14 @@ describe("the Scoring view's words", () => {
       "refused by the job service (PERMISSION)",
     );
   });
+  it("names a failed saved-jobs listing by its reason (#594)", () => {
+    expect(readFailureLabel("saved:protocol")).toBe(
+      "saved jobs not listed: unreadable answer",
+    );
+    expect(readFailureLabel("saved:more")).toBe(
+      "more saved jobs than one run reads",
+    );
+  });
   it("says what scoring is doing", () => {
     expect(statusLine(VIEW.status as Row, NOW).text).toBe(
       'Scoring "Example data pipeline" for 42s',
@@ -185,6 +195,10 @@ describe("the Scoring view's words", () => {
       ).title,
     ).toContain("unreadable answer");
     expect(stageChip({ stage: "untracked" }, NOW).mark).toBe("new");
+    expect(stageChip({ stage: "too_old" }, NOW)).toMatchObject({
+      mark: "old",
+      tone: "dim",
+    });
     expect(outcomeLabel({ purpose: "scoring", outcome: "answered" })).toBe(
       "Scored",
     );
@@ -231,6 +245,8 @@ describe("the Scoring view", () => {
     expect(html).toMatch(/<details[^>]*><summary>1 held by the filters/);
     expect(html).toContain('href="/leads/review"');
     expect(html).toContain('aria-label="Put 2 failed jobs back in line"');
+    expect(html).toContain("3 too old to score");
+    expect(html).toMatch(/still waiting 24 hours/);
     expect(html).toContain('aria-current="page"');
     // No posting text and no money anywhere on the page.
     expect(html).not.toContain("$");
@@ -294,6 +310,88 @@ describe("retrying failed jobs", () => {
     expect(submit).toHaveBeenCalledWith("leads.jobscoring.retry_failed", {});
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
       "Could not put the failed jobs back in line",
+    );
+  });
+
+  it("lets an owner sync saved jobs from the Job feed tab (#594)", async () => {
+    expect(markup("feed", VIEW, false)).not.toContain("Sync saved jobs</button>");
+    const outcomes = [
+      { state: "ok" as const },
+      {
+        state: "refused" as const,
+        code: "run_recent",
+        text: "the job feed ran in the last few minutes; try again shortly",
+      },
+    ];
+    const submit = vi.fn().mockImplementation(async () => outcomes.shift());
+    act(() =>
+      root.render(
+        <ScoringView
+          view={VIEW}
+          now={NOW}
+          zone="UTC"
+          tab="feed"
+          hrefs={{}}
+          tabHrefs={{ queue: "/q", calls: "/c", feed: "/f" }}
+          reviewHref="/r"
+          canRetry
+          submit={submit as unknown as ShellApi["submit"]}
+        />,
+      ),
+    );
+    const button = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Sync saved jobs"),
+    );
+    const notices = () =>
+      Array.from(host.querySelectorAll('[role="status"]'))
+        .map((n) => n.textContent ?? "")
+        .filter((text) => text.startsWith("Sync"));
+    expect(button).toBeDefined();
+    await act(async () => {
+      button?.click();
+    });
+    expect(submit).toHaveBeenCalledWith("leads.jobfeed.collect_now", {});
+    expect(notices()).toEqual([expect.stringContaining("Sync requested")]);
+    await act(async () => {
+      button?.click();
+    });
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      "The job feed ran in the last few minutes; try again shortly.",
+    );
+    expect(notices()).toEqual([]);
+  });
+
+  it("lets an owner retry waiting jobs now (#478)", async () => {
+    const waiting = { ...VIEW, waiting_total: 3 };
+    expect(markup("queue", waiting, false)).not.toContain(
+      "Retry 3 waiting jobs now",
+    );
+    const submit = vi.fn().mockResolvedValue({ state: "unavailable" });
+    act(() =>
+      root.render(
+        <ScoringView
+          view={waiting}
+          now={NOW}
+          zone="UTC"
+          tab="queue"
+          hrefs={{}}
+          tabHrefs={{ queue: "/q", calls: "/c", feed: "/f" }}
+          reviewHref="/r"
+          canRetry
+          submit={submit as unknown as ShellApi["submit"]}
+        />,
+      ),
+    );
+    const button = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="Retry 3 waiting jobs now"]',
+    );
+    expect(button).not.toBeNull();
+    await act(async () => {
+      button?.click();
+    });
+    expect(submit).toHaveBeenCalledWith("leads.jobscoring.retry_waiting", {});
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+      "Could not retry the waiting jobs",
     );
   });
 });

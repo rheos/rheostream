@@ -13,8 +13,17 @@
   and the phased build plan with its acceptance criteria. Accepted (PR #5).
 - [Architecture](architecture/README.md): contracts, designs, and decision records
   for release one, with one page per later phase. Accepted (PR #7).
+- [Decision records](adr/0001-leads-current-project-link.md): accepted design
+  decisions that are hard to reverse, starting with ADR-0001 on the Leads-to-Current
+  handoff and its lasting source link. The Finance module keeps its own records in
+  [modules/finance/docs/adr](../modules/finance/docs/adr/0001-import-docextract.md).
 - [Acceptance matrix](acceptance/README.md): per phase, the test that demonstrates each
   recorded criterion and the captured mutation that proves the test bites.
+- Testing: the [Recallatron search-quality suite](testing/recallatron-search-quality.md)
+  and the [Leads-to-Current acceptance stack](testing/leads-current-acceptance.md), a
+  disposable synthetic copy of the product for a manual browser review.
+- [Review package](review/README.md): whether the database holds each workflow the way
+  it is meant to run, starting with email intake.
 - [Notes](notes/0v-vertical-slice-findings.md): findings from build spikes, each
   with its evidence and a proposed disposition against the documents above.
 - [Substrate boundary](notes/0c0-substrate-boundary.md): what the durable-work

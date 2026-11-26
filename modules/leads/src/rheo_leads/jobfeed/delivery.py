@@ -53,7 +53,8 @@ DIGEST_NAME_SEPARATOR: Final = "="
 TIME_FIELDS: Final = ("observed_at", "proposal_observed_at")
 _HEX: Final = frozenset("0123456789abcdef")
 
-Body = dict[str, str | int]
+# ``None`` is an explicit null: a value the mapping clears (the stated price).
+Body = dict[str, str | int | None]
 
 
 def _short_digest(text: str) -> str:
@@ -127,9 +128,12 @@ def unchanged(carried: Mapping[str, str], stored: Mapping[str, str] | None) -> b
 
 def delivered_posting(sighting: Sighting) -> NormalizedPosting:
     """The posting as delivered: a description (and the detail-only hire rate) only
-    from a detail read that succeeded in this run, never a feed snippet."""
+    from a detail read that succeeded in this run, never a feed snippet. A saved job
+    described from its listing keeps that full description, without a hire rate."""
     if sighting.detail_ok:
         return sighting.posting
+    if sighting.listed:
+        return replace(sighting.posting, client_hire_rate=None)
     return replace(sighting.posting, description=None, client_hire_rate=None)
 
 
@@ -143,17 +147,31 @@ def _over_cap(posting: NormalizedPosting) -> bool:
     return count is not None and count > DISCOVERY_CAP
 
 
+def _saved_discovery(sighting: Sighting) -> bool:
+    """A saved job the collector has not delivered before, read in full or, when
+    its read failed, described from its listing."""
+    return sighting.posting.saved_discovery and (sighting.detail_ok or sighting.listed)
+
+
 def discovery_eligible(sighting: Sighting) -> bool:
     """At most 50 proposals, not applied, from a discovery search, detail read ok;
-    or invited. An invited job is delivered whatever its competition, and even when
-    its detail read failed: the client asked, and its title and link are known."""
+    or invited; or saved and read in full. An invited job is delivered whatever its
+    competition, and even when its detail read failed: the client asked, and its
+    title and link are known. A saved job is delivered whatever its competition
+    too, since the owner saved it, once its detail was read or, when the read was
+    made and failed, from its listing's description; a read the cap or the
+    deadline left unmade waits for the next run."""
     posting = sighting.posting
-    return posting.invited or (
-        sighting.detail_ok
-        and posting.purpose == "discover"
-        and not posting.applied
-        and posting.count_band_label != OVER_CAP_BAND
-        and not _over_cap(posting)
+    return (
+        posting.invited
+        or _saved_discovery(sighting)
+        or (
+            sighting.detail_ok
+            and posting.purpose == "discover"
+            and not posting.applied
+            and posting.count_band_label != OVER_CAP_BAND
+            and not _over_cap(posting)
+        )
     )
 
 
@@ -204,7 +222,8 @@ def deliver(
     planned: list[_Planned] = []
     for sighting in sightings:
         posting = delivered_posting(sighting)
-        if not posting.invited and (posting.applied or _over_cap(posting)):
+        exempt = posting.invited or posting.saved is True
+        if not exempt and (posting.applied or _over_cap(posting)):
             result.filtered += 1
         row = rows.get(posting.posting_id)
         stored = None if row is None else parse_digests(row.field_digests)

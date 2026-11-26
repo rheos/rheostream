@@ -72,6 +72,10 @@ JOBSEARCH = (
     "client_hire_rate",
     "applied",
     "invited",
+    "saved",
+    "stated_price_min",
+    "stated_price_max",
+    "stated_price_unit",
 )
 INSTALLED = (
     t.funnel,
@@ -181,7 +185,7 @@ def test_install_writes_two_ordered_rules_and_refuses_a_second(
     assert row["priority"] == 100
     assert row["subject_authenticated"] is False and row["email_verified"] is False
     assert row["source_namespace"] == f"urn:rheo:connection:{connection}"
-    assert row["mapping_version"] == MAPPING_VERSION == 2
+    assert row["mapping_version"] == MAPPING_VERSION == 4
     assert row["campaign_id"] is None
     assert row["signing_secret_ref"] is None
     (funnel,) = rows(i, select(t.funnel).where(t.funnel.c.id == row["funnel_id"]))
@@ -212,6 +216,22 @@ def test_install_writes_two_ordered_rules_and_refuses_a_second(
         "occurred_at_path": "/observed_at",
         "subject_id_path": None,
         "verified_email_path": None,
+    }
+    clearing = {
+        r["target"]
+        for r in rows(
+            i,
+            select(t.field_mapping_rule).where(
+                t.field_mapping_rule.c.mapping_id == row["mapping_id"],
+                t.field_mapping_rule.c.clear_on_null.is_(True),
+            ),
+        )
+    }
+    # Only the stated price clears on an explicit null (#503).
+    assert clearing == {
+        "ext.jobsearch.stated_price_min",
+        "ext.jobsearch.stated_price_max",
+        "ext.jobsearch.stated_price_unit",
     }
     mapped = {
         r["target"]: (
@@ -578,6 +598,12 @@ def test_collected_posting_creates_no_party(collector: Collector) -> None:
         "client_hire_rate": "0.5",
         "applied": "false",
         "invited": "true",
+        "saved": "true",
+        # A hand-built body carries every mapped key; a real one never has both a
+        # budget and a stated price.
+        "stated_price_min": "3",
+        "stated_price_max": "4.5",
+        "stated_price_unit": "item",
     }
     parties = party_count(i)
     accepted = deliver(collector.poll, i, body, "posting-~021234")
@@ -605,6 +631,7 @@ def test_collected_posting_creates_no_party(collector: Collector) -> None:
     }
     assert fields["ext.jobsearch.platform"] == "upwork"
     assert fields["ext.jobsearch.proposal_count"] == "12"
+    assert fields["ext.jobsearch.stated_price_unit"] == "item"
     assert not any(target.startswith(("person.", "organization.")) for target in fields)
     (opportunity,) = rows(i, select(p.opportunity))
     assert opportunity["pipeline_id"] == collector.pipeline_id

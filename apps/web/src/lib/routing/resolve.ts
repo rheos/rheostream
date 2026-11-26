@@ -11,11 +11,12 @@ import type { RoutingConfig } from "@/lib/routing/config";
  * - **Path mode.** The host plays no part. A module surface matches when the
  *   pathname is its `path` or continues it at a segment boundary, so
  *   `/recallatron-extra` never matches the surface path `/recallatron`. The shell
- *   serves its own root and nothing below it.
+ *   serves its own root plus the one reserved approval-detail route below it.
  * - **Subdomain mode.** The port-stripped host decides: `<surface.host>.<base_host>`
  *   is that module, and the whole pathname is the path inside it, so the module's
  *   `/` route arrives at `app/page.tsx` like the shell's root does. The shell host
- *   serves its root. Any other host is not served here.
+ *   serves its root and the reserved approval-detail route. Any other host is not
+ *   served here.
  *
  * `base_host`, not `public_host`, is the comparison: `base_host` is the port-free
  * Host-header match (issue #37), `public_host` is only a link authority.
@@ -23,10 +24,12 @@ import type { RoutingConfig } from "@/lib/routing/config";
 
 export type ResolvedRequest =
   | { kind: "shell" }
+  | { kind: "approval" }
   | { kind: "module"; surface: string; subPath: string }
   | { kind: "not-found" };
 
 const ROOT = "/";
+const APPROVAL_DETAIL = "/approvals/detail";
 
 /** Drop a trailing slash (never the root's own), so `/search/` and `/search` agree. */
 export function normalizePath(path: string): string {
@@ -51,6 +54,11 @@ function hostName(host: string): string {
 
 function resolvePath(config: RoutingConfig, pathname: string): ResolvedRequest {
   const path = normalizePath(pathname);
+  const shellRoot = normalizePath(config.surfaces.shell.path ?? ROOT);
+  const approvalPath = shellRoot === ROOT ? APPROVAL_DETAIL : `${shellRoot}${APPROVAL_DETAIL}`;
+  if (path === approvalPath) {
+    return { kind: "approval" };
+  }
   for (const [surface, spec] of Object.entries(config.surfaces.modules)) {
     if (spec.path === undefined) {
       continue;
@@ -67,7 +75,6 @@ function resolvePath(config: RoutingConfig, pathname: string): ResolvedRequest {
       return { kind: "module", surface, subPath: path.slice(prefix.length) };
     }
   }
-  const shellRoot = normalizePath(config.surfaces.shell.path ?? ROOT);
   return path === shellRoot ? { kind: "shell" } : { kind: "not-found" };
 }
 
@@ -84,7 +91,11 @@ function resolveHost(
     }
   }
   if (name === `${config.surfaces.shell.host.toLowerCase()}.${base}`) {
-    return normalizePath(pathname) === ROOT ? { kind: "shell" } : { kind: "not-found" };
+    const path = normalizePath(pathname);
+    if (path === ROOT) {
+      return { kind: "shell" };
+    }
+    return path === APPROVAL_DETAIL ? { kind: "approval" } : { kind: "not-found" };
   }
   return { kind: "not-found" };
 }

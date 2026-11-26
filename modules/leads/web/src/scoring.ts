@@ -9,6 +9,7 @@ const RECENT_SECONDS = 300;
 
 const PURPOSES: Record<string, string> = {
   scoring: "Score",
+  prefilter: "Jev pre-filter",
   analysis: "Proposal analysis",
   gate: "Accuracy check",
   draft: "Proposal draft",
@@ -52,9 +53,14 @@ const READ_FAILURES: Record<string, string> = {
   endpoint_misconfigured: "wrong address",
 };
 const INVITATIONS = "invitations:";
+const SAVED = "saved:";
 export function readFailureLabel(code: string): string {
   if (code.startsWith(INVITATIONS)) {
     return `invitations not listed: ${readFailureLabel(code.slice(INVITATIONS.length))}`;
+  }
+  if (code === "saved:more") return "more saved jobs than one run reads";
+  if (code.startsWith(SAVED)) {
+    return `saved jobs not listed: ${readFailureLabel(code.slice(SAVED.length))}`;
   }
   const [kind, detail] = code.split(":", 2);
   const known = READ_FAILURES[kind ?? ""] ?? code.replaceAll("_", " ");
@@ -142,6 +148,8 @@ export function statusLine(
     const purpose = str(status.purpose);
     if (purpose === "scoring")
       return { tone: "busy", text: `Scoring "${title}"${took}` };
+    if (purpose === "prefilter")
+      return { tone: "busy", text: `Pre-filtering "${title}" with Jev${took}` };
     if (purpose === "milestones")
       return { tone: "busy", text: `Pricing "${title}"${took}` };
     return {
@@ -191,6 +199,7 @@ export const STAGE_LABELS: Record<string, string> = {
   needs_posting: "needs the full posting",
   failed: "failed",
   held: "held by the filters",
+  too_old: "too old to score",
   closed: "closed",
   untracked: "new",
 };
@@ -247,8 +256,15 @@ export function stageChip(
     case "held":
       return {
         mark: "held",
-        title: "Held back by the client filters before scoring.",
+        title: "Held before full scoring. Review or promote this job.",
         tone: "plain",
+      };
+    case "too_old":
+      return {
+        mark: "old",
+        title:
+          "Not scored: it was past the age cutoff when scoring reached it.",
+        tone: "dim",
       };
     case "closed":
       return { mark: "closed", title: "Closed before scoring.", tone: "dim" };

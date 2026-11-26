@@ -3,5 +3,7 @@
   "docs/media/explainer-by-design.jpg": "README thumbnail for the explainer video, a JPEG still of its end card; the README text beside it is searched",
   "docs/review/images/email-expected.png": "review-package diagram, a PNG screenshot of rheo.stream/review/?export=email-expected; its text is in docs/review/README.md beside it and in the rheo-stream-site repo, which are searched",
   "docs/review/images/email-schema.png": "review-package diagram, a PNG screenshot of rheo.stream/review/?export=email-schema; its text is in docs/review/README.md beside it and in the rheo-stream-site repo, which are searched",
-  "docs/review/images/email-flow.png": "review-package diagram, a PNG screenshot of rheo.stream/review/?export=email-flow; its text is in docs/review/README.md beside it and in the rheo-stream-site repo, which are searched"
+  "docs/review/images/email-flow.png": "review-package diagram, a PNG screenshot of rheo.stream/review/?export=email-flow; its text is in docs/review/README.md beside it and in the rheo-stream-site repo, which are searched",
+  "apps/web/src/app/favicon.ico": "the web app's favicon, a 16/32 px ICO of PNG images taken from the rheo.stream icon set; the same mark as text is apps/web/src/app/icon.svg beside it, which is searched",
+  "apps/web/src/app/apple-icon.png": "the web app's 180 px Apple touch icon, a PNG from the rheo.stream icon set; the same mark as text is apps/web/src/app/icon.svg beside it, which is searched"
 }

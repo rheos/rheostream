@@ -4,7 +4,8 @@ Contract, integration, migration, and acceptance tests for the core, the modules
 and the deployment files. Use synthetic isolated workspaces and exercise
 absent/disabled modules as well as normal operation. Never load real user data or a
 production database. Module-owned tests live under each module (for example
-`modules/recallatron/tests`), and the web packages carry their own vitest suites.
+`modules/recallatron/tests` and `modules/finance/tests`), and the web packages carry
+their own vitest suites.
 
 `tests/test_acceptance_matrix.py` guards the [acceptance matrices](../docs/acceptance/README.md):
 every expected criterion has a row, every demonstrator still resolves, and every captured
@@ -20,6 +21,16 @@ independent synthetic questions, labelled answers, ranking/coverage measures and
 no-answer controls through lexical, real-model dense/hybrid and separate history
 search. It is a relevance regression gate, not predecessor-result parity or a claim
 that all real queries are already evaluated.
+
+The Leads-to-Current handoff has a [synthetic acceptance stack](../docs/testing/leads-current-acceptance.md)
+for a manual browser review: `tests/harness/prompt14.sh` builds and seeds a disposable
+Compose project, `tests/test_prompt14_acceptance.py` checks its fixture, and
+`tests/postgres/test_prompt14_seed.py` runs the seed against test databases.
+
+CI runs the Python suite on a pull request that is ready for review, not on a draft, as
+five parallel shards (`scripts/ci_pytest_shard.py`, `RHEO_TEST_SHARD=i/5`), each
+spreading whole files over four xdist workers (`-n 4 --dist loadfile`). Locally,
+`uv run pytest` runs the whole suite in one process unless you pass the same flags.
 
 ## A fast, throwaway test cluster
 

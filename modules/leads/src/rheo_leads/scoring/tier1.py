@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Final
 
+from rheo_leads.participant_text import unwrapped
 from rheo_leads.scoring.profile import Tier1Policy
 
 EXTENSION: Final = "ext.jobsearch."
@@ -69,6 +70,8 @@ class JobFacts:
     client_hire_rate: Decimal | None = None
     invited: bool = False
     """The client invited the owner to this job."""
+    saved: bool = False
+    """The owner saved (bookmarked) this job on the job platform."""
 
     @classmethod
     def from_fields(cls, title: str, fields: Mapping[str, str]) -> "JobFacts":
@@ -77,7 +80,11 @@ class JobFacts:
         def ext(name: str) -> str | None:
             return fields.get(EXTENSION + name)
 
-        description = fields.get("message")
+        # Without the feed's wrapper tag (#392), which rows stored before it was
+        # dropped at collection still carry. The fingerprint reads the stored text,
+        # so this never makes a scored job look changed.
+        stored = fields.get("message")
+        description = None if stored is None else unwrapped(stored)
         job_type = ext("job_type")
         reviews = _integer(ext("client_reviews"))
         hire_rate = _decimal(ext("client_hire_rate"))
@@ -100,6 +107,7 @@ class JobFacts:
             client_reviews=reviews,
             client_hire_rate=hire_rate,
             invited=_flag(ext("invited")) is True,
+            saved=_flag(ext("saved")) is True,
         )
 
     @property
@@ -144,12 +152,13 @@ def run_tier1(job: JobFacts, policy: Tier1Policy) -> Tier1Result:
 
     An invited job is never held: the client asked, so it goes to the model like a
     job that passed, and every clause it fails is kept as a soft condition the owner
-    checks on its assessment (as for a promoted job), unknown payment included."""
+    checks on its assessment (as for a promoted job), unknown payment included. A
+    job the owner saved is treated the same way: the owner picked it."""
     result = _filters(job, policy)
-    if job.invited and result.failed:
+    if (job.invited or job.saved) and result.failed:
         unknown = (UNKNOWN_PAYMENT,) if job.payment_verified is None else ()
-        # A new client's filter stops at its first failure; an invited job keeps
-        # every condition, the proposal cap included.
+        # A new client's filter stops at its first failure; an invited or saved
+        # job keeps every condition, the proposal cap included.
         crowded = _crowded(policy)
         over_cap = (
             job.proposal_count is not None
