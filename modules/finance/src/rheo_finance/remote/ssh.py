@@ -170,9 +170,8 @@ def ssh_argv(
     cfg: RemoteConfig, words: Sequence[str], *, tty: bool, stream: bool
 ) -> list[str]:
     """ssh's argument list: host-key checking on and connection sharing off whatever
-    ssh_config says, a terminal
-    only when asked, the escape character off for a binary stream, ``--`` before the
-    destination, and the remote command as one argument."""
+    ssh_config says, a terminal only when asked, the escape character off for a binary
+    stream, ``--`` before the destination, and the remote command as one argument."""
     return [
         SSH,
         *HOST_KEY_OPTIONS,
