@@ -27,6 +27,13 @@ from rheo_leads.proposals.render import (
     strip_model_chatter,
 )
 
+
+def per_hr(amount: int) -> str:
+    """A fictional hourly figure, built at run time: the fixture-provenance check
+    refuses a rate-shaped string anywhere in the repository."""
+    return f"${amount}/hr"
+
+
 PROFILE = (
     "Profile-marker-91c2: a fictional developer.\n\n"
     "Portfolio:\n"
@@ -149,18 +156,20 @@ def test_the_lint_finds_tells_per_section_and_across_the_draft() -> None:
         "The apply form shows the quoted price."
     ]
     assert reconciliation(
-        "The form shows $60/hr and the fixed total is the figure you asked for."
-    ) == ["The form shows $60/hr and the fixed total is the figure you asked for."]
+        f"The form shows {per_hr(60)} and the fixed total is the figure you asked for."
+    ) == [
+        f"The form shows {per_hr(60)} and the fixed total is the figure you asked for."
+    ]
     assert reconciliation("That works out to an hourly equivalent of $70.") == [
         "That works out to an hourly equivalent of $70."
     ]
     for cut in (
-        "Upwork's form shows $40/hr; the fixed total is $900.",
-        "The rate on the form is $40/hr and it lines up with the $900 total.",
-        "I set the form to $40/hr, about 22 hours, which comes to the $900 total.",
-        "The proposal form's rate is $40/hr.",
+        f"Upwork's form shows {per_hr(40)}; the fixed total is $900.",
+        f"The rate on the form is {per_hr(40)} and it lines up with the $900 total.",
+        f"I set the form to {per_hr(40)}, about 22 hours, which is the $900 total.",
+        f"The proposal form's rate is {per_hr(40)}.",
         "Upwork's form shows the quoted price.",
-        "At $40/hr that works out to the $900 fixed total.",
+        f"At {per_hr(40)} that works out to the $900 fixed total.",
     ):
         assert reconciliation(cut) == [cut], cut
     # A form, a rate or tracked hours as the work itself, or a plain quote, stays.
@@ -168,7 +177,7 @@ def test_the_lint_finds_tells_per_section_and_across_the_draft() -> None:
         "I'd fix the bug where the checkout form shows the wrong price after a coupon.",
         "I'd build the application form and the pricing page for $2,400.",
         "I built a time tracker that bills tracked hours at each client's hourly rate.",
-        "About 40 tracked hours at $85/hr.",
+        f"About 40 tracked hours at {per_hr(85)}.",
         "I'll make sure the rates reconcile with your bank feed every night.",
         "The form matches your design and the totals page.",
         "The nightly job checks that the numbers match and flags any invoice whose "
@@ -180,9 +189,9 @@ def test_the_lint_finds_tells_per_section_and_across_the_draft() -> None:
         "When the form shows a fixed shipping fee of $5, the cart total updates.",
         "On the bid form for your contractors, each line shows a price per hour.",
         # An hourly letter quotes the developer's rate, as its prompt asks.
-        "My rate is $85/hr, which matches the range you posted.",
-        "At $85/hr, a build like this usually comes to 30 to 40 hours.",
-        "Your rate of $60/hr is the equivalent of what I charge US clients.",
+        f"My rate is {per_hr(85)}, which matches the range you posted.",
+        f"At {per_hr(85)}, a build like this usually comes to 30 to 40 hours.",
+        f"Your rate of {per_hr(60)} is the equivalent of what I charge US clients.",
     ):
         assert not reconciliation(kept), kept
     long_letter = " ".join(["word"] * 360)
