@@ -232,20 +232,30 @@ def test_a_partial_payment_stays_reported_until_the_check_then_shows_what_is_lef
     reported: Ledger,
 ) -> None:
     """33.56 of 69.12 paid on April 23 in an export that ends April 24: short of the
-    bill, still inside the lag, so it stays off the list. Once May's export is in, the
-    rest was never paid: partial, with 35.56 left."""
+    bill, still inside the lag, so it stays off the list. Once the rest of April is in,
+    the rest was never paid: partial, with 35.56 left."""
     with_settings(reported, '[finance.payments]\npartial_auto_kinds = ["bill"]\n')
     april(reported, last=D(2055, 4, 24), paid="33.56")
     reported.derive()
     found = rows(reported)[NAME]
     assert (found.status, found.paid) == ("presumed_paid", Decimal("33.56"))
 
+    # May's export alone leaves April 25 to 30 unloaded: still nothing proven.
     statement(
         reported,
         "may",
         CSV_IDENTIFIER,
         filler(D(2055, 5, 1), 7),
         filler(D(2055, 5, 31), 8),
+    )
+    reported.derive()
+    assert status(reported) == "presumed_paid"
+    statement(
+        reported,
+        "april-end",
+        CSV_IDENTIFIER,
+        filler(D(2055, 4, 25), 9),
+        filler(D(2055, 4, 30), 10),
     )
     reported.derive()
 
@@ -276,6 +286,121 @@ def test_reporting_it_again_starts_the_check_from_the_new_day(reported: Ledger) 
         )
     )
     assert reversals == 1
+
+
+def test_the_payment_lands_on_the_reported_bill_not_the_next_one(
+    reported: Ledger,
+) -> None:
+    """May's bill is already in when April's payment loads. Reported paid, April is
+    still live for its own payment, so the 69.12 of April 23 pays April and May stays
+    open; it is never read as April's payment missing."""
+    bills(reported, BILL, ("isp", "69.12", D(2055, 5, 1), D(2055, 5, 25)))
+    reported.derive()
+    april(reported, paid="69.12")
+
+    reported.derive()
+
+    found = rows(reported)
+    assert (found[NAME].status, found[NAME].paid) == ("paid", Decimal("69.12"))
+    assert (found["isp bill-2055-05"].status, found["isp bill-2055-05"].paid) == (
+        "open",
+        0,
+    )
+
+
+def test_a_part_paid_bill_keeps_what_it_was_paid_when_reported(ledger: Ledger) -> None:
+    """33.56 was paid on the March bill before the owner reported it paid: the derive
+    after the report keeps the 33.56 on March, as the operation left it, and April's
+    bill owes all of its own."""
+    ledger.chequing()
+    payees(ledger)
+    with_settings(ledger, '[finance.payments]\npartial_auto_kinds = ["bill"]\n')
+    ledger.ctx = dataclasses.replace(ledger.ctx, snapshot_provider=txn_snapshot)
+    bills(
+        ledger,
+        ("isp", "69.12", D(2055, 3, 1), D(2055, 3, 25)),
+        BILL,
+    )
+    statement(
+        ledger,
+        "march",
+        CSV_IDENTIFIER,
+        filler(D(2055, 3, 1), 1),
+        (D(2055, 3, 20), ISP, Decimal("-33.56")),
+        filler(D(2055, 3, 31), 2),
+    )
+    ledger.derive()
+    assert rows(ledger)["isp bill-2055-03"].paid == Decimal("33.56")
+    at(ledger, D(2055, 4, 2))
+    report(ledger, "isp bill-2055-03")
+    inline = rows(ledger)["isp bill-2055-03"]
+
+    ledger.derive()
+
+    found = rows(ledger)
+    march_row = found["isp bill-2055-03"]
+    assert (march_row.status, march_row.paid) == (inline.status, inline.paid)
+    assert (march_row.status, march_row.paid) == ("presumed_paid", Decimal("33.56"))
+    assert (found[NAME].status, found[NAME].paid) == ("open", 0)
+
+
+def test_a_hole_in_the_statements_is_never_read_as_not_paid(reported: Ledger) -> None:
+    """April's export is missing and June's is in: June ends far past the report, but
+    the April days the payment could sit in were never loaded."""
+    statement(
+        reported,
+        "june",
+        CSV_IDENTIFIER,
+        filler(D(2055, 6, 1), 5),
+        filler(D(2055, 6, 30), 6),
+    )
+
+    reported.derive()
+
+    assert status(reported) == "presumed_paid"
+    april(reported)
+    reported.derive()
+    assert status(reported) == "open"
+
+
+def test_history_is_never_flagged_unconfirmed(ledger: Ledger) -> None:
+    """A presumed paid bill from before the floor with a partial payment shows what is
+    left, as it always has, and is not flagged as a report the statements disproved."""
+    ledger.chequing()
+    payees(ledger)
+    with_settings(
+        ledger,
+        "[finance.reminders]\nmin_due_date = 2055-09-01\n"
+        '[finance.payments]\npartial_auto_kinds = ["bill"]\n',
+    )
+    ledger.ctx = dataclasses.replace(ledger.ctx, snapshot_provider=txn_snapshot)
+    march(ledger)
+    bills(ledger, BILL)
+    ledger.derive()
+    dispatch(
+        "finance.decision.record",
+        {"kind": "presumed_paid", "obligation_ref": ref(ledger)},
+        Role.OWNER,
+        ctx=ledger.ctx,
+    )
+    april(ledger, paid="33.56")
+
+    ledger.derive()
+
+    assert status(ledger) == "partial"
+    row = next(r for r in owed_list(ledger).rows if r.period_label == "bill-2055-04")
+    assert row.before_floor and not row.reported_unconfirmed
+
+
+def test_history_cannot_be_reported(ledger: Ledger) -> None:
+    ledger.chequing()
+    payees(ledger)
+    with_settings(ledger, "[finance.reminders]\nmin_due_date = 2055-09-01\n")
+    march(ledger)
+    bills(ledger, BILL)
+    ledger.derive()
+    with pytest.raises(DecisionRefused, match="before the floor"):
+        report(ledger)
 
 
 # --- undo -----------------------------------------------------------------------------

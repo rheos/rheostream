@@ -342,8 +342,10 @@ describe("paid", () => {
     const html = await render("owed", withSubmit());
     expect(html).toContain('aria-label="Mark Example Power 2025-12 paid"');
     expect(html).toContain('method="post"');
-    // The presumed-paid card has no Paid button, and no row shows its reference.
+    // The presumed-paid card and the history row have no Paid button, and no visible
+    // text names a reference (the client props still carry it, as any form's do).
     expect(html).not.toContain("Mark Demo Card");
+    expect(html).not.toContain("Mark Sample Water");
     expect(html).not.toMatch(/finance\.obligation:/);
   });
 
@@ -364,6 +366,7 @@ describe("paid", () => {
     expect(html).toContain("payment not found");
     expect(html).toContain("You said this was paid on Dec 1, 2025.");
     expect(html).toContain('aria-label="Mark Example Gas 2025-12 paid"');
+    expect(html).toContain('aria-label="Clear marking Example Gas 2025-12 paid"');
     const attention = await render("attention", owedShell);
     expect(attention).toContain("Marked paid, payment not found");
     expect(attention).toContain("Example Gas, 2025-12");
@@ -379,6 +382,23 @@ describe("paid", () => {
     expect(refusalText({ state: "refused", code: "finance_operation_refused", text: "x" })).toContain("Reload");
     expect(refusalText({ state: "refused", code: "anything", text: "secret detail" })).not.toContain("secret");
     expect(refusalText({ state: "unavailable" })).toContain("Try again");
+  });
+
+  it("labels history in the fold, never as marked paid", async () => {
+    const history = row({
+      obligation_ref: "finance.obligation:00000000-0000-4000-8000-000000000007",
+      payee_label: "Example Rent",
+      status: "presumed_paid",
+      before_floor: true,
+      presumed_paid_basis: "finance.decision:00000000-0000-4000-8000-000000000007",
+      reported_at: "2025-06-01T12:00:00Z",
+    });
+    const html = await render(
+      "owed",
+      withSubmit({ ...RESULTS, "finance.owed.list": owedWith(history) }),
+    );
+    expect(html).toContain("presumed paid, history");
+    expect(html).not.toContain("marked paid Jun 1");
   });
 
   it("leaves the group out when nothing is unconfirmed", async () => {

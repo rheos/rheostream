@@ -329,6 +329,7 @@ def run(
             partial_kinds=frozenset(
                 ctx.settings.get_str_list(stage15_apply.PARTIAL_KINDS_KEY)
             ),
+            floor=ctx.settings.get_date(presumed.FLOOR_KEY),
         )
 
         beat()

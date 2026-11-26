@@ -4,7 +4,9 @@ import {
   bucket,
   localDay,
   relativeDays,
+  REPORT_PAID,
   reportable,
+  UNREPORT_PAID,
   shortDate,
   words,
   type Bucket,
@@ -15,7 +17,7 @@ import {
 import { BellIcon, Failure, Footnote, Frame, popoverId } from "./frame";
 import type { OwedState } from "./load";
 import { money, ownLabel, UNNAMED_PAYEE } from "./names";
-import { PaidForm, REPORT_PAID, UNREPORT_PAID } from "./paid";
+import { PaidForm } from "./paid";
 import styles from "./finance.module.css";
 
 const SECTIONS: readonly [Bucket, (window: number) => string][] = [
@@ -223,6 +225,14 @@ function Bill({
             label={`Mark ${name} ${o.periodLabel} paid`}
           />
         ) : null}
+        {o.reportedUnconfirmed && shell.submit ? (
+          <PaidForm
+            submit={shell.submit}
+            operation={UNREPORT_PAID}
+            obligationRef={o.ref}
+            label={`Clear marking ${name} ${o.periodLabel} paid`}
+          />
+        ) : null}
       </div>
     </li>
   );
@@ -249,8 +259,9 @@ function Reported({
         <span className={styles.groupCount}>{list.length}</span>
       </summary>
       <p className={styles.faint}>
-        Each one comes back here as owed if the statements that should show the payment
-        load without it.
+        A bill you marked paid comes back here as owed if the statements that should
+        show the payment load without it. Older bills presumed paid as history are not
+        checked.
       </p>
       <ul className={styles.bills}>
         {list.map((o) => {
@@ -268,7 +279,11 @@ function Reported({
               </div>
               <div className={styles.billWhen}>
                 {figure ? <span>{figure}</span> : null}
-                {on ? <span className={styles.faint}>marked paid {shortDate(on, year)}</span> : null}
+                {o.beforeFloor ? (
+                  <span className={styles.faint}>presumed paid, history</span>
+                ) : on ? (
+                  <span className={styles.faint}>marked paid {shortDate(on, year)}</span>
+                ) : null}
                 {shell.submit && o.presumedPaidBasis ? (
                   <PaidForm
                     submit={shell.submit}

@@ -110,6 +110,7 @@ def figures(fact: Facts, today: dt.date, window: int) -> OwedRow:
         and threshold > 0,
         invoice_folder=folder,
         reported_unconfirmed=fact.presumed_paid_basis is not None
+        and not fact.before_floor
         and fact.status in {"open", "partial"}
         and fact.threshold_remaining > 0,
     )

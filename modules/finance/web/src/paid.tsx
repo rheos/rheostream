@@ -2,17 +2,15 @@
 import { useState, useTransition, type FormEvent } from "react";
 import type { OperationOutcome, ShellApi } from "@rheo-stream/web-contract/screen";
 
+import { UNREPORT_PAID, type PaidOperation } from "./data";
 import styles from "./finance.module.css";
-
-export const REPORT_PAID = "finance.obligation.report_paid";
-export const UNREPORT_PAID = "finance.obligation.unreport_paid";
 
 type Submit = NonNullable<ShellApi["submit"]>;
 
 export interface PaidFormProps {
   /** The shell's form action, which renders the screen again after a save. */
   submit: Submit;
-  operation: typeof REPORT_PAID | typeof UNREPORT_PAID;
+  operation: PaidOperation;
   obligationRef: string;
   /** What the button does, for assistive technology: "Mark Electricity Nov paid". */
   label: string;

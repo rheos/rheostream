@@ -355,11 +355,18 @@ export function localDay(moment: string | null, timeZone = "UTC"): string | null
   }).format(when);
 }
 
-/** Whether the owner can say this one is paid: open or part-paid, with something
- * still owed toward its threshold (a card's minimum). Unknown figures (no owner
- * session) leave the module to decide. */
+/** The two owner writes the Owed screen submits (ADR-0030). Plain strings here, in a
+ * server module, so the screens never import a value from the client file. */
+export const REPORT_PAID = "finance.obligation.report_paid";
+export const UNREPORT_PAID = "finance.obligation.unreport_paid";
+export type PaidOperation = typeof REPORT_PAID | typeof UNREPORT_PAID;
+
+/** Whether the owner can say this one is paid: open or part-paid, not history from
+ * before the reminders floor, with something still owed toward its threshold (a
+ * card's minimum). Unknown figures (no owner session) leave the module to decide. */
 export function reportable(o: Obligation): boolean {
   if (o.status !== "open" && o.status !== "partial") return false;
+  if (o.beforeFloor) return false;
   return o.thresholdRemaining === null || o.thresholdRemaining > 0;
 }
 

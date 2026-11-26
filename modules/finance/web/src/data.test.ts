@@ -158,6 +158,7 @@ describe("reportable", () => {
     expect(reportable({ ...base, status: "presumed_paid" })).toBe(false);
     expect(reportable({ ...base, status: "disputed" })).toBe(false);
     expect(reportable({ ...base, thresholdRemaining: null })).toBe(true);
+    expect(reportable({ ...base, beforeFloor: true })).toBe(false);
   });
 });
 

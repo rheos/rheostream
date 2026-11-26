@@ -9,7 +9,8 @@ a payment confirms it, or until the paying accounts' statements come in without 
 (``derive.presumed``, "Reported paid, then checked").
 
 Only an obligation with something left to pay toward its threshold (a card's minimum,
-every other kind's amount due) and status ``open`` or ``partial`` can be reported: one
+every other kind's amount due), status ``open`` or ``partial`` and not due before the
+reminders floor (history, which the derive never checks) can be reported: one
 the derive put back because its statements lacked the payment is ``open`` again, so it
 can be reported a second time, which reverses the earlier decision and starts the check
 from today. The owner alone runs either, never a job: ``owner_only``.
@@ -84,12 +85,16 @@ def report_paid(ctx: FinanceContext, uow: UnitOfWork, data: ReportIn) -> ReportO
     key = _obligation_id(data.obligation_ref)
     o = obligation.c
     row = uow.execute(
-        select(o.status, o.threshold_remaining).where(o.id == key).with_for_update()
+        select(o.status, o.threshold_remaining, o.before_floor)
+        .where(o.id == key)
+        .with_for_update()
     ).one_or_none()
     if row is None:
         raise DecisionRefused("report_paid: no such obligation")
     if row.status not in REPORTABLE or not row.threshold_remaining > 0:
         raise DecisionRefused("report_paid: nothing is owed on that obligation")
+    if row.before_floor:
+        raise DecisionRefused("report_paid: that obligation is due before the floor")
     _reverse_reported(ctx, uow, key)
     out = decisions.record(
         ctx,

@@ -37,13 +37,15 @@ the account's opened date or after its closed date, is never a gap, and neither 
 keeps it presumed paid until a payment meets its threshold, which confirms it
 (``stage15_apply``). ``unconfirm`` runs after stage 15: an obligation still presumed
 paid, due on or after the floor (or with no due date, or with no floor set), whose
-paying accounts each have a loaded statement ending at least
-``finance.payments.reported_paid_lag_days`` after the local date the decision was made,
-has had its chance to show the payment and has not. It goes back to ``open`` (or
+paying accounts each have statements loaded for every day from the bill's issue date
+(or the report, if earlier) to ``finance.payments.reported_paid_lag_days`` after the
+local date the decision was made, with no hole, has had its chance to show the payment
+and has not. It goes back to ``open`` (or
 ``partial``) with its decision still named, so ``owed`` lists it again and says the
 report was not confirmed, and it is owed again for reminders. A paying account closed
-before that date is not asked; with none left to ask, or one with no statement that
-late, it stays presumed paid: a statement not loaded yet never reads as "not paid".
+before that date is not asked; with none left to ask, or one whose statements leave a
+day of that span unloaded, it stays presumed paid: a statement not loaded yet never
+reads as "not paid".
 Reporting it paid again makes a newer decision, and the check starts from that date.
 Presumed paid before the floor is a statement about history and is never checked:
 paid toward but short, it is ``partial``, showing what is left, at once.
@@ -60,7 +62,7 @@ from decimal import Decimal
 from typing import Final
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import bindparam, func, select, update
+from sqlalchemy import bindparam, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.decision import DecisionKind, reversed_clause
@@ -133,6 +135,26 @@ def mark_presumed(uow: UnitOfWork, named: Mapping[uuid.UUID, uuid.UUID]) -> int:
     return result.rowcount
 
 
+# How far before its issue date the payment of a bill with no issue date may be.
+UNDATED_DAYS: Final = 31
+
+
+def _covered(
+    periods: list[tuple[dt.date, dt.date]], first: dt.date, last: dt.date
+) -> bool:
+    """Whether ``periods`` (each an inclusive start and end) cover every day from
+    ``first`` to ``last`` with no hole."""
+    day = first
+    for start, end in sorted(periods):
+        if start > day:
+            break
+        if end >= day:
+            day = end + dt.timedelta(days=1)
+            if day > last:
+                return True
+    return day > last
+
+
 def unconfirm(
     uow: UnitOfWork, floor: dt.date | None, lag_days: int, zone: ZoneInfo
 ) -> int:
@@ -140,7 +162,7 @@ def unconfirm(
     payment (module docstring, "Reported paid, then checked"); how many."""
     o = obligation.c
     rows = uow.execute(
-        select(o.id, o.payee_id, o.due_date, o.paid, decision.c.decided_at)
+        select(o.id, o.payee_id, o.issued_on, o.due_date, o.paid, decision.c.decided_at)
         .join(decision, decision.c.id == o.presumed_paid_decision_id)
         .where(o.status == PRESUMED_PAID)
     ).all()
@@ -159,15 +181,15 @@ def unconfirm(
         row.id: row.closed_on
         for row in uow.execute(select(account.c.id, account.c.closed_on))
     }
-    last = func.max(statement_period.c.period_end).label("last")
-    through = {
-        row.account_id: row.last
-        for row in uow.execute(
-            select(statement_period.c.account_id, last).group_by(
-                statement_period.c.account_id
-            )
+    periods: dict[uuid.UUID, list[tuple[dt.date, dt.date]]] = defaultdict(list)
+    for row in uow.execute(
+        select(
+            statement_period.c.account_id,
+            statement_period.c.period_start,
+            statement_period.c.period_end,
         )
-    }
+    ):
+        periods[row.account_id].append((row.period_start, row.period_end))
     for row in checked:
         reported = row.decided_at.astimezone(zone).date()
         asked = [
@@ -175,10 +197,14 @@ def unconfirm(
             for each in paying.get(row.payee_id, frozenset())
             if closed.get(each) is None or closed[each] >= reported
         ]
-        due_by = reported + dt.timedelta(days=lag_days)
-        if asked and all(
-            (end := through.get(each)) is not None and end >= due_by for each in asked
-        ):
+        # The payment can be anywhere from the bill's issue (or the report, if that
+        # is earlier) to the report plus the lag: every day of it must be loaded.
+        issued = row.issued_on or (
+            (row.due_date or reported) - dt.timedelta(days=UNDATED_DAYS)
+        )
+        first = min(issued, reported)
+        last = reported + dt.timedelta(days=lag_days)
+        if asked and all(_covered(periods[each], first, last) for each in asked):
             back.append({"b_id": row.id, "b_status": PARTIAL if row.paid else OPEN})
     if back:
         uow.execute(
