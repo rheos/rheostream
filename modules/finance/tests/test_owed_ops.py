@@ -247,6 +247,45 @@ def test_full_totals_order_cap_undated_and_missing_minimum(
     assert narrow.due_in_window == 0
 
 
+def test_the_cap_never_hides_a_reported_bill(built: Built, stored: Connection) -> None:
+    """A bill reported paid keeps its Undo, and one its statements did not bear out
+    keeps its warning, past any number of other open bills (#639)."""
+    for n in range(3):
+        add(stored, f"open-{n}", "bill", amount="47.67", minimum=None)
+    for slug, state in [("reported", "presumed_paid"), ("not-found", "open")]:
+        oid = add(
+            stored,
+            slug,
+            "bill",
+            D(2057, 5, 20),
+            amount="30.99",
+            minimum=None,
+            status=state,
+        )
+        did = uuid7(NOW)
+        stored.execute(
+            insert(decision).values(
+                id=did,
+                kind="presumed_paid",
+                obligation_ref=f"finance.obligation:{oid}",
+                decided_at=NOW,
+            )
+        )
+        stored.execute(
+            update(obligation)
+            .where(obligation.c.id == oid)
+            .values(presumed_paid_decision_id=did)
+        )
+    stored.commit()
+    out = owed(built, settings="[finance.owed]\nmax_rows=1\n")
+    by = {r.payee_slug: r for r in out.rows}
+    assert set(by) == {"open-0", "reported", "not-found"}
+    assert out.more == 2
+    assert by["not-found"].reported_unconfirmed
+    assert by["reported"].status == "presumed_paid"
+    assert out.rows[-1].payee_slug == "reported"
+
+
 def test_presumed_paid_effective_money_floor_marker_and_basis(
     built: Built, stored: Connection
 ) -> None:

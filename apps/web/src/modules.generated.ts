@@ -74,7 +74,10 @@ export const MODULES = [
     ],
     recordRoutes: [],
     recordViews: [],
-    forms: [],
+    forms: [
+      { operation: "finance.obligation.report_paid", component: financeWeb.components.PaidForm },
+      { operation: "finance.obligation.unreport_paid", component: financeWeb.components.PaidForm },
+    ],
     searchProviders: [],
     readOperations: [
       "finance.coverage.get",
@@ -87,7 +90,10 @@ export const MODULES = [
       "finance.txn.list",
       "finance.upcoming.list",
     ],
-    submitOperations: [],
+    submitOperations: [
+      "finance.obligation.report_paid",
+      "finance.obligation.unreport_paid",
+    ],
   },
   {
     id: "leads",

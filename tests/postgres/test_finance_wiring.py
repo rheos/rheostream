@@ -63,7 +63,7 @@ from harness.modules import (
 )
 from pydantic import BaseModel, ConfigDict
 from rheo_app_mcp.tools import call_tool
-from rheo_contracts import Role, WorkspaceContext
+from rheo_contracts import Role, SafetyClass, WorkspaceContext
 from rheo_core.boundary import context_for_operator
 from rheo_core.boundary.factories import context_from_session
 from rheo_core.events import ConsumerRegistry
@@ -640,6 +640,10 @@ FINANCE_READS: Final = frozenset(
         "finance.upcoming.list",
     }
 )
+# The two owner writes (#639, ADR-0030): no tool, and no token set reaches them.
+FINANCE_WRITES: Final = frozenset(
+    {"finance.obligation.report_paid", "finance.obligation.unreport_paid"}
+)
 FINANCE_TOOLS: Final = frozenset(
     {
         "finance_coverage",
@@ -657,8 +661,9 @@ SESSION_HOST: Final = "example.test"
 
 
 def test_only_the_nine_opt_in_reads_reach_core_registries(finance: Finance) -> None:
-    """D8 (RS-6d D3, ADR-0029): exactly the nine reads and their tools, each
-    registration ``explicit_only`` and owner-only. Each registered output is the owner
+    """D8 (RS-6d D3, ADR-0029, ADR-0030): exactly the nine reads and their tools, and
+    the two owner writes with none, each registration ``explicit_only`` and
+    owner-only. Each registered output is the owner
     view: its shared view has nothing restricted, and every field the owner view adds
     is one core itself finds restricted, so core's tool facade drops it from any tool
     answer. Nothing in either view is unrenderable."""
@@ -667,11 +672,16 @@ def test_only_the_nine_opt_in_reads_reach_core_registries(finance: Finance) -> N
     tools = {
         name for name in finance.surfaces.tools.names() if name.startswith("finance")
     }
-    assert names == FINANCE_READS
+    assert names == FINANCE_READS | FINANCE_WRITES
     assert tools == FINANCE_TOOLS
+    for name in FINANCE_WRITES:
+        registered = operations.lookup(name)
+        assert registered is not None and registered.explicit_only, name
+        assert registered.declaration.roles == frozenset({Role.OWNER}), name
+        assert registered.declaration.safety_class is SafetyClass.MUTATE, name
     specs = catalogue.load_all()
     restricted_somewhere = False
-    for name in names:
+    for name in FINANCE_READS:
         registered = operations.lookup(name)
         assert registered is not None and registered.explicit_only, name
         assert registered.declaration.roles == frozenset({Role.OWNER}), name
@@ -779,6 +789,46 @@ def test_the_adapter_reads_as_finance_reader_and_hands_back_the_session_user(
         out = handle(finance.operator, uow, _WhoIn())
         assert out.model_dump() == {"user": db.READER_ROLE}
         assert _session_user_again(uow.connection)
+
+
+def test_only_the_owners_session_reaches_the_report_paid_handler(
+    finance: Finance, owner_account_id: UUID
+) -> None:
+    """ADR-0030: through core's dispatch, the owner's browser session reaches the
+    handler, which runs as ``finance_owner`` under the writer lock on the real ledger
+    and refuses an obligation that does not exist with finance's fixed code. The
+    operator is refused by role, and an owner context with no session audience (a
+    token's shape) by the adapter, before the handler."""
+    _layout(finance.workspace)
+    missing = {
+        "obligation_ref": "finance.obligation:01900000-0000-7000-8000-000000000001"
+    }
+    session = _owner_session(finance.workspace, owner_account_id)
+    outcome = dispatch(
+        session,
+        "finance.obligation.report_paid",
+        missing,
+        registry=finance.surfaces.operations,
+    )
+    assert outcome.state == "finance_operation_refused", outcome
+    operator = context_for_operator(finance.workspace)
+    assert isinstance(operator, WorkspaceContext)
+    outcome = dispatch(
+        operator,
+        "finance.obligation.report_paid",
+        missing,
+        registry=finance.surfaces.operations,
+    )
+    assert outcome.state == ROLE_NOT_PERMITTED, outcome
+    # The owner with no session audience, as a token's context is.
+    tokenlike = session.model_copy(update={"audience": None})
+    outcome = dispatch(
+        tokenlike,
+        "finance.obligation.unreport_paid",
+        missing,
+        registry=finance.surfaces.operations,
+    )
+    assert outcome.state == "finance_owner_session_only", outcome
 
 
 def test_the_operator_cannot_dispatch_a_finance_read(

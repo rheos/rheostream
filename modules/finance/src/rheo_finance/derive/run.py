@@ -66,9 +66,11 @@ Order of work, set by what each step reads:
    way, ``stage15_apply.settled``, and the arrangements left out are marked for status
    line 9, ``stage15_apply.mark_unsettled``). Each time stage 14 makes the
    obligations, the ``presumed_paid`` decisions mark theirs (``presumed``) before the
-   application reads them, and a payment applied to one reverts it. Then one
-   ``finance.payment.detected`` per automatic application, and the obligations due
-   before ``finance.reminders.min_due_date`` are marked (``presumed.mark_floor``).
+   application reads them, and a payment that meets one's threshold reverts it. Then
+   one ``finance.payment.detected`` per automatic application, the reported-paid ones
+   whose statements came in without the payment go back to owed
+   (``presumed.unconfirm``), and the obligations due before
+   ``finance.reminders.min_due_date`` are marked (``presumed.mark_floor``).
 6. Stage 16, events, persistent notices and actual parser overdrawn spells
    (``stage16``), then stage 17's orphan decisions and replacement candidates
    (``orphans``), then its open items (``open_items``).
@@ -327,6 +329,7 @@ def run(
             partial_kinds=frozenset(
                 ctx.settings.get_str_list(stage15_apply.PARTIAL_KINDS_KEY)
             ),
+            floor=ctx.settings.get_date(presumed.FLOOR_KEY),
         )
 
         beat()
@@ -387,6 +390,13 @@ def run(
         beat()
         stage15_apply.record_detected(uow)
         beat()
+        presumed.unconfirm(
+            uow,
+            ctx.settings.get_date(presumed.FLOOR_KEY),
+            ctx.settings.get_int(presumed.LAG_KEY),
+            ctx.settings.timezone,
+            early_days=ctx.settings.get_int(stage15_apply.EARLY_DAYS_KEY),
+        )
         presumed.mark_floor(uow, ctx.settings.get_date(presumed.FLOOR_KEY))
 
         beat()

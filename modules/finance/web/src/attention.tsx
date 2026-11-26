@@ -3,6 +3,7 @@ import type { ShellApi } from "@rheo-stream/web-contract/screen";
 
 import {
   ATTENTION_STATUSES,
+  localDay,
   monthLabel,
   shortDate,
   words,
@@ -12,7 +13,7 @@ import {
 } from "./data";
 import { Failure, Frame } from "./frame";
 import type { AttentionState } from "./load";
-import { money, Names, statusText, UNNAMED_ACCOUNT, UNNAMED_PAYEE } from "./names";
+import { money, Names, ownLabel, statusText, UNNAMED_ACCOUNT, UNNAMED_PAYEE } from "./names";
 import styles from "./finance.module.css";
 
 /** At most this many rows open under one group; the count above stays whole. */
@@ -110,9 +111,34 @@ function missingRows(months: readonly CoverageMonth[], names: Names): ReactNode[
   });
 }
 
-export function groups(state: AttentionState, year: number): Group[] {
+export function groups(state: AttentionState, year: number, timeZone?: string): Group[] {
   const names = namesOf(state);
   const out: Group[] = [];
+  if (state.owed.state === "ok") {
+    const o = state.owed.value;
+    const unconfirmed = o.rows.filter((r) => r.reportedUnconfirmed);
+    // Only when there is one: an empty "all clear" here would claim more than it knows.
+    if (unconfirmed.length)
+      out.push({
+        id: "reported",
+        label: "Marked paid, payment not found",
+        count: unconfirmed.length,
+        note: "not on later statements",
+        rows: unconfirmed.map((r) => {
+          const on = localDay(r.reportedAt, timeZone);
+          const figure = money(r.thresholdRemaining ?? r.amountDue, o.currency);
+          return (
+            <li key={r.ref}>
+              <span>
+                {ownLabel(r.payeeSlug, r.payeeLabel) ?? UNNAMED_PAYEE}, {r.periodLabel}
+              </span>
+              {figure ? <span className={styles.num}>{figure}</span> : null}
+              {on ? <span className={styles.faint}>marked paid {shortDate(on, year)}</span> : null}
+            </li>
+          );
+        }),
+      });
+  }
   if (state.strip.state === "ok") {
     const { confirm, confirmAsOf } = state.strip.value.facts;
     out.push({
@@ -235,7 +261,7 @@ export function AttentionView({
   state: AttentionState;
   year: number;
 }) {
-  const all = groups(state, year);
+  const all = groups(state, year, shell.timeZone);
   const open = all.filter((g) => g.count === null || g.count > 0);
   const clear = all.filter((g) => g.count === 0);
   const failed = (

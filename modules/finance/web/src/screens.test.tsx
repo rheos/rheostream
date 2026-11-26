@@ -2,7 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { OperationOutcome, ShellApi } from "@rheo-stream/web-contract/screen";
 
-import { screens } from "./index";
+import { components, screens } from "./index";
+import { refusalText } from "./paid";
 
 // Every value here is invented: payees, accounts, paths and amounts are made up.
 // `zz-issuer` stands for a payee the owner never labelled, whose label is its own
@@ -306,7 +307,7 @@ describe("owed", () => {
     expect(html).toContain("$45.10 overdue, $120.00 due in the next 14 days.");
     expect(html).toContain("Overdue");
     expect(html).toContain("Due in the next 14 days");
-    expect(html).toContain("Presumed paid or disputed");
+    expect(html).toContain("You marked paid, waiting for the statement");
     expect(html).toContain("before floor");
     expect(html).toContain("4 days overdue");
     expect(html).toContain("in 5 days");
@@ -354,6 +355,122 @@ describe("owed", () => {
     expect(html).toContain("Past due, minimum paid");
     expect(html).not.toContain("Overdue");
     expect(html).toContain("Nothing due in the next 14 days.");
+  });
+});
+
+describe("paid", () => {
+  const submit = vi.fn(async (): Promise<OperationOutcome> => ok({}));
+  const withSubmit = (results = RESULTS) => ({ ...fakeShell("owner", results), submit });
+  const reportedRow = row({
+    obligation_ref: "finance.obligation:00000000-0000-4000-8000-000000000005",
+    payee_label: "Example Phone",
+    status: "presumed_paid",
+    presumed_paid_basis: "finance.decision:00000000-0000-4000-8000-000000000009",
+    reported_at: "2026-01-04T03:00:00Z",
+  });
+  const unconfirmedRow = row({
+    obligation_ref: "finance.obligation:00000000-0000-4000-8000-000000000006",
+    payee_label: "Example Gas",
+    status: "open",
+    presumed_paid_basis: "finance.decision:00000000-0000-4000-8000-000000000008",
+    reported_at: "2025-12-01T20:00:00Z",
+    reported_unconfirmed: true,
+    days_until_due: -6,
+    due_date: "2025-12-30",
+    overdue: "120.00",
+  });
+  const owedWith = (...extra: Record<string, unknown>[]) =>
+    ok({
+      ...(OWED as { result: Record<string, unknown> }).result,
+      rows: [...((OWED as { result: { rows: unknown[] } }).result.rows), ...extra],
+    });
+
+  it("offers Paid on each open bill only when the host can submit", async () => {
+    const without = await render("owed", fakeShell());
+    expect(without).not.toContain(">Paid<");
+    const html = await render("owed", withSubmit());
+    expect(html).toContain('aria-label="Mark Example Power 2025-12 paid"');
+    expect(html).toContain('method="post"');
+    // The presumed-paid card and the history row have no Paid button, and no visible
+    // text names a reference (the client props still carry it, as any form's do).
+    expect(html).not.toContain("Mark Demo Card");
+    expect(html).not.toContain("Mark Sample Water");
+    expect(html).not.toMatch(/finance\.obligation:/);
+  });
+
+  it("folds a bill marked paid away with its date and an undo", async () => {
+    const html = await render(
+      "owed",
+      withSubmit({ ...RESULTS, "finance.owed.list": owedWith(reportedRow) }),
+    );
+    expect(html).toContain("You marked paid, waiting for the statement");
+    expect(html).toContain("marked paid Jan 4");
+    expect(html).toContain('aria-label="Undo marking Example Phone 2025-12 paid"');
+    expect(html).not.toContain("Mark Example Phone");
+  });
+
+  it("brings back a bill whose statements lacked the payment, flagged", async () => {
+    const owedShell = withSubmit({ ...RESULTS, "finance.owed.list": owedWith(unconfirmedRow) });
+    const html = await render("owed", owedShell);
+    expect(html).toContain("payment not found");
+    expect(html).toContain("You said this was paid on Dec 1, 2025.");
+    expect(html).toContain('aria-label="Mark Example Gas 2025-12 paid"');
+    expect(html).toContain('aria-label="Clear marking Example Gas 2025-12 paid"');
+    const attention = await render("attention", owedShell);
+    expect(attention).toContain("Marked paid, payment not found");
+    expect(attention).toContain("Example Gas, 2025-12");
+    expect(attention).toContain("marked paid Dec 1, 2025");
+  });
+
+  it("exports the one form component the manifest names", () => {
+    expect(Object.keys(components)).toEqual(["PaidForm"]);
+  });
+
+  it("says why a click did not save, in the module's fixed codes only", () => {
+    expect(refusalText({ state: "refused", code: "finance_writer_busy", text: "" })).toContain("updating");
+    expect(refusalText({ state: "refused", code: "finance_operation_refused", text: "x" })).toContain("Reload");
+    expect(refusalText({ state: "refused", code: "anything", text: "secret detail" })).not.toContain("secret");
+    expect(refusalText({ state: "unavailable" })).toContain("Try again");
+  });
+
+  it("labels history in the fold, never as marked paid", async () => {
+    const history = row({
+      obligation_ref: "finance.obligation:00000000-0000-4000-8000-000000000007",
+      payee_label: "Example Rent",
+      status: "presumed_paid",
+      before_floor: true,
+      presumed_paid_basis: "finance.decision:00000000-0000-4000-8000-000000000007",
+      reported_at: "2025-06-01T12:00:00Z",
+    });
+    const html = await render(
+      "owed",
+      withSubmit({ ...RESULTS, "finance.owed.list": owedWith(history) }),
+    );
+    expect(html).toContain("presumed paid, history");
+    expect(html).not.toContain("marked paid Jun 1");
+    // Undone from here it could not be presumed paid again but by the confirm queue.
+    expect(html).not.toContain("Undo marking Example Rent");
+  });
+
+  it("leaves the group out when nothing is unconfirmed", async () => {
+    const html = await render("attention", fakeShell());
+    expect(html).not.toContain("Marked paid, payment not found");
+  });
+
+  it("says nothing is owed when every row is marked paid", async () => {
+    const html = await render(
+      "owed",
+      withSubmit({
+        ...RESULTS,
+        "finance.owed.list": ok({
+          ...(OWED as { result: Record<string, unknown> }).result,
+          rows: [reportedRow],
+          overdue: "0.00",
+          due_in_window: "0.00",
+        }),
+      }),
+    );
+    expect(html).toContain("Nothing owed right now.");
   });
 });
 

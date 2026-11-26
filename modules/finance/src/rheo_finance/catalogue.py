@@ -23,6 +23,7 @@ MODULES: tuple[str, ...] = (
     "rheo_finance.reports.lines",
     "rheo_finance.reports.owed",
     "rheo_finance.reports.upcoming",
+    "rheo_finance.reported",
     "rheo_finance.reminders.desired",
     "rheo_finance.rates.rowan",
     "rheo_finance.jobs.ops",

@@ -244,6 +244,7 @@ def test_the_run_beats_before_every_stage_and_every_round(
         "beat",
         "stage15_apply.record_detected",
         "beat",
+        "presumed.unconfirm",
         "presumed.mark_floor",
         "beat",
         "stage16.build",

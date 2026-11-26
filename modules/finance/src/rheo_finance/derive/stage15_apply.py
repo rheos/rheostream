@@ -81,10 +81,17 @@ written as zero, so a cent short leaves no overdue cent behind.
 
 **Status.** ``open``, ``partial`` or ``paid`` from what was paid. A status stage 14 set
 otherwise (``superseded``, and later ``disputed``) stays: a superseded row still shows
-what was applied to it. ``presumed_paid`` stays only while nothing is paid: it is not a
-live candidate, and once a payment applies to it (in its own window, or by a
-``payment_apply``) it reverts to ``partial`` or ``paid`` with its remaining, while the
-decision stays on record and changes nothing.
+what was applied to it. A ``presumed_paid`` obligation due before the reminders floor
+(``Rules.floor``) is history: not a live candidate while nothing is paid, though a
+payment may apply to it in its own window or by a ``payment_apply``. One due on or
+after the floor (or with no floor or no due date) is one the owner reported paid
+(``reported``): it is live as an ``open`` or ``partial`` one would be, so its own
+payment lands on it and not on the next bill. Either way, once what was paid meets its
+threshold (a card's minimum, every other kind's amount due) the payment has confirmed
+it: it reverts to ``partial`` or ``paid`` with its remaining, while the decision stays
+on record and changes nothing. Short of the threshold it is written ``presumed_paid``
+still, until ``presumed.unconfirm`` shows what is left (history at once, a report once
+its statements are in).
 
 **FR-21.** For each obligation that supersedes another and whose document prints a
 payments figure (``total_payments``: a card statement's, or a tied-out bill's), the
@@ -210,6 +217,9 @@ class Rules:
     tolerance: Decimal
     early_days: int
     partial_kinds: frozenset[str]
+    # ``finance.reminders.min_due_date``: a presumed paid obligation due on or after
+    # it is one the owner reported paid and is still owed until a payment confirms it.
+    floor: dt.date | None = None
 
 
 @dataclass
@@ -229,6 +239,9 @@ class _Obligation:
     arrangement_ref: str | None
     primary_source: str
     paid: Decimal = ZERO
+    # Presumed paid and not history: reported paid, so it takes payments as an open
+    # one would until one meets its threshold (module docstring, "Status").
+    reported: bool = False
     # Owed from a parsed bill whose identity ties out, for its printed total or split
     # from it as bill and arrears: it already nets every payment dated before its bill
     # date, so it takes no ``early_days`` slack (``_nets_earlier``).
@@ -244,12 +257,30 @@ class _Obligation:
 
     def status(self, tolerance: Decimal) -> str:
         if self.base_status in KEPT and not (
-            self.base_status in REVERTED and self.paid
+            self.base_status in REVERTED and (self.paid or self.reported)
         ):
             return self.base_status
         if not self.owes(tolerance):
             return PAID
         return PARTIAL if self.paid else OPEN
+
+    def met(self, tolerance: Decimal) -> bool:
+        """Whether what was paid meets the threshold, ``tolerance`` settling it."""
+        rest = max(self.threshold_due - self.paid, ZERO)
+        return rest == 0 or bool(self.paid and rest <= tolerance)
+
+    def final_status(self, tolerance: Decimal) -> str:
+        """The status written: ``status``, except that a presumed paid obligation
+        paid toward but short of its threshold stays presumed paid (module docstring).
+        ``status`` alone says whether it is live for the next payment."""
+        found = self.status(tolerance)
+        if (
+            self.base_status == PRESUMED_PAID
+            and found in (OPEN, PARTIAL)
+            and not self.met(tolerance)
+        ):
+            return PRESUMED_PAID
+        return found
 
     @property
     def issue(self) -> tuple[dt.date, dt.date]:
@@ -385,7 +416,9 @@ def _slack(each: _Obligation, rules: Rules) -> dt.timedelta:
     return dt.timedelta(days=0 if each.nets_earlier else rules.early_days)
 
 
-def _obligations(uow: UnitOfWork) -> dict[uuid.UUID, _Obligation]:
+def _obligations(
+    uow: UnitOfWork, floor: dt.date | None = None
+) -> dict[uuid.UUID, _Obligation]:
     netting = _netting_sources(uow)
     o = obligation.c
     rows = uow.execute(
@@ -422,6 +455,10 @@ def _obligations(uow: UnitOfWork) -> dict[uuid.UUID, _Obligation]:
             arrangement_ref=row.arrangement_ref,
             primary_source=row.primary_source,
             nets_earlier=_nets_earlier(row, netting, arrears_sources),
+            reported=row.status == PRESUMED_PAID
+            and not (
+                floor is not None and row.due_date is not None and row.due_date < floor
+            ),
         )
         for row in rows
     }
@@ -736,7 +773,7 @@ def confirmation_targets(
     paid = _Payment(row.id, row.payee_id, row.amount, row.currency, row.paid_on)
     if paid.currency != CURRENCY:
         return ()
-    obligations = _obligations(uow)
+    obligations = _obligations(uow, rules.floor)
     cards = _card_payees(uow)
     mine = [each for each in obligations.values() if each.payee_id == paid.payee_id]
     if paid.payee_id in cards:
@@ -772,7 +809,8 @@ def confirmation_targets(
     live = [
         each
         for each in candidates
-        if each.base_status in (OPEN, PARTIAL) and each.owes(rules.tolerance)
+        if (each.base_status in (OPEN, PARTIAL) or each.reported)
+        and each.owes(rules.tolerance)
     ]
     targets = live or [
         each
@@ -851,7 +889,7 @@ def apply_payments(uow: UnitOfWork, rules: Rules) -> int:
     """Write every active payment's applications and each obligation's figures
     (module docstring); how many application rows it wrote. The caller cleared
     ``payment_application`` and made the obligations afresh."""
-    obligations = _obligations(uow)
+    obligations = _obligations(uow, rules.floor)
     payments = _payments(uow)
     decided = _decisions(uow, obligations.keys())
     applier = _Applier(obligations, _card_payees(uow))
@@ -887,7 +925,7 @@ def apply_payments(uow: UnitOfWork, rules: Rules) -> int:
             "b_paid": cents(each.paid),
             "b_remaining": left(each.amount_due, each.paid),
             "b_threshold": left(each.threshold_due, each.paid),
-            "b_status": each.status(rules.tolerance),
+            "b_status": each.final_status(rules.tolerance),
             "b_mismatch": mismatch.get(each.id),
         }
         for each in obligations.values()

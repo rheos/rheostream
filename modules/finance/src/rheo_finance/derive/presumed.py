@@ -31,6 +31,27 @@ the account's opened date or after its closed date, is never a gap, and neither 
 2. else the accounts whose lines are ``money`` evidence of an active payment to it
    (``payment_evidence`` after stage 15);
 3. else every own account of kind ``chequing``.
+
+**Reported paid, then checked.** The owner can also say a bill is paid now
+(``reported``, from the Owed screen), which records the same decision. Stage 15 then
+keeps it presumed paid until a payment meets its threshold, which confirms it
+(``stage15_apply``). ``unconfirm`` runs after stage 15: an obligation still presumed
+paid, due on or after the floor (or with no due date, or with no floor set), whose
+paying accounts each have statements loaded for every day from the bill's issue date
+(or the report, if earlier) to ``finance.payments.reported_paid_lag_days`` after the
+local date the decision was made, with no hole, has had its chance to show the payment
+and has not. The span starts ``finance.payments.early_days`` before the issue date, the
+most slack stage 15 allows a payment, and only CAD statements count, since only a CAD
+payment pays an obligation. It goes back to ``open`` (or
+``partial``) with its decision still named, so ``owed`` lists it again and says the
+report was not confirmed, and it is owed again for reminders. A paying account closed
+before the span starts is not asked, and one closed inside it is asked up to its
+closing day; with none left to ask, or one whose statements leave a
+day of its span unloaded, it stays presumed paid: a statement not loaded yet never
+reads as "not paid".
+Reporting it paid again makes a newer decision, and the check starts from that date.
+Presumed paid before the floor is a statement about history and is never checked:
+paid toward but short, it is ``partial``, showing what is left, at once.
 """
 
 from __future__ import annotations
@@ -42,14 +63,21 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import bindparam, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.decision import DecisionKind, reversed_clause
 from rheo_finance.derive.coverage import STATES, month_end, month_start
+from rheo_finance.derive.stage14 import CURRENCY
 from rheo_finance.derive.stage15 import ACTIVE, MONEY
-from rheo_finance.derive.stage15_apply import OBLIGATION_TYPE, OPEN, PRESUMED_PAID
+from rheo_finance.derive.stage15_apply import (
+    OBLIGATION_TYPE,
+    OPEN,
+    PARTIAL,
+    PRESUMED_PAID,
+)
 from rheo_finance.storage import refs
 from rheo_finance.storage.schema import (
     account,
@@ -59,10 +87,12 @@ from rheo_finance.storage.schema import (
     payee,
     payment,
     payment_evidence,
+    statement_period,
     txn,
 )
 
 FLOOR_KEY: Final = "finance.reminders.min_due_date"
+LAG_KEY: Final = "finance.payments.reported_paid_lag_days"
 FLOOR_MARKER: Final = "before reminders floor"
 CHEQUING: Final = "chequing"
 # Coverage states a payment could hide in: every state stage 6 writes but a month it
@@ -107,6 +137,97 @@ def mark_presumed(uow: UnitOfWork, named: Mapping[uuid.UUID, uuid.UUID]) -> int:
         .values(status=PRESUMED_PAID)
     )
     return result.rowcount
+
+
+# How far before its issue date the payment of a bill with no issue date may be.
+UNDATED_DAYS: Final = 31
+
+
+def _covered(
+    periods: list[tuple[dt.date, dt.date]], first: dt.date, last: dt.date
+) -> bool:
+    """Whether ``periods`` (each an inclusive start and end) cover every day from
+    ``first`` to ``last`` with no hole."""
+    day = first
+    for start, end in sorted(periods):
+        if start > day:
+            break
+        if end >= day:
+            day = end + dt.timedelta(days=1)
+            if day > last:
+                return True
+    return day > last
+
+
+def unconfirm(
+    uow: UnitOfWork,
+    floor: dt.date | None,
+    lag_days: int,
+    zone: ZoneInfo,
+    *,
+    early_days: int = 0,
+) -> int:
+    """Put back the presumed paid obligations whose statements came in without the
+    payment (module docstring, "Reported paid, then checked"); how many."""
+    o = obligation.c
+    rows = uow.execute(
+        select(o.id, o.payee_id, o.issued_on, o.due_date, o.paid, decision.c.decided_at)
+        .join(decision, decision.c.id == o.presumed_paid_decision_id)
+        .where(o.status == PRESUMED_PAID)
+    ).all()
+    back: list[dict[str, object]] = []
+    checked = []
+    for row in rows:
+        if floor is not None and row.due_date is not None and row.due_date < floor:
+            # History is never checked; paid toward, it shows what is left, as a
+            # presumed paid bill always has.
+            if row.paid:
+                back.append({"b_id": row.id, "b_status": PARTIAL})
+        else:
+            checked.append(row)
+    paying = _paying_accounts(uow) if checked else {}
+    closed = {
+        row.id: row.closed_on
+        for row in uow.execute(select(account.c.id, account.c.closed_on))
+    }
+    periods: dict[uuid.UUID, list[tuple[dt.date, dt.date]]] = defaultdict(list)
+    for row in uow.execute(
+        select(
+            statement_period.c.account_id,
+            statement_period.c.period_start,
+            statement_period.c.period_end,
+        ).where(statement_period.c.currency == CURRENCY)
+    ):
+        # Only a CAD payment pays an obligation, so only CAD statements can show it.
+        periods[row.account_id].append((row.period_start, row.period_end))
+    for row in checked:
+        reported = row.decided_at.astimezone(zone).date()
+        # The payment can be anywhere from early_days before the bill's issue (or the
+        # report, if that is earlier) to the report plus the lag: every day of it must
+        # be loaded. early_days is the widest slack stage 15 ever allows, so a bill
+        # that takes none is checked over a span a little wider than it needs.
+        issued = row.issued_on or (
+            (row.due_date or reported) - dt.timedelta(days=UNDATED_DAYS)
+        )
+        first = min(issued - dt.timedelta(days=early_days), reported)
+        last = reported + dt.timedelta(days=lag_days)
+        # An account closed before that span starts cannot hold the payment; one
+        # closed inside it must be loaded up to its closing day.
+        spans = [
+            (each, min(last, closed[each]) if closed.get(each) else last)
+            for each in paying.get(row.payee_id, frozenset())
+            if closed.get(each) is None or closed[each] >= first
+        ]
+        if spans and all(_covered(periods[each], first, end) for each, end in spans):
+            back.append({"b_id": row.id, "b_status": PARTIAL if row.paid else OPEN})
+    if back:
+        uow.execute(
+            update(obligation)
+            .where(obligation.c.id == bindparam("b_id"))
+            .values(status=bindparam("b_status")),
+            back,
+        )
+    return len(back)
 
 
 def mark_floor(uow: UnitOfWork, floor: dt.date | None) -> int:

@@ -226,6 +226,7 @@ def _payments(
         ctx.settings.get_decimal(stage15.TOLERANCE_KEY),
         ctx.settings.get_int(stage15_apply.EARLY_DAYS_KEY),
         frozenset(ctx.settings.get_str_list(stage15_apply.PARTIAL_KINDS_KEY)),
+        ctx.settings.get_date(presumed.FLOOR_KEY),
     )
     for paid in facts.payments:
         seen = evidence[paid.id]

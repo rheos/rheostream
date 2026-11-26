@@ -175,6 +175,10 @@ export interface Obligation {
   paymentsUnmatchable: boolean;
   statementConflict: boolean;
   presumedPaidBasis: string | null;
+  /** Reported paid, and the statements since came in without the payment. */
+  reportedUnconfirmed: boolean;
+  /** When it was reported paid (an ISO moment), when it was. */
+  reportedAt: string | null;
   amountDue: number | null;
   minimumDue: number | null;
   paid: number | null;
@@ -204,6 +208,8 @@ export function obligation(value: unknown): Obligation {
     paymentsUnmatchable: bool(r.payments_unmatchable),
     statementConflict: bool(r.statement_conflict),
     presumedPaidBasis: optional(r.presumed_paid_basis),
+    reportedUnconfirmed: bool(r.reported_unconfirmed),
+    reportedAt: optional(r.reported_at),
     amountDue: amount(r.amount_due),
     minimumDue: amount(r.minimum_due),
     paid: amount(r.paid),
@@ -310,17 +316,23 @@ export function owed(value: unknown): Owed {
   };
 }
 
-export type Bucket = "overdue" | "covered" | "soon" | "later" | "undated" | "parked";
+export type Bucket =
+  | "overdue"
+  | "covered"
+  | "soon"
+  | "later"
+  | "undated"
+  | "parked"
+  | "reported";
 
-/** States the module counts as owing nothing (`reports.owed.figures`). */
-const PARKED = new Set(["presumed_paid", "disputed"]);
-
-/** Where a row sits on the Owed screen: presumed-paid and disputed rows apart; a row
+/** Where a row sits on the Owed screen: reported (presumed) paid and disputed rows
+ * apart, since the module counts them as owing nothing (`reports.owed.figures`); a row
  * past its due date is overdue only while the module says so (its threshold, a card's
  * minimum, still open), else it is past due with the minimum covered; the rest by
  * days to the due date and the module's window. */
 export function bucket(o: Obligation, windowDays: number): Bucket {
-  if (PARKED.has(o.status)) return "parked";
+  if (o.status === "presumed_paid") return "reported";
+  if (o.status === "disputed") return "parked";
   if (o.daysUntilDue === null) return "undated";
   if (o.daysUntilDue < 0) {
     // Without the figure (not the owner's session), fall back to the date alone.
@@ -328,6 +340,34 @@ export function bucket(o: Obligation, windowDays: number): Bucket {
     return o.overdue > 0 ? "overdue" : "covered";
   }
   return o.daysUntilDue <= windowDays ? "soon" : "later";
+}
+
+/** The local date (YYYY-MM-DD) of an ISO moment in `timeZone`, or null. */
+export function localDay(moment: string | null, timeZone = "UTC"): string | null {
+  if (!moment) return null;
+  const when = new Date(moment);
+  if (Number.isNaN(when.getTime())) return null;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(when);
+}
+
+/** The two owner writes the Owed screen submits (ADR-0030). Plain strings here, in a
+ * server module, so the screens never import a value from the client file. */
+export const REPORT_PAID = "finance.obligation.report_paid";
+export const UNREPORT_PAID = "finance.obligation.unreport_paid";
+export type PaidOperation = typeof REPORT_PAID | typeof UNREPORT_PAID;
+
+/** Whether the owner can say this one is paid: open or part-paid, not history from
+ * before the reminders floor, with something still owed toward its threshold (a
+ * card's minimum). Unknown figures (no owner session) leave the module to decide. */
+export function reportable(o: Obligation): boolean {
+  if (o.status !== "open" && o.status !== "partial") return false;
+  if (o.beforeFloor) return false;
+  return o.thresholdRemaining === null || o.thresholdRemaining > 0;
 }
 
 // --- finance.owed.trace -------------------------------------------------------------

@@ -69,6 +69,11 @@ class OwedRow(Facts):
     recorded_threshold_remaining: Annotated[Decimal, Tiered(R)]
     reminder_eligible: Annotated[bool, Tiered(P)]
     invoice_folder: Annotated[str | None, Tiered(P)]
+    # Reported paid, and its paying accounts' statements came in without the payment
+    # (``derive.presumed.unconfirm``): owed again, with the decision still named.
+    reported_unconfirmed: Annotated[bool, Tiered(P)] = False
+    # When the decision that names it was made; filled by the list.
+    reported_at: Annotated[dt.datetime | None, Tiered(P)] = None
 
 
 def figures(fact: Facts, today: dt.date, window: int) -> OwedRow:
@@ -104,6 +109,10 @@ def figures(fact: Facts, today: dt.date, window: int) -> OwedRow:
         and days is not None
         and threshold > 0,
         invoice_folder=folder,
+        reported_unconfirmed=fact.presumed_paid_basis is not None
+        and not fact.before_floor
+        and fact.status in {"open", "partial"}
+        and fact.threshold_remaining > 0,
     )
 
 
@@ -200,12 +209,28 @@ def list_owed(ctx: FinanceContext, uow: UnitOfWork, _data: ListIn) -> ListOut:
     today = local_date(ctx.clock.now_utc(), ctx.settings.timezone)
     window = ctx.settings.get_int("finance.owed.window_days")
     cap = ctx.settings.get_int("finance.owed.max_rows")
+    reported = {
+        row.obligation_ref: row.presumed_at
+        for row in uow.execute(
+            select(report_owed_trace.c.obligation_ref, report_owed_trace.c.presumed_at)
+            .where(report_owed_trace.c.presumed_at.is_not(None))
+            .distinct()
+        )
+    }
     rows = [
         figures(Facts.model_validate(dict(row)), today, window)
         for row in uow.execute(select(report_owed)).mappings()
     ]
+    rows = [
+        r.model_copy(update={"reported_at": reported.get(r.obligation_ref)})
+        if r.presumed_paid_basis
+        else r
+        for r in rows
+    ]
     rows.sort(
         key=lambda r: (
+            # Reported paid waits for its statements at the end.
+            r.status == "presumed_paid",
             r.overdue <= 0,
             r.due_date or dt.date.max,
             r.payee_slug,
@@ -213,6 +238,17 @@ def list_owed(ctx: FinanceContext, uow: UnitOfWork, _data: ListIn) -> ListOut:
             r.obligation_ref,
         )
     )
+    # The cap trims only the plain owed rows. A bill the owner reported paid, and one
+    # whose report its statements did not bear out, are always listed: the first keeps
+    # its Undo, the second its warning, however many other bills are open.
+    shown: list[OwedRow] = []
+    plain = 0
+    for r in rows:
+        if r.status == "presumed_paid" or r.reported_unconfirmed:
+            shown.append(r)
+        elif plain < cap:
+            shown.append(r)
+            plain += 1
     due = sum((r.due_in_window for r in rows), ZERO)
     overdue = sum((r.overdue for r in rows), ZERO)
     carried = sum((r.carried for r in rows), ZERO)
@@ -226,8 +262,8 @@ def list_owed(ctx: FinanceContext, uow: UnitOfWork, _data: ListIn) -> ListOut:
         due_in_window=due,
         overdue=overdue,
         carried=carried,
-        rows=rows[:cap],
-        more=max(0, len(rows) - cap),
+        rows=shown,
+        more=len(rows) - len(shown),
         credits=credits(ctx, uow),
         gaps=missing,
         gap_count=len(missing),
