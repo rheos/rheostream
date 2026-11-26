@@ -81,10 +81,14 @@ written as zero, so a cent short leaves no overdue cent behind.
 
 **Status.** ``open``, ``partial`` or ``paid`` from what was paid. A status stage 14 set
 otherwise (``superseded``, and later ``disputed``) stays: a superseded row still shows
-what was applied to it. ``presumed_paid`` stays only while nothing is paid: it is not a
-live candidate, and once a payment applies to it (in its own window, or by a
-``payment_apply``) it reverts to ``partial`` or ``paid`` with its remaining, while the
-decision stays on record and changes nothing.
+what was applied to it. ``presumed_paid`` (the owner said it was paid) is not a live
+candidate while nothing is paid. A payment applies to it in its own window, or by a
+``payment_apply``, and once what was paid meets its threshold (a card's minimum, every
+other kind's amount due) the payment has confirmed it: it reverts to ``partial`` or
+``paid`` with its remaining, while the decision stays on record and changes nothing.
+Paid toward but short of the threshold, it takes later payments as a ``partial`` one
+would and is written ``presumed_paid`` still, until ``presumed.unconfirm`` finds the
+statements that should show the rest.
 
 **FR-21.** For each obligation that supersedes another and whose document prints a
 payments figure (``total_payments``: a card statement's, or a tied-out bill's), the
@@ -250,6 +254,24 @@ class _Obligation:
         if not self.owes(tolerance):
             return PAID
         return PARTIAL if self.paid else OPEN
+
+    def met(self, tolerance: Decimal) -> bool:
+        """Whether what was paid meets the threshold, ``tolerance`` settling it."""
+        rest = max(self.threshold_due - self.paid, ZERO)
+        return rest == 0 or bool(self.paid and rest <= tolerance)
+
+    def final_status(self, tolerance: Decimal) -> str:
+        """The status written: ``status``, except that a presumed paid obligation
+        paid toward but short of its threshold stays presumed paid (module docstring).
+        ``status`` alone says whether it is live for the next payment."""
+        found = self.status(tolerance)
+        if (
+            self.base_status == PRESUMED_PAID
+            and found == PARTIAL
+            and not self.met(tolerance)
+        ):
+            return PRESUMED_PAID
+        return found
 
     @property
     def issue(self) -> tuple[dt.date, dt.date]:
@@ -887,7 +909,7 @@ def apply_payments(uow: UnitOfWork, rules: Rules) -> int:
             "b_paid": cents(each.paid),
             "b_remaining": left(each.amount_due, each.paid),
             "b_threshold": left(each.threshold_due, each.paid),
-            "b_status": each.status(rules.tolerance),
+            "b_status": each.final_status(rules.tolerance),
             "b_mismatch": mismatch.get(each.id),
         }
         for each in obligations.values()

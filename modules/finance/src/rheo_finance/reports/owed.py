@@ -69,6 +69,11 @@ class OwedRow(Facts):
     recorded_threshold_remaining: Annotated[Decimal, Tiered(R)]
     reminder_eligible: Annotated[bool, Tiered(P)]
     invoice_folder: Annotated[str | None, Tiered(P)]
+    # Reported paid, and its paying accounts' statements came in without the payment
+    # (``derive.presumed.unconfirm``): owed again, with the decision still named.
+    reported_unconfirmed: Annotated[bool, Tiered(P)] = False
+    # When the decision that names it was made; filled by the list.
+    reported_at: Annotated[dt.datetime | None, Tiered(P)] = None
 
 
 def figures(fact: Facts, today: dt.date, window: int) -> OwedRow:
@@ -79,6 +84,9 @@ def figures(fact: Facts, today: dt.date, window: int) -> OwedRow:
     days = None if fact.due_date is None else (fact.due_date - today).days
     overdue = threshold if days is not None and days < 0 else ZERO
     carried = remaining - threshold if fact.kind == "card_statement" else ZERO
+    if fact.kind == "card_statement" and fact.status == "presumed_paid":
+        # Reported paid covers the minimum; the balance past it is still carried.
+        carried = fact.remaining - fact.threshold_remaining
     due = threshold if days is not None and 0 <= days <= window else ZERO
     # Folder keys are canonical archive keys, never the invoice's printed name.
     source = fact.primary_source.split("/")
@@ -104,6 +112,9 @@ def figures(fact: Facts, today: dt.date, window: int) -> OwedRow:
         and days is not None
         and threshold > 0,
         invoice_folder=folder,
+        reported_unconfirmed=fact.presumed_paid_basis is not None
+        and fact.status in {"open", "partial"}
+        and fact.threshold_remaining > 0,
     )
 
 
@@ -200,12 +211,28 @@ def list_owed(ctx: FinanceContext, uow: UnitOfWork, _data: ListIn) -> ListOut:
     today = local_date(ctx.clock.now_utc(), ctx.settings.timezone)
     window = ctx.settings.get_int("finance.owed.window_days")
     cap = ctx.settings.get_int("finance.owed.max_rows")
+    reported = {
+        row.obligation_ref: row.presumed_at
+        for row in uow.execute(
+            select(report_owed_trace.c.obligation_ref, report_owed_trace.c.presumed_at)
+            .where(report_owed_trace.c.presumed_at.is_not(None))
+            .distinct()
+        )
+    }
     rows = [
         figures(Facts.model_validate(dict(row)), today, window)
         for row in uow.execute(select(report_owed)).mappings()
     ]
+    rows = [
+        r.model_copy(update={"reported_at": reported.get(r.obligation_ref)})
+        if r.presumed_paid_basis
+        else r
+        for r in rows
+    ]
     rows.sort(
         key=lambda r: (
+            # Reported paid waits for its statements at the end, past the cap first.
+            r.status == "presumed_paid",
             r.overdue <= 0,
             r.due_date or dt.date.max,
             r.payee_slug,

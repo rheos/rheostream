@@ -330,6 +330,11 @@
   color: var(--rs-color-ink-dim);
   font-size: var(--rs-font-size-sm);
 }
+.tagWarn {
+  background: transparent;
+  border: var(--rs-size-hairline) solid var(--rs-color-danger);
+  color: var(--rs-color-danger);
+}
 .tagQuiet {
   background: transparent;
   border: var(--rs-size-hairline) solid var(--rs-color-hairline);
@@ -513,4 +518,61 @@
       color 150ms ease-out,
       background-color 150ms ease-out;
   }
+}
+
+/* --- Paid and undo ------------------------------------------------------------------ */
+.paidForm {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rs-space-2);
+  margin: 0;
+}
+.paid,
+.undo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--rs-size-control);
+  padding: var(--rs-space-1) var(--rs-space-3);
+  border: var(--rs-size-hairline) solid var(--rs-color-control-border);
+  border-radius: var(--rs-radius-sm);
+  background: var(--rs-color-control-bg);
+  color: var(--rs-color-ink);
+  font: inherit;
+  font-size: var(--rs-font-size-sm);
+  cursor: pointer;
+}
+.undo {
+  border-color: transparent;
+  background: transparent;
+  color: var(--rs-color-ink-dim);
+}
+.paid:hover,
+.undo:hover {
+  background: var(--rs-color-surface-1);
+  color: var(--rs-color-ink);
+}
+.paid:focus-visible,
+.undo:focus-visible {
+  outline: calc(var(--rs-size-hairline) * 2) solid var(--rs-color-control-focus);
+  outline-offset: calc(var(--rs-size-hairline) * 2);
+}
+.paid:disabled,
+.undo:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+.paidFailed:empty {
+  display: none;
+}
+.paidFailed {
+  color: var(--rs-color-danger);
+  font-size: var(--rs-font-size-sm);
+}
+.reported {
+  margin-top: var(--rs-space-6);
+  border-top: var(--rs-size-hairline) solid var(--rs-color-hairline);
+}
+.reported > p {
+  margin: 0 0 var(--rs-space-2);
 }

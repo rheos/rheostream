@@ -1,16 +1,19 @@
 """Finance's ``ModuleManifest``: one job, one gated schedule, its core settings keys,
-an install check, eight READ operations with their tools, owner-only web screens over
-them, and no exportable record type.
+an install check, eight READ operations with their tools, two owner writes, owner-only
+web screens over them, and no exportable record type.
 
 - The eight reader reads (``wiring.reads``, ADR-0028) are owner-only and
   ``package_sets="explicit_only"``: no named package set, connector grant or routine
   token reaches them, only a ``module_read:finance`` token. Their registered outputs
-  leave every restricted field empty for any token. ``audit_sink`` is ``None``
-  because nothing above READ exists on core's side.
-- ``web`` is three read-only screens (Owed, Needs attention, Coverage) on
-  ``finance.<base host>``, for the owner alone. A browser session reaches the reads
-  by its role, so the screens add no token set, tool or MCP exposure. The reads fill
-  their restricted fields (amounts) for that session alone (ADR-0029).
+  leave every restricted field empty for any token.
+- The two writes (``wiring.writes``, ADR-0030) report a bill paid and undo it. They are
+  MUTATE, for the owner, with no tool, and refuse every caller but the owner's own
+  browser session; core audits them through its own sink (``audit_sink``).
+- ``web`` is three screens (Owed, Needs attention, Coverage) on
+  ``finance.<base host>``, for the owner alone; Owed submits the two writes. A browser
+  session reaches the reads by its role, so the screens add no token set, tool or MCP
+  exposure. The reads fill their restricted fields (amounts) for that session alone
+  (ADR-0029).
 - ``export`` is required, but core exports only modules with an exportable record
   type, and finance declares none: ledger state never enters a workspace export. The
   two callables refuse loudly if that ever changes; state moves with
@@ -29,8 +32,10 @@ from importlib.metadata import version
 from typing import TYPE_CHECKING, Final
 
 from rheo_contracts import CONTRACT_VERSION, Role
+from rheo_core.audit.core_sink import CORE_AUDIT_SINK
 from rheo_core.modules.manifest import (
     ExportDeclaration,
+    FormDeclaration,
     JobKind,
     ModuleManifest,
     NavigationEntry,
@@ -51,6 +56,8 @@ from rheo_finance.wiring.tick_job import (
     TickPayload,
     finance_tick_job,
 )
+from rheo_finance.wiring.writes import OPERATIONS as WRITES
+from rheo_finance.wiring.writes import WRITE_NAMES
 
 if TYPE_CHECKING:
     from rheo_core.exports.artifact import ExportSnapshot
@@ -127,7 +134,7 @@ MANIFEST = ModuleManifest(
         required_extensions=(),
     ),
     configuration_schema=SETTINGS,
-    operations=OPERATIONS,
+    operations=(*OPERATIONS, *WRITES),
     tools=TOOLS,
     events=(),
     subscriptions=(),
@@ -159,10 +166,10 @@ MANIFEST = ModuleManifest(
         exporter=refuse_export,
         importer=refuse_import,
     ),
-    # Read-only screens over the reads above, for the owner alone: the navigation
-    # entry names only the owner, and every screen renders the owner-only state for
-    # anyone else before it reads. No forms and no record routes, so the shell's
-    # allowlist for this module is exactly its READ operations.
+    # Screens over the reads above, for the owner alone: the navigation entry names
+    # only the owner, and every screen renders the owner-only state for anyone else
+    # before it reads. One form per write, so the shell lets Owed submit exactly those
+    # two; no record routes.
     web=WebContribution(
         surface=WebSurface(surface="finance", host="finance", path="/finance"),
         package_name="@rheo-stream/finance-web",
@@ -178,7 +185,10 @@ MANIFEST = ModuleManifest(
         ),
         record_views=(),
         search_providers=(),
-        forms=(),
+        forms=tuple(
+            FormDeclaration(operation=name, component="PaidForm")
+            for name in WRITE_NAMES
+        ),
     ),
     agent_guidance=None,
     secret_scopes=(),
@@ -186,6 +196,6 @@ MANIFEST = ModuleManifest(
     health_checks=(install_check,),
     contract_tests="modules/finance/tests",
     sensitivity={},
-    audit_sink=None,
+    audit_sink=CORE_AUDIT_SINK,
     package_sets="explicit_only",
 )

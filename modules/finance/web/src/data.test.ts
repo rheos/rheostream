@@ -4,9 +4,11 @@ import {
   amount,
   bucket,
   coverage,
+  localDay,
   obligation,
   owed,
   relativeDays,
+  reportable,
   shortDate,
   sinks,
   statusFacts,
@@ -141,9 +143,30 @@ describe("bucket", () => {
     expect(bucket({ ...base, daysUntilDue: null }, 14)).toBe("undated");
   });
   it("keeps presumed-paid and disputed rows apart, however late", () => {
-    expect(bucket({ ...base, status: "presumed_paid", daysUntilDue: -30 }, 14)).toBe("parked");
+    expect(bucket({ ...base, status: "presumed_paid", daysUntilDue: -30 }, 14)).toBe("reported");
     expect(bucket({ ...base, status: "disputed", daysUntilDue: 2 }, 14)).toBe("parked");
     expect(bucket({ ...base, status: "partial", daysUntilDue: -2 }, 14)).toBe("overdue");
+  });
+});
+
+describe("reportable", () => {
+  const base = obligation({ status: "open", threshold_remaining: "10.00" });
+  it("offers Paid only on an open or part-paid bill with something left toward its threshold", () => {
+    expect(reportable(base)).toBe(true);
+    expect(reportable({ ...base, status: "partial" })).toBe(true);
+    expect(reportable({ ...base, thresholdRemaining: 0 })).toBe(false);
+    expect(reportable({ ...base, status: "presumed_paid" })).toBe(false);
+    expect(reportable({ ...base, status: "disputed" })).toBe(false);
+    expect(reportable({ ...base, thresholdRemaining: null })).toBe(true);
+  });
+});
+
+describe("localDay", () => {
+  it("reads a moment as the date in the viewer's zone", () => {
+    expect(localDay("2026-11-21T04:30:00Z", "America/Vancouver")).toBe("2026-11-20");
+    expect(localDay("2026-11-21T04:30:00Z", "UTC")).toBe("2026-11-21");
+    expect(localDay(null)).toBeNull();
+    expect(localDay("not a date")).toBeNull();
   });
 });
 

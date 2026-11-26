@@ -1,6 +1,7 @@
 """The manifest (L1, L2, RS-6d L8): one job, one gated schedule, the settings keys,
-the eight opt-in reads and nothing else core can reach, refusing export stubs, and the
-flagship loading the module beside the four it already loaded. No database.
+the eight opt-in reads, the two owner writes (#639) and nothing else core can reach,
+refusing export stubs, and the flagship loading the module beside the four it already
+loaded. No database.
 """
 
 from __future__ import annotations
@@ -11,7 +12,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from rheo_contracts import Role
+from rheo_contracts import AuditSpec, Role, SafetyClass
+from rheo_core.audit.core_sink import CORE_AUDIT_SINK
 from rheo_core.settings import Scope, ValueType
 
 import rheo_finance
@@ -70,14 +72,21 @@ def test_one_job_and_one_gated_schedule() -> None:
     )
 
 
-def test_only_the_eight_opt_in_reads_reach_finance_through_core() -> None:
-    """L8: eight READ operations and their tools, opt-in only; nothing else core can
-    reach (no record type, resolver, deletion, event, subscription, sensitivity map,
-    audit sink, connector, secret scope, authorization callback or agent guidance).
-    The reads themselves are pinned in ``test_reads``; the read-only web screens over
-    them in the test below."""
-    assert len(MANIFEST.operations) == 8
+def test_only_the_reads_and_the_two_writes_reach_finance_through_core() -> None:
+    """L8: eight READ operations and their tools, opt-in only, and the two owner
+    writes with no tool, audited by core's own sink; nothing else core can reach (no
+    record type, resolver, deletion, event, subscription, sensitivity map, connector,
+    secret scope, authorization callback or agent guidance). The reads are pinned in
+    ``test_reads``, the writes in ``test_writes``; the web screens in the test below."""
+    assert len(MANIFEST.operations) == 10
+    writes = [d for d, _ in MANIFEST.operations if d.safety_class is SafetyClass.MUTATE]
+    assert [d.name for d in writes] == [
+        "finance.obligation.report_paid",
+        "finance.obligation.unreport_paid",
+    ]
+    assert {d.audit for d in writes} == {AuditSpec(subject_field=None)}
     assert len(MANIFEST.tools) == 8
+    assert not {tool.operation for tool in MANIFEST.tools} & {d.name for d in writes}
     assert MANIFEST.package_sets == "explicit_only"
     assert MANIFEST.record_types == ()
     assert MANIFEST.resolvers == ()
@@ -85,7 +94,7 @@ def test_only_the_eight_opt_in_reads_reach_finance_through_core() -> None:
     assert MANIFEST.events == ()
     assert MANIFEST.subscriptions == ()
     assert dict(MANIFEST.sensitivity) == {}
-    assert MANIFEST.audit_sink is None
+    assert MANIFEST.audit_sink is CORE_AUDIT_SINK
     assert MANIFEST.connector_bindings == ()
     assert MANIFEST.secret_scopes == ()
     assert MANIFEST.authorization_completion is None
@@ -95,10 +104,10 @@ def test_only_the_eight_opt_in_reads_reach_finance_through_core() -> None:
     assert MANIFEST.health_checks == (wiring.install_check,)
 
 
-def test_the_web_screens_are_read_only_and_the_owners_alone() -> None:
-    """#584: three screens on ``finance.``, one navigation entry for the owner, and
-    no form, record route, record view or search provider, so the shell's allowlist
-    for the module is its READ operations and nothing it can submit."""
+def test_the_web_screens_are_the_owners_alone_and_submit_only_the_two_writes() -> None:
+    """#584, #639: three screens on ``finance.``, one navigation entry for the owner,
+    one form per owner write and no record route, record view or search provider, so
+    the shell lets the module submit those two and nothing else."""
     web = MANIFEST.web
     assert web is not None
     assert (web.surface.surface, web.surface.host, web.surface.path) == (
@@ -115,7 +124,10 @@ def test_the_web_screens_are_read_only_and_the_owners_alone() -> None:
         ("attention", "/attention", "attention"),
         ("coverage", "/coverage", "coverage"),
     ]
-    assert web.forms == ()
+    assert [(form.operation, form.component) for form in web.forms] == [
+        ("finance.obligation.report_paid", "PaidForm"),
+        ("finance.obligation.unreport_paid", "PaidForm"),
+    ]
     assert web.record_routes == ()
     assert web.record_views == ()
     assert web.search_providers == ()

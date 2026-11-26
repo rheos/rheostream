@@ -6,12 +6,14 @@ import { CoverageView } from "./coverage";
 import { OwnerOnly } from "./frame";
 import { loadAttention, loadCoverage, loadOwed } from "./load";
 import { OwedView } from "./owed";
+import { PaidForm } from "./paid";
 
 /**
  * Finance's screens, keyed by the `screen` identifier each route in the module's
- * manifest names. Every one is an async server component with no client script, and
- * every one is the owner's alone: a member gets the owner-only state and no read is
- * made, though core would refuse each read for a member anyway.
+ * manifest names. Every one is an async server component (the one client script is
+ * the Paid and Undo button on Owed, `PaidForm`), and every one is the owner's alone: a
+ * member gets the owner-only state and no read is made, though core would refuse each
+ * read for a member anyway.
  */
 
 /** This year in the viewer's zone, or UTC when the host does not know it. */
@@ -49,3 +51,6 @@ const coverage: Screen = async ({ shell, query }) => {
 };
 
 export const screens = { owed, attention, coverage } satisfies Record<string, Screen>;
+
+/** The one form component the manifest names, for both owner writes. */
+export const components = { PaidForm };

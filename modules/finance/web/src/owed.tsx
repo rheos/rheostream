@@ -2,7 +2,9 @@ import type { ShellApi } from "@rheo-stream/web-contract/screen";
 
 import {
   bucket,
+  localDay,
   relativeDays,
+  reportable,
   shortDate,
   words,
   type Bucket,
@@ -13,6 +15,7 @@ import {
 import { BellIcon, Failure, Footnote, Frame, popoverId } from "./frame";
 import type { OwedState } from "./load";
 import { money, ownLabel, UNNAMED_PAYEE } from "./names";
+import { PaidForm, REPORT_PAID, UNREPORT_PAID } from "./paid";
 import styles from "./finance.module.css";
 
 const SECTIONS: readonly [Bucket, (window: number) => string][] = [
@@ -21,8 +24,9 @@ const SECTIONS: readonly [Bucket, (window: number) => string][] = [
   ["later", () => "Later"],
   ["covered", () => "Past due, minimum paid"],
   ["undated", () => "No due date"],
-  ["parked", () => "Presumed paid or disputed"],
+  ["parked", () => "Disputed"],
 ];
+
 
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
@@ -38,9 +42,10 @@ export function headline(o: Owed): string {
     later: 0,
     undated: 0,
     parked: 0,
+    reported: 0,
   };
   for (const row of o.rows) counts[bucket(row, o.windowDays)] += 1;
-  if (!o.rows.length) return "Nothing owed right now.";
+  if (o.rows.length === counts.reported) return "Nothing owed right now.";
   const overdue = money(o.overdue, o.currency);
   const due = money(o.dueInWindow, o.currency);
   const parts: string[] = [];
@@ -66,6 +71,7 @@ function lead(o: Obligation, currency: string): string | null {
 
 function Bill({
   o,
+  shell,
   trace,
   traceUnavailable = false,
   year,
@@ -73,6 +79,7 @@ function Bill({
   currency,
 }: {
   o: Obligation;
+  shell: ShellApi;
   trace?: Trace;
   traceUnavailable?: boolean;
   year: number;
@@ -85,6 +92,7 @@ function Bill({
   const name = ownLabel(o.payeeSlug, o.payeeLabel) ?? UNNAMED_PAYEE;
   const figure = lead(o, currency);
   const isCard = o.kind === "card_statement";
+  const reportedOn = localDay(o.reportedAt, shell.timeZone);
   return (
     <li className={`${styles.bill}${o.beforeFloor ? ` ${styles.floored}` : ""}`}>
       <div className={styles.billMain}>
@@ -94,6 +102,9 @@ function Bill({
         {o.beforeFloor ? (
           <span className={`${styles.tag} ${styles.tagQuiet}`}>before floor</span>
         ) : null}
+        {o.reportedUnconfirmed ? (
+          <span className={`${styles.tag} ${styles.tagWarn}`}>payment not found</span>
+        ) : null}
       </div>
       <div className={styles.billWhen}>
         {figure ? (
@@ -101,7 +112,7 @@ function Bill({
             {isCard && o.thresholdRemaining ? `${figure} min` : figure}
           </span>
         ) : null}
-        {o.daysUntilDue !== null && where !== "parked" ? (
+        {o.daysUntilDue !== null && where !== "parked" && where !== "reported" ? (
           <span className={late ? styles.late : styles.faint}>
             {where === "covered" ? "past due" : relativeDays(o.daysUntilDue)}
           </span>
@@ -173,7 +184,13 @@ function Bill({
               {o.statementConflict ? <li>Two copies of this statement disagree.</li> : null}
             </ul>
           ) : null}
-          {trace?.presumedBasisKind ? (
+          {o.reportedUnconfirmed ? (
+            <p>
+              You said this was paid{reportedOn ? ` on ${shortDate(reportedOn, year)}` : ""}.
+              The statements loaded since then don&apos;t show the payment, so it is owed
+              again. If you paid it from another account, mark it paid again.
+            </p>
+          ) : trace?.presumedBasisKind ? (
             <p>Presumed paid on the basis of {words(trace.presumedBasisKind)}.</p>
           ) : null}
           {trace?.payments.length ? (
@@ -198,8 +215,76 @@ function Bill({
             <p className={styles.faint}>No payments applied yet.</p>
           )}
         </Footnote>
+        {reportable(o) && shell.submit ? (
+          <PaidForm
+            submit={shell.submit}
+            refresh={shell.refresh}
+            operation={REPORT_PAID}
+            obligationRef={o.ref}
+            label={`Mark ${name} ${o.periodLabel} paid`}
+          />
+        ) : null}
       </div>
     </li>
+  );
+}
+
+/** The bills the owner said are paid, waiting for a statement to show the payment:
+ * folded away, each with its undo. */
+function Reported({
+  list,
+  shell,
+  year,
+  currency,
+}: {
+  list: readonly Obligation[];
+  shell: ShellApi;
+  year: number;
+  currency: string;
+}) {
+  if (!list.length) return null;
+  return (
+    <details className={`${styles.group} ${styles.reported}`}>
+      <summary>
+        <span className={styles.groupLabel}>You marked paid, waiting for the statement</span>
+        <span className={styles.groupCount}>{list.length}</span>
+      </summary>
+      <p className={styles.faint}>
+        Each one comes back here as owed if the statements that should show the payment
+        load without it.
+      </p>
+      <ul className={styles.bills}>
+        {list.map((o) => {
+          const name = ownLabel(o.payeeSlug, o.payeeLabel) ?? UNNAMED_PAYEE;
+          const on = localDay(o.reportedAt, shell.timeZone);
+          const figure = money(
+            o.kind === "card_statement" ? o.minimumDue ?? o.amountDue : o.amountDue,
+            currency,
+          );
+          return (
+            <li key={o.ref} className={styles.bill}>
+              <div className={styles.billMain}>
+                <span className={styles.payee}>{name}</span>
+                <span className={styles.period}>{o.periodLabel}</span>
+              </div>
+              <div className={styles.billWhen}>
+                {figure ? <span>{figure}</span> : null}
+                {on ? <span className={styles.faint}>marked paid {shortDate(on, year)}</span> : null}
+                {shell.submit && o.presumedPaidBasis ? (
+                  <PaidForm
+                    submit={shell.submit}
+                    refresh={shell.refresh}
+                    operation={UNREPORT_PAID}
+                    obligationRef={o.ref}
+                    label={`Undo marking ${name} ${o.periodLabel} paid`}
+                  />
+                ) : null}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </details>
   );
 }
 
@@ -207,12 +292,16 @@ export function OwedView({ shell, state }: { shell: ShellApi; state: OwedState }
   const { owed } = state;
   return (
     <Frame shell={shell} active="owed" strip={state.strip}>
-      {owed.state !== "ok" ? <Failure what="what you owe" outcome={owed} /> : <OwedBody state={state} />}
+      {owed.state !== "ok" ? (
+        <Failure what="what you owe" outcome={owed} />
+      ) : (
+        <OwedBody shell={shell} state={state} />
+      )}
     </Frame>
   );
 }
 
-function OwedBody({ state }: { state: OwedState }) {
+function OwedBody({ shell, state }: { shell: ShellApi; state: OwedState }) {
   if (state.owed.state !== "ok") return null;
   const o = state.owed.value;
   const year = Number(o.today.slice(0, 4)) || 0;
@@ -235,8 +324,9 @@ function OwedBody({ state }: { state: OwedState }) {
         <p className={styles.headline}>{headline(o)}</p>
         <Footnote id={popoverId("owed-about")} label="About this list" title="About this list">
           <p>
-            Open, part-paid, presumed-paid and disputed bills, overdue first, then by due
-            date. {o.asOf}.
+            Open, part-paid and disputed bills, overdue first, then by due date. A bill
+            you mark paid moves to the fold at the end until a statement shows the
+            payment. {o.asOf}.
           </p>
           {carried && o.carried ? (
             <p>
@@ -266,6 +356,7 @@ function OwedBody({ state }: { state: OwedState }) {
                 <Bill
                   key={row.ref}
                   o={row}
+                  shell={shell}
                   trace={state.traces?.get(row.ref)}
                   traceUnavailable={state.traces === null}
                   year={year}
@@ -277,6 +368,12 @@ function OwedBody({ state }: { state: OwedState }) {
           </section>
         );
       })}
+      <Reported
+        list={grouped.get("reported") ?? []}
+        shell={shell}
+        year={year}
+        currency={o.currency}
+      />
       {o.more ? (
         <p className={styles.faint}>
           {plural(o.more, "more bill", "more bills")} past the list&apos;s limit, not shown.

@@ -241,6 +241,9 @@ SPECS: Final[tuple[KeySpec, ...]] = (
           "Obligation kinds whose partial payments apply without a confirm."),
     _spec("finance.payments.early_days", INT, 10,
           "Days before an obligation's issue date a payment may be dated."),
+    _spec("finance.payments.reported_paid_lag_days", INT, 5,
+          "Days a payment reported paid may take to post before a statement that"
+          " ends that much later and lacks it unconfirms the report."),
     _spec("finance.receipts.match_days", INT, 3,
           "Days between a receipt and the payment line it matches."),
     _spec("finance.invoices.match_days", INT, 30,

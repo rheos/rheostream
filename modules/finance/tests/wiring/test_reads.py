@@ -74,7 +74,7 @@ from rheo_finance.operations import OperationSpec
 from rheo_finance.reports import lines, owed
 from rheo_finance.settings import SettingsError
 from rheo_finance.tier import Tier
-from rheo_finance.wiring import reads
+from rheo_finance.wiring import reads, writes
 from rheo_finance.wiring.manifest import MANIFEST
 
 P, INTERNAL, R = Tier.PUBLIC, Tier.INTERNAL, Tier.RESTRICTED
@@ -114,8 +114,13 @@ def test_l1_exactly_the_eight_reader_reads_with_their_tools() -> None:
         and spec.connection == "reader"
         and not spec.owner_only
     )
-    names = tuple(declaration.name for declaration, _ in MANIFEST.operations)
+    names = tuple(declaration.name for declaration, _ in reads.OPERATIONS)
     assert names == tuple(name for name, _ in EIGHT)
+    # The manifest's operations are these reads, then the two owner writes.
+    assert tuple(d.name for d, _ in MANIFEST.operations) == (
+        *names,
+        *writes.WRITE_NAMES,
+    )
     assert list(names) == reader_reads
     tools = {tool.operation: tool for tool in MANIFEST.tools}
     assert {(name, tools[name].name) for name in names} == set(EIGHT)
@@ -129,7 +134,7 @@ def test_l1_exactly_the_eight_reader_reads_with_their_tools() -> None:
 
 def test_l2_owner_only_unaudited_reads_and_explicit_only() -> None:
     specs = _specs()
-    for declaration, handler in MANIFEST.operations:
+    for declaration, handler in reads.OPERATIONS:
         assert declaration.safety_class is SafetyClass.READ
         assert declaration.roles == frozenset({Role.OWNER})
         assert declaration.audit is None
@@ -166,9 +171,9 @@ def test_l2_each_handler_is_built_once() -> None:
     """The registry compares handlers by identity: a second build of the manifest's
     table would refuse as a different registration."""
     assert [handler for _, handler in MANIFEST.operations] == [
-        handler for _, handler in reads.OPERATIONS
+        handler for _, handler in (*reads.OPERATIONS, *writes.OPERATIONS)
     ]
-    assert len({id(handler) for _, handler in MANIFEST.operations}) == 8
+    assert len({id(handler) for _, handler in MANIFEST.operations}) == 10
 
 
 # --- walks ----------------------------------------------------------------------

@@ -31,6 +31,22 @@ the account's opened date or after its closed date, is never a gap, and neither 
 2. else the accounts whose lines are ``money`` evidence of an active payment to it
    (``payment_evidence`` after stage 15);
 3. else every own account of kind ``chequing``.
+
+**Reported paid, then checked.** The owner can also say a bill is paid now
+(``reported``, from the Owed screen), which records the same decision. Stage 15 then
+keeps it presumed paid until a payment meets its threshold, which confirms it
+(``stage15_apply``). ``unconfirm`` runs after stage 15: an obligation still presumed
+paid, due on or after the floor (or with no due date, or with no floor set), whose
+paying accounts each have a loaded statement ending at least
+``finance.payments.reported_paid_lag_days`` after the local date the decision was made,
+has had its chance to show the payment and has not. It goes back to ``open`` (or
+``partial``) with its decision still named, so ``owed`` lists it again and says the
+report was not confirmed, and it is owed again for reminders. A paying account closed
+before that date is not asked; with none left to ask, or one with no statement that
+late, it stays presumed paid: a statement not loaded yet never reads as "not paid".
+Reporting it paid again makes a newer decision, and the check starts from that date.
+Presumed paid before the floor is a statement about history and is never checked:
+paid toward but short, it is ``partial``, showing what is left, at once.
 """
 
 from __future__ import annotations
@@ -42,14 +58,20 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import bindparam, select, update
+from sqlalchemy import bindparam, func, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.decision import DecisionKind, reversed_clause
 from rheo_finance.derive.coverage import STATES, month_end, month_start
 from rheo_finance.derive.stage15 import ACTIVE, MONEY
-from rheo_finance.derive.stage15_apply import OBLIGATION_TYPE, OPEN, PRESUMED_PAID
+from rheo_finance.derive.stage15_apply import (
+    OBLIGATION_TYPE,
+    OPEN,
+    PARTIAL,
+    PRESUMED_PAID,
+)
 from rheo_finance.storage import refs
 from rheo_finance.storage.schema import (
     account,
@@ -59,10 +81,12 @@ from rheo_finance.storage.schema import (
     payee,
     payment,
     payment_evidence,
+    statement_period,
     txn,
 )
 
 FLOOR_KEY: Final = "finance.reminders.min_due_date"
+LAG_KEY: Final = "finance.payments.reported_paid_lag_days"
 FLOOR_MARKER: Final = "before reminders floor"
 CHEQUING: Final = "chequing"
 # Coverage states a payment could hide in: every state stage 6 writes but a month it
@@ -107,6 +131,63 @@ def mark_presumed(uow: UnitOfWork, named: Mapping[uuid.UUID, uuid.UUID]) -> int:
         .values(status=PRESUMED_PAID)
     )
     return result.rowcount
+
+
+def unconfirm(
+    uow: UnitOfWork, floor: dt.date | None, lag_days: int, zone: ZoneInfo
+) -> int:
+    """Put back the presumed paid obligations whose statements came in without the
+    payment (module docstring, "Reported paid, then checked"); how many."""
+    o = obligation.c
+    rows = uow.execute(
+        select(o.id, o.payee_id, o.due_date, o.paid, decision.c.decided_at)
+        .join(decision, decision.c.id == o.presumed_paid_decision_id)
+        .where(o.status == PRESUMED_PAID)
+    ).all()
+    back: list[dict[str, object]] = []
+    checked = []
+    for row in rows:
+        if floor is not None and row.due_date is not None and row.due_date < floor:
+            # History is never checked; paid toward, it shows what is left, as a
+            # presumed paid bill always has.
+            if row.paid:
+                back.append({"b_id": row.id, "b_status": PARTIAL})
+        else:
+            checked.append(row)
+    paying = _paying_accounts(uow) if checked else {}
+    closed = {
+        row.id: row.closed_on
+        for row in uow.execute(select(account.c.id, account.c.closed_on))
+    }
+    last = func.max(statement_period.c.period_end).label("last")
+    through = {
+        row.account_id: row.last
+        for row in uow.execute(
+            select(statement_period.c.account_id, last).group_by(
+                statement_period.c.account_id
+            )
+        )
+    }
+    for row in checked:
+        reported = row.decided_at.astimezone(zone).date()
+        asked = [
+            each
+            for each in paying.get(row.payee_id, frozenset())
+            if closed.get(each) is None or closed[each] >= reported
+        ]
+        due_by = reported + dt.timedelta(days=lag_days)
+        if asked and all(
+            (end := through.get(each)) is not None and end >= due_by for each in asked
+        ):
+            back.append({"b_id": row.id, "b_status": PARTIAL if row.paid else OPEN})
+    if back:
+        uow.execute(
+            update(obligation)
+            .where(obligation.c.id == bindparam("b_id"))
+            .values(status=bindparam("b_status")),
+            back,
+        )
+    return len(back)
 
 
 def mark_floor(uow: UnitOfWork, floor: dt.date | None) -> int:
