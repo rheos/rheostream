@@ -146,6 +146,22 @@ def test_the_lint_finds_tells_per_section_and_across_the_draft() -> None:
     assert reconciliation("The apply form shows the quoted price.") == [
         "The apply form shows the quoted price."
     ]
+    assert reconciliation(
+        "The form shows $60/hr and the fixed total is the figure you asked for."
+    ) == ["The form shows $60/hr and the fixed total is the figure you asked for."]
+    assert reconciliation("That works out to an hourly equivalent of $70.") == [
+        "That works out to an hourly equivalent of $70."
+    ]
+    # A form, a rate or tracked hours as the work itself, or a plain quote, stays.
+    for kept in (
+        "I'd fix the bug where the checkout form shows the wrong price after a coupon.",
+        "I'd build the application form and the pricing page for $2,400.",
+        "I built a time tracker that bills tracked hours at each client's hourly rate.",
+        "About 40 tracked hours at $85/hr.",
+        "I'll make sure the rates reconcile with your bank feed every night.",
+        "The form matches your design and the totals page.",
+    ):
+        assert not reconciliation(kept), kept
     long_letter = " ".join(["word"] * 360)
     assert any(
         f["rule"] == "long_letter" for f in gate.style_lint(Draft(letter=long_letter))
@@ -247,6 +263,15 @@ def test_a_profile_sentence_that_names_a_project_backs_its_attribution() -> None
     # Nor does a sentence about a longer-named project that contains this name.
     assert gate.attribute_backed(nested, "Example Shop", "uses Redis") is False
     assert gate.attribute_backed(nested, "Example Shop API", "uses Redis") is True
+    borrowed = gate.Evidence(
+        profile=PROFILE + "- Example Board: A dashboard for warehouses. It ingested "
+        "Example Shop data through Kafka and Redis.\n"
+    )
+    # A sentence that opens with a pronoun is about its own entry (Example Board).
+    assert (
+        gate.attribute_backed(borrowed, "Example Shop", "ingests data through Kafka")
+        is False
+    )
     assert verdicts == {
         "Example Shop: explainer series": "whitelisted",
         "Example Shop explainer series: five episodes on sharing tools": "whitelisted",
@@ -286,6 +311,10 @@ def test_the_analysis_is_coerced_onto_its_contract() -> None:
         ("boxes", "box"),
         ("series", "series"),
         ("minute", "minute"),
+        ("courses", "course"),
+        ("licenses", "license"),
+        ("classes", "class"),
+        ("canvas", "canvas"),
     ):
         assert prompts.normalize_analysis({"per_unit": said})["per_unit"] == unit
     for junk in (
@@ -296,6 +325,8 @@ def test_the_analysis_is_coerced_onto_its_contract() -> None:
         True,
         "hours",
         "Day",
+        "hourly",
+        "monthly",
     ):
         assert prompts.normalize_analysis({"per_unit": junk})["per_unit"] == ""
     assert prompts.normalize_analysis("not a mapping") == prompts.empty_analysis()

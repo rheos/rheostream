@@ -203,6 +203,11 @@ def _line_backs(line: str, project: str, attribute: str) -> bool:
     return _backed_by(rest, [line])
 
 
+_PRONOUN_LEAD_RE: Final = re.compile(
+    r"\s*(?:it|its|this|that|they|their|these|those|which|he|she)\b"
+)
+
+
 def attribute_backed(evidence: Evidence, project: str, attribute: str) -> bool | None:
     """Whether the profile supports ``attribute`` for the project: its own line, or a
     sentence elsewhere in the profile that names it (a video series described under a
@@ -226,11 +231,14 @@ def attribute_backed(evidence: Evidence, project: str, attribute: str) -> bool |
     named = set(bullets) | {t.strip().lower() for t in evidence.terms if t.strip()}
     # A longer name that contains this one ("Example Shop API") is another project.
     others = [n for n in named if n != name and n not in name]
+    # A sentence that opens with a pronoun ("It ingested Example API data") is about
+    # the entry it sits in, not the project it mentions.
     sources = [bullet] + [
         sentence
         for line in evidence.lower.splitlines()
         for sentence in _TERMINAL_SPLIT_RE.split(line)
         if _named_in(name, sentence)
+        and not _PRONOUN_LEAD_RE.match(sentence)
         and not any(_named_in(other, sentence) for other in others)
     ]
     return any(_line_backs(source, project, attribute) for source in sources)
@@ -469,23 +477,37 @@ _TIC_PHRASE_RES: Final = (
     ),
     re.compile(r"\bexactly the (?:layer|space|problem|work) I\b", re.IGNORECASE),
 )
-# The owner's apply-form bookkeeping: the form's rate field, tracked hours, and two
-# figures said to agree. The client never needs any of it. A phrase counts only in a
-# sentence that also names a price or rate, so a letter about building forms, time
-# tracking or ledger reconciliation is left alone.
+# The owner's apply-form bookkeeping: what the platform's form shows, a derived
+# hourly figure, two figures said to agree. The client never needs any of it. A
+# phrase counts only about the form's own figures ("on the application form", "the
+# apply form shows"), never a form as the work ("I'd build the application form"),
+# and only in a sentence that also carries a figure, so a letter about checkout
+# forms, time tracking or ledger reconciliation is left alone.
+_FORM_NAMES: Final = r"(?:apply|application|proposal|bid|upwork)"
 _RECONCILIATION_RES: Final = (
-    re.compile(r"\b(?:apply|application|proposal|bid) form\b", re.IGNORECASE),
-    re.compile(r"\bform (?:shows|says|lists|takes|carries)\b", re.IGNORECASE),
+    re.compile(rf"\bon the {_FORM_NAMES} form\b", re.IGNORECASE),
     re.compile(
-        r"\bthe (?:two|figures|numbers|rates?) (?:agree|match|line up|reconcile)\b",
+        rf"\b{_FORM_NAMES} form(?:'s)? (?:shows|says|lists|has|carries|rate|figure"
+        r"|field)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bthe form (?:shows|says|lists|carries) (?:an? |the )?"
+        r"(?:\$|hourly|rate|fixed|quoted)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bthe (?:two|figures|numbers|amounts|totals) (?:agree|match|line up"
+        r"|reconcile)\b",
         re.IGNORECASE,
     ),
     re.compile(r"\bhourly equivalent\b", re.IGNORECASE),
-    re.compile(r"\btracked hours\b", re.IGNORECASE),
+    re.compile(r"\brate field\b", re.IGNORECASE),
 )
-_PRICE_RE: Final = re.compile(
-    r"\$\s?\d|/\s?(?:hr|hour)\b|\bhourly\b|\brates?\b|\bprices?\b|\bquoted\b"
-    r"|\bfixed (?:total|price|quote|figure)\b",
+# A figure, not a word the phrases above already contain ("rates", "hourly").
+_FIGURE_RE: Final = re.compile(
+    r"\$\s?\d|\d\s?/\s?(?:hr|hour)\b|\bhourly rate\b|\bper hour\b|\bprices?\b"
+    r"|\bquoted\b|\btotal\b",
     re.IGNORECASE,
 )
 # A line break ends a sentence too, so a figure list is never part of one.
@@ -590,7 +612,7 @@ def _lint_section(text: str, location: str) -> list[dict[str, str]]:
     for rex in _RECONCILIATION_RES:
         for m in rex.finditer(text):
             sentence = _sentence_at(text, m.start())
-            if sentence not in seen and _PRICE_RE.search(sentence):
+            if sentence not in seen and _FIGURE_RE.search(sentence):
                 seen.add(sentence)
                 findings.append(
                     _finding(

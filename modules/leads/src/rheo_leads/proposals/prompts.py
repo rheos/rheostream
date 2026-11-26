@@ -57,8 +57,11 @@ ANALYSIS_BOOL_KEYS: Final = frozenset({"asks_quote"})
 # The unit reaches the pricing prompts, so only a plain short word is kept, and a
 # time unit is a rate, not a per-unit ask.
 _UNIT_RE: Final = re.compile(r"[a-z]{2,20}")
-_TIME_UNITS: Final = frozenset({"hour", "hr", "day", "week", "month", "year"})
-_SAME_PLURAL: Final = frozenset({"series", "species"})
+_TIME_UNITS: Final = frozenset(
+    {"hour", "hr", "day", "week", "month", "year"}
+    | {"hourly", "daily", "weekly", "monthly", "yearly", "annual"}
+)
+_SAME_PLURAL: Final = frozenset({"series", "species", "canvas"})
 
 ANALYSIS_INTRO: Final = """\
 You are a brief analyst. Given a job posting, return a JSON object with fourteen fields.
@@ -564,7 +567,7 @@ def _singular(word: str) -> str:
         return word
     if word.endswith("ies") and len(word) > 4:
         return word[:-3] + "y"
-    if word.endswith(("ses", "xes", "zes", "ches", "shes")):
+    if word.endswith(("sses", "xes", "zes", "ches", "shes")):
         return word[:-2]
     return word[:-1] if word.endswith("s") else word
 
