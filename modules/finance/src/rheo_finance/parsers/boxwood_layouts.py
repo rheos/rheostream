@@ -20,9 +20,10 @@ line by line (``re.MULTILINE``), and each names the group the field is read from
 - ``title``: present, or the text is not this layout (``NotRecognised``);
 - ``account`` (group ``number``), ``bill_date`` and ``due`` (group ``date``),
   ``period`` (groups ``start`` and ``end``), ``total`` (group ``amount``): each is
-  required, and every match must agree (an account number's digits, whatever
-  spaces or dashes split them), so a value the bill prints twice (the payment
-  stub's copy) is checked against the other;
+  required, and every match must agree once read (an amount as a number, a date as
+  a date, an account number as its digits, whatever spaces or dashes split them),
+  so a value the bill prints twice (the payment stub's copy) is checked against the
+  other;
 - ``previous``, ``forward``, ``current``, ``arrears`` (group ``amount``): optional,
   every match agreeing; ``payment`` (group ``amount``): every match, summed.
 
@@ -76,7 +77,8 @@ _MONEY: Final = re.compile(
     rf"(?P<minus>-)?\$?(?P<amount>{AMOUNT_TEXT})[ \t]*(?P<credit>CR)?"
 )
 _NUMBER: Final = r"\d[\d -]*\d"
-_AMOUNT: Final = r"-?\$?[\d,]+\.\d\d(?:[ \t]?CR)?"
+_CREDIT: Final = r"(?:[ \t]*CR)?"
+_AMOUNT: Final = rf"-?\$?[\d,]+\.\d\d{_CREDIT}"
 REQUIRED: Final = ("title", "account", "bill_date", "period", "due", "total")
 OPTIONAL: Final = ("previous", "payment", "forward", "current", "arrears")
 
@@ -108,8 +110,9 @@ COLUMNS: Final = _Layout(
             rf"^Bill Span:[ \t]+(?P<start>{_COLUMN_DATE}) to (?P<end>{_COLUMN_DATE})"
         ),
         "due": rf"Pay By[ \t]*\n[^\n]*?(?P<date>{_COLUMN_DATE})",
-        "total": r"Owing Now[ \t]*\n?[^\n$]*\$(?P<amount>[\d,]+\.\d\d)",
+        "total": rf"Owing Now[ \t]*\n?[^\n$-]*(?P<amount>-?\$[\d,]+\.\d\d{_CREDIT})",
         "previous": rf"^Earlier statement[ \t]+(?P<amount>{_AMOUNT})",
+        # The first amount: the line may also hold the amount due, at its end.
         "payment": rf"^Payment got .*?[ \t](?P<amount>{_AMOUNT})(?=[ \t]|$)",
         "forward": rf"^Carried over[ \t]+(?P<amount>{_AMOUNT})",
         "current": rf"^New charges total[ \t]+(?P<amount>{_AMOUNT})",
@@ -154,25 +157,41 @@ def _money(text: str) -> Decimal:
 
 def _values(bill: _Layout, text: str, field: str, group: str) -> list[str]:
     try:
-        return [m[group] for m in bill.shape(field).finditer(text)]
+        found = [m[group] for m in bill.shape(field).finditer(text)]
     except IndexError:
         raise NotRecognised(f"a Boxwood {field} pattern names no {group}") from None
+    if any(each is None for each in found):
+        raise NotRecognised(f"a Boxwood {field} match without its {group}")
+    return found
 
 
-def _one(bill: _Layout, text: str, field: str, group: str) -> str:
-    found = _values(bill, text, field, group)
-    if not found:
-        raise NotRecognised(f"no Boxwood {field}")
-    if any(each != found[0] for each in found):
-        raise NotRecognised(f"the Boxwood {field} values disagree")
-    return found[0]
-
-
-def _optional(bill: _Layout, text: str, field: str) -> Decimal | None:
-    found = {_money(each) for each in _values(bill, text, field, "amount")}
+def _agreed[T](field: str, found: set[T]) -> T | None:
+    """The one value every match of ``field`` reads as, compared once read (so
+    ``$412.30`` and ``412.30`` agree), None when nothing matched."""
     if len(found) > 1:
         raise NotRecognised(f"the Boxwood {field} values disagree")
     return found.pop() if found else None
+
+
+def _optional(bill: _Layout, text: str, field: str) -> Decimal | None:
+    return _agreed(
+        field, {_money(each) for each in _values(bill, text, field, "amount")}
+    )
+
+
+def _required_amount(bill: _Layout, text: str, field: str) -> Decimal:
+    value = _optional(bill, text, field)
+    if value is None:
+        raise NotRecognised(f"no Boxwood {field}")
+    return value
+
+
+def _required_date(bill: _Layout, text: str, field: str) -> dt.date:
+    found = {_date(bill, each) for each in _values(bill, text, field, "date")}
+    value = _agreed(field, found)
+    if value is None:
+        raise NotRecognised(f"no Boxwood {field}")
+    return value
 
 
 def _date(bill: _Layout, value: str) -> dt.date:
@@ -194,24 +213,35 @@ def _recognised(bill: _Layout, text: str) -> None:
 
 def _bill_date(bill: _Layout, text: str) -> dt.date:
     _recognised(bill, text)
-    return _date(bill, _one(bill, text, "bill_date", "date"))
+    return _required_date(bill, text, "bill_date")
+
+
+# A leap year, so a February 29 start reads before its own year is chosen.
+_LEAP_YEAR: Final = 2000
+
+
+def _start(bill: _Layout, start_text: str, end: dt.date) -> dt.date:
+    start_format = bill.form("start_format")
+    if "%Y" in start_format:
+        return _written_date(start_text, start_format)
+    if _has_year(start_text, bill.form("date_format")):
+        return _written_date(start_text, bill.form("date_format"))
+    day = _written_date(f"{start_text} {_LEAP_YEAR}", f"{start_format} %Y")
+    year = end.year if (day.month, day.day) <= (end.month, end.day) else end.year - 1
+    try:
+        return day.replace(year=year)
+    except ValueError:
+        raise NotRecognised("a billing period start that is not a date") from None
 
 
 def _period(bill: _Layout, text: str) -> tuple[dt.date, dt.date]:
-    matches = {(m["start"], m["end"]) for m in bill.shape("period").finditer(text)}
-    if len(matches) != 1:
+    found = set()
+    for match in bill.shape("period").finditer(text):
+        end = _date(bill, match["end"])
+        found.add((_start(bill, match["start"], end), end))
+    if len(found) != 1:
         raise NotRecognised("no single Boxwood billing period")
-    ((start_text, end_text),) = matches
-    end = _date(bill, end_text)
-    start_format = bill.form("start_format")
-    if "%Y" in start_format:
-        start = _written_date(start_text, start_format)
-    elif _has_year(start_text, bill.form("date_format")):
-        start = _written_date(start_text, bill.form("date_format"))
-    else:
-        start = _written_date(f"{start_text} {end.year}", f"{start_format} %Y")
-        if start > end:
-            start = _written_date(f"{start_text} {end.year - 1}", f"{start_format} %Y")
+    ((start, end),) = found
     if end < start:
         raise NotRecognised("a billing period that ends before it starts")
     return start, end
@@ -222,11 +252,11 @@ def _tied_out(bill: _Layout, text: str, total: Decimal) -> bool | None:
     is broken."""
     previous = _optional(bill, text, "previous")
     current = _optional(bill, text, "current")
+    printed_forward = _optional(bill, text, "forward")
     if previous is None or current is None:
         return None
     payments = (_money(each) for each in _values(bill, text, "payment", "amount"))
     forward = previous + sum(payments, Decimal(0))
-    printed_forward = _optional(bill, text, "forward")
     if printed_forward is not None and printed_forward != forward:
         return False
     return forward + current == total
@@ -235,8 +265,8 @@ def _tied_out(bill: _Layout, text: str, total: Decimal) -> bool | None:
 def _parse(bill: _Layout, text: str, accounts: AccountLookup) -> ParseResult:
     bill_date = _bill_date(bill, text)
     period = _period(bill, text)
-    total = _money(_one(bill, text, "total", "amount"))
-    due = _date(bill, _one(bill, text, "due", "date"))
+    total = _required_amount(bill, text, "total")
+    due = _required_date(bill, text, "due")
     numbers = {
         re.sub(r"\D", "", each) for each in _values(bill, text, "account", "number")
     }

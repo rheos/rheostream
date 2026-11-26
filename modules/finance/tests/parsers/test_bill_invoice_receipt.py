@@ -319,6 +319,65 @@ def test_an_owner_layout_bill_without_a_previous_amount_loads_as_printed(
     assert (stored.tied_out, stored.balance_due) == (False, Decimal("412.30"))
 
 
+def test_a_credit_total_keeps_its_sign(setup: Setup) -> None:
+    setup.register_boxwood(LAYOUT_NUMBER)
+    text = fixture(COLUMNS_TEXT).replace("$301.95", "$301.95CR")
+    text = text.replace("Earlier statement   212.40   APR-09-2031", "   APR-09-2031")
+    doc = setup.file("boxwood/2031-03-14.pdf", text)
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
+    (stored,) = setup.periods(doc)
+    assert (stored.tied_out, stored.balance_due) == (False, Decimal("-301.95"))
+
+
+def test_a_credit_after_two_spaces_is_still_a_credit(setup: Setup) -> None:
+    setup.register_boxwood(LAYOUT_NUMBER)
+    text = changed(COLUMNS_TEXT, "Lorem ipsum   150.00 CR", "Lorem ipsum   150.00  CR")
+    doc = setup.file("boxwood/2031-03-14.pdf", text)
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
+    (stored,) = setup.periods(doc)
+    assert stored.tied_out is True
+
+
+def test_values_printed_twice_agree_once_read(setup: Setup) -> None:
+    setup.register_boxwood(LAYOUT_NUMBER)
+    doc = setup.file(
+        "boxwood/2032-01-12.pdf",
+        changed(LEADERS_TEXT, "Owing: $412.30", "Owing: 412.30"),
+    )
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
+    (stored,) = setup.periods(doc)
+    assert (stored.tied_out, stored.balance_due) == (True, Decimal("412.30"))
+
+
+def test_a_february_29_start_takes_the_leap_year_before(setup: Setup) -> None:
+    setup.register_boxwood(LAYOUT_NUMBER)
+    text = changed(
+        LEADERS_TEXT, "Bill span: Nov 12-Jan 12, 2032", "Bill span: Feb 29-Jan 12, 2033"
+    )
+    doc = setup.file("boxwood/2032-01-12.pdf", text)
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
+    (stored,) = setup.periods(doc)
+    assert (stored.period_start, stored.period_end) == (D(2032, 2, 29), D(2033, 1, 12))
+
+
+def test_a_forward_balance_printed_twice_must_agree_without_an_identity(
+    setup: Setup,
+) -> None:
+    setup.register_boxwood(LAYOUT_NUMBER)
+    text = changed(
+        LEADERS_TEXT,
+        "Prior bill (Sep 12 - Nov 12)______________________ $300.00\n",
+        "Carried from prior bill ___ $51.00\n",
+    )
+    doc = setup.file("boxwood/2032-01-12.pdf", text)
+
+    assert setup.parse(doc) == Parsed("unparsed", "not_recognised")
+
+
 def test_a_period_start_may_print_its_year(setup: Setup) -> None:
     setup.register_boxwood(LAYOUT_NUMBER)
     text = changed(
