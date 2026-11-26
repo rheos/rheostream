@@ -74,3 +74,10 @@ signed-in browser session; every token and every other caller gets `None` in eac
 and core's tool facade still drops them from any tool answer. It partly replaces
 ADR-0028's "no restricted field reaches a model" bullet, which stays true of every
 model and token.
+
+ADR-0030 records the first finance writes on core's side: the owner marks one owed
+bill paid from the Owed screen (`finance.obligation.report_paid`) or undoes it
+(`finance.obligation.unreport_paid`), from the owner's own browser session alone. The
+derive keeps it off the list until a payment confirms it, and puts it back as owed,
+flagged, once the paying accounts' statements come in without one. It partly replaces
+ADR-0028's "nothing above READ" and ADR-0029's "no operation is added".
