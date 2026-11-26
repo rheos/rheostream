@@ -10,9 +10,8 @@ export const UNREPORT_PAID = "finance.obligation.unreport_paid";
 type Submit = NonNullable<ShellApi["submit"]>;
 
 export interface PaidFormProps {
+  /** The shell's form action, which renders the screen again after a save. */
   submit: Submit;
-  /** Renders the screen again in place; without it the page reloads. */
-  refresh?: () => Promise<void>;
   operation: typeof REPORT_PAID | typeof UNREPORT_PAID;
   obligationRef: string;
   /** What the button does, for assistive technology: "Mark Electricity Nov paid". */
@@ -36,9 +35,9 @@ export function refusalText(outcome: OperationOutcome): string {
 /**
  * One button that reports a bill paid, or undoes it. It posts, so a click before
  * the script loads sends nothing in a URL; once loaded it submits through the
- * shell's form action and renders the screen again.
+ * shell's form action, which renders the screen again on success.
  */
-export function PaidForm({ submit, refresh, operation, obligationRef, label }: PaidFormProps) {
+export function PaidForm({ submit, operation, obligationRef, label }: PaidFormProps) {
   const [failed, setFailed] = useState("");
   const [pending, startTransition] = useTransition();
   const undo = operation === UNREPORT_PAID;
@@ -52,12 +51,8 @@ export function PaidForm({ submit, refresh, operation, obligationRef, label }: P
       } catch {
         outcome = { state: "unavailable" };
       }
-      if (outcome.state !== "ok") {
-        setFailed(refusalText(outcome));
-        return;
-      }
-      if (refresh) await refresh();
-      else window.location.reload();
+      // On success the shell has already rendered the screen again.
+      if (outcome.state !== "ok") setFailed(refusalText(outcome));
     });
   }
   return (

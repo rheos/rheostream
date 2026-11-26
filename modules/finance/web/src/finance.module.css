@@ -301,11 +301,16 @@
 }
 .billWhen {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
-  gap: var(--rs-space-3);
+  gap: var(--rs-space-1) var(--rs-space-3);
   margin-left: auto;
   color: var(--rs-color-ink-dim);
   font-variant-numeric: tabular-nums;
+}
+.billWhen > span {
+  white-space: nowrap;
 }
 .billWhen .icon {
   color: var(--rs-color-accent);

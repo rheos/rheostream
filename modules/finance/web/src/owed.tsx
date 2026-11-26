@@ -218,7 +218,6 @@ function Bill({
         {reportable(o) && shell.submit ? (
           <PaidForm
             submit={shell.submit}
-            refresh={shell.refresh}
             operation={REPORT_PAID}
             obligationRef={o.ref}
             label={`Mark ${name} ${o.periodLabel} paid`}
@@ -273,8 +272,7 @@ function Reported({
                 {shell.submit && o.presumedPaidBasis ? (
                   <PaidForm
                     submit={shell.submit}
-                    refresh={shell.refresh}
-                    operation={UNREPORT_PAID}
+                            operation={UNREPORT_PAID}
                     obligationRef={o.ref}
                     label={`Undo marking ${name} ${o.periodLabel} paid`}
                   />

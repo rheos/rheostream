@@ -123,7 +123,7 @@ export function groups(state: AttentionState, year: number, timeZone?: string): 
         id: "reported",
         label: "Marked paid, payment not found",
         count: unconfirmed.length,
-        note: "statements loaded since don't show it",
+        note: "not on later statements",
         rows: unconfirmed.map((r) => {
           const on = localDay(r.reportedAt, timeZone);
           const figure = money(r.thresholdRemaining ?? r.amountDue, o.currency);
