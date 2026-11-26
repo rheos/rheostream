@@ -46,7 +46,7 @@ RESOLVE = [
     "{{.ID}}",
 ]
 ENV_WORD = f"FINANCE_WORKSPACE_ID={WORKSPACE}"
-HOST_KEY = ["-o", "StrictHostKeyChecking=yes"]
+HOST_KEY = ["-o", "StrictHostKeyChecking=yes", "-o", "ControlPath=none"]
 
 
 def _exec_line(*args: str, flags: tuple[str, ...] = ("-i",)) -> str:
@@ -152,8 +152,8 @@ def test_hostile_exec_words_reach_finance_as_words(
     assert remote_cli.exec_command(str(fake.config), ["--", *words]) == 0
     capfd.readouterr()
     argv = fake.calls()[1]
-    assert argv[:5] == [*HOST_KEY, "-T", "--", DESTINATION] and len(argv) == 6
-    remote = shlex.split(argv[5])
+    assert argv[:7] == [*HOST_KEY, "-T", "--", DESTINATION] and len(argv) == 8
+    remote = shlex.split(argv[7])
     assert remote[remote.index("finance") + 1 :] == words
 
     fake.log.write_text("", encoding="utf-8")
@@ -177,9 +177,9 @@ def test_exec_through_the_parser_hands_the_words_to_finance(
     assert main(["remote", "exec", "--config", str(fake.config), *words]) == 0
     assert capfd.readouterr().out == "fake-finance\n"
     argv = fake.calls()[1]
-    assert argv[:2] == HOST_KEY and argv[2] in ("-T", "-t")
-    assert argv[3:5] == ["--", DESTINATION]
-    remote = shlex.split(argv[5])
+    assert argv[:4] == HOST_KEY and argv[4] in ("-T", "-t")
+    assert argv[5:7] == ["--", DESTINATION]
+    remote = shlex.split(argv[7])
     expected = words[1:] if words[:1] == ["--"] else words
     assert remote[remote.index("finance") + 1 :] == expected
 
@@ -673,14 +673,14 @@ def test_a_keys_push_checks_the_host_key_on_every_call(
     calls = fake.calls()
     assert len(calls) == 3  # the refused first call, then resolve and the stream
     for argv in calls:
-        assert argv[:2] == HOST_KEY
-        assert argv.index("--") > 1
+        assert argv[:4] == HOST_KEY
+        assert argv.index("--") > 3
 
 
 @pytest.mark.parametrize(
     ("tty", "stream"), [(False, False), (False, True), (True, False)]
 )
-def test_host_key_checking_beats_an_ssh_config_that_turns_it_off(
+def test_host_key_checking_beats_an_ssh_config_that_turns_it_off_or_shares(
     tmp_path: Path, tty: bool, stream: bool
 ) -> None:
     """Real ssh, no connection: ``ssh -G`` prints the settings a call would use."""
@@ -691,12 +691,15 @@ def test_host_key_checking_beats_an_ssh_config_that_turns_it_off(
     ssh_config.write_text(
         f"Host {DESTINATION}\n"
         "  StrictHostKeyChecking no\n"
-        "  UserKnownHostsFile /dev/null\n",
+        "  UserKnownHostsFile /dev/null\n"
+        "  ControlMaster auto\n"
+        "  ControlPath ~/.ssh/cm-%C\n"
+        "  ControlPersist 600\n",
         encoding="utf-8",
     )
     cfg = ssh.load_config(write_config(tmp_path / "remote.toml", config_values()))
     argv = ssh.ssh_argv(cfg, ["docker", "ps"], tty=tty, stream=stream)
-    assert argv[0] == ssh.SSH and argv[1:3] == HOST_KEY
+    assert argv[0] == ssh.SSH and argv[1:5] == HOST_KEY
     shown = subprocess.run(
         [real_ssh, "-G", "-F", str(ssh_config), *argv[1:]],
         capture_output=True,
@@ -705,3 +708,5 @@ def test_host_key_checking_beats_an_ssh_config_that_turns_it_off(
         timeout=30,
     ).stdout.splitlines()
     assert "stricthostkeychecking true" in shown
+    # No control path: the call never rides a master connection opened earlier.
+    assert not [line for line in shown if line.startswith("controlpath ")]
