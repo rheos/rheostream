@@ -31,6 +31,12 @@ walk reads, and a copy must never change the laptop's files.
   remote command is one argument, `shlex.join` of fixed or checked words, so the
   remote shell sees only single-quoted words; `--` always comes before the
   destination. The remote account's shell must be sh-compatible.
+- **Host keys are always checked.** Every ssh call passes `-o
+  StrictHostKeyChecking=yes` before any other option. A command-line option wins
+  over ssh_config, so an operator's `StrictHostKeyChecking no` or `accept-new` cannot
+  turn it off: an unknown or changed host key refuses as `ssh_failed`, and a push,
+  `--keys` included, never sends a file to a host that only claims to be the server.
+  The operator records the key once by connecting by hand (added 2026-11-25, #554).
 - **Names travel in the stream, never on a command line.** A push or pull is a framed
   stream on stdin or stdout: a magic line, then `F <size> <path>`, the bytes and
   `H <sha256>` per file, then `E <count>`; `X <code>` lets a sender give up between

@@ -1,8 +1,10 @@
 """A stand-in for ``ssh`` in the remote tests. It never opens a connection.
 
 ``support.FakeRemote.install`` puts a ``bin/ssh`` first on ``PATH`` that runs this
-script. It logs its argument list, accepts only ``-T``, ``-t`` and ``-e none`` before
-a mandatory ``--``, then exactly the destination and one remote command. That command
+script. It logs its argument list and exits 255, as ssh does, unless the list opens
+with ``-o StrictHostKeyChecking=yes``; after that it accepts only ``-T``, ``-t`` and
+``-e none`` before a mandatory ``--``, then exactly the destination and one remote
+command. That command
 must be words ``shlex.join`` quoted whole (else exit 97), led by the configured docker
 words. ``ps`` prints the configured container ids; ``exec ... finance remote
 receive|send-packs`` runs the module's server half in this process against a layout
@@ -87,8 +89,11 @@ class _Writer:
 
 
 def _options(argv: list[str]) -> list[str] | None:
-    """The words after ``--`` when every option before it is allowed."""
-    index = 0
+    """The words after ``--`` when host-key checking comes first and every option
+    before ``--`` is allowed."""
+    if argv[:2] != ["-o", "StrictHostKeyChecking=yes"]:
+        return None
+    index = 2
     while index < len(argv) and argv[index] != "--":
         if argv[index] in ("-T", "-t"):
             index += 1
