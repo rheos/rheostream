@@ -46,11 +46,13 @@ def card(**changes: object) -> Facts:
     return Facts.model_validate(base | changes)
 
 
-def test_a_reported_card_owes_nothing_due_but_still_carries_its_balance() -> None:
+def test_a_reported_card_counts_as_paid_until_its_statements_say_otherwise() -> None:
+    """Presumed paid reads the whole statement as paid, as it always has; the real
+    payments take over once they apply."""
     row = figures(card(status="presumed_paid", presumed_paid_basis=BASIS), TODAY, 14)
     zero = Decimal("0.00")
-    assert (row.due_in_window, row.overdue, row.remaining) == (zero, zero, zero)
-    assert row.carried == Decimal("475.00")
+    assert (row.due_in_window, row.overdue, row.remaining, row.carried) == (zero,) * 4
+    assert row.paid == Decimal("500.00")
     assert row.reported_unconfirmed is False
     assert row.reminder_eligible is False
 

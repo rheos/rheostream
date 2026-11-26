@@ -107,7 +107,7 @@ from rheo_finance.wiring.manifest import JOBS_ENABLED_KEY, MANIFEST
 from rheo_finance.wiring.tick_job import TICK_JOB_KIND, TickPayload, finance_tick_job
 from sqlalchemy import Connection, Engine, func, select, text
 
-from postgres.test_finance_wiring import FINANCE_READS, FINANCE_TOOLS
+from postgres.test_finance_wiring import FINANCE_READS, FINANCE_TOOLS, FINANCE_WRITES
 
 pytestmark = pytest.mark.postgres
 
@@ -892,14 +892,18 @@ def test_only_the_eight_reads_reach_the_registries_and_no_named_set_holds_one(
     controls show the eight are there, and opt-in, for every set to leave out."""
     operations = rig.surfaces.operations
     tools = rig.surfaces.tools
-    assert {n for n in operations.names() if n.startswith("finance")} == FINANCE_READS
+    assert {n for n in operations.names() if n.startswith("finance")} == (
+        FINANCE_READS | FINANCE_WRITES
+    )
     assert {n for n in tools.names() if n.startswith("finance")} == FINANCE_TOOLS
     assert "current.item.create" in operations.names()  # the control
     monkeypatch.setattr(operation_registry, "REGISTRY", operations)
     monkeypatch.setattr(token_sets, "TOOL_REGISTRY", tools)
     # The controls: the evaluators now see the eight, as one module's opt-in reads.
     assert FINANCE_READS <= token_sets.explicit_only_operations()
+    # A module_read token gets the reads, never the two owner writes.
     assert token_sets.module_read("finance") == FINANCE_READS
+    assert FINANCE_WRITES <= token_sets.explicit_only_operations()
     assert {"read_only", "agent_default", "cli_full", "alert_writer"} <= set(
         token_sets.PACKAGE_SETS
     )

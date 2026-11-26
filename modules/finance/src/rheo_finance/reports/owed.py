@@ -84,9 +84,6 @@ def figures(fact: Facts, today: dt.date, window: int) -> OwedRow:
     days = None if fact.due_date is None else (fact.due_date - today).days
     overdue = threshold if days is not None and days < 0 else ZERO
     carried = remaining - threshold if fact.kind == "card_statement" else ZERO
-    if fact.kind == "card_statement" and fact.status == "presumed_paid":
-        # Reported paid covers the minimum; the balance past it is still carried.
-        carried = fact.remaining - fact.threshold_remaining
     due = threshold if days is not None and 0 <= days <= window else ZERO
     # Folder keys are canonical archive keys, never the invoice's printed name.
     source = fact.primary_source.split("/")
