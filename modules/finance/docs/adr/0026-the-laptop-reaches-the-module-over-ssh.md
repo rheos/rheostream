@@ -88,7 +88,8 @@ walk reads, and a copy must never change the laptop's files.
 - A changed archive document, inbox file, key or transfer file is refused, not merged;
   pulling a regenerated pack into the same directory is the owner's own step.
 - Each command takes two ssh sessions; an owner on password authentication types
-  twice unless ssh's connection sharing is set up.
+  twice. Connection sharing cannot save that, since every call turns it off; a key
+  with an ssh agent can.
 - An authentication failure reads only `ssh_failed` on push and pull; `exec` or plain
   ssh shows ssh's own message.
 - A push changes the inputs' modification times, so the next derive rebuilds; nothing
