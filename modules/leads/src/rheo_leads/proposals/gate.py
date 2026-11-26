@@ -477,39 +477,42 @@ _TIC_PHRASE_RES: Final = (
     ),
     re.compile(r"\bexactly the (?:layer|space|problem|work) I\b", re.IGNORECASE),
 )
-# The owner's apply-form bookkeeping: what the platform's form shows, a derived
-# hourly figure, two figures said to agree. The client never needs any of it. A
-# phrase counts only about the form's own figures ("on the application form", "the
-# apply form shows"), never a form as the work ("I'd build the application form"),
-# and only in a sentence that also carries a figure, so a letter about checkout
-# forms, time tracking or ledger reconciliation is left alone.
-_FORM_NAMES: Final = r"(?:apply|application|proposal|bid|upwork)"
-_RECONCILIATION_RES: Final = (
-    re.compile(rf"\bon the {_FORM_NAMES} form\b", re.IGNORECASE),
-    re.compile(
-        rf"\b{_FORM_NAMES} form(?:'s)? (?:shows|says|lists|has|carries|rate|figure"
-        r"|field)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\bthe form (?:shows|says|lists|carries) (?:an? |the )?"
-        r"(?:\$|hourly|rate|fixed|quoted)",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\bthe (?:two|figures|numbers|amounts|totals) (?:agree|match|line up"
-        r"|reconcile)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\bhourly equivalent\b", re.IGNORECASE),
-    re.compile(r"\brate field\b", re.IGNORECASE),
-)
-# A figure, not a word the phrases above already contain ("rates", "hourly").
-_FIGURE_RE: Final = re.compile(
-    r"\$\s?\d|\d\s?/\s?(?:hr|hour)\b|\bhourly rate\b|\bper hour\b|\bprices?\b"
-    r"|\bquoted\b|\btotal\b",
+# The owner's apply-form bookkeeping: an hourly figure squared with the fixed total,
+# or what the platform's form shows. The client never needs any of it. Every other
+# figure (a quote, a ledger that matches to the cent, a checkout form's prices) is
+# left alone, since the repair cuts what this flags.
+_HOURLY_RE: Final = re.compile(
+    r"\$\s?\d[\d,.]*k?\s?(?:/\s?|an |a |per )(?:hr|hour)\b"
+    r"|\bhourly (?:rate|equivalent|figure)\b",
     re.IGNORECASE,
 )
+# What an hourly figure is squared with: the form, the fixed total, an agreement.
+_SQUARED_RE: Final = re.compile(
+    r"\bthe form\b|\b(?:apply|application|proposal|bid|upwork)(?:'s)? form\b"
+    r"|\bfixed (?:total|price|figure|quote)\b|\bagrees?\b|\bmatch(?:es)?\b"
+    r"|\blines? up\b|\breconciles?\b|\bcomes? to\b|\bworks? out\b|\bequivalent\b",
+    re.IGNORECASE,
+)
+# The platform's form saying a figure, whatever the figure is.
+_PLATFORM_FORM_RE: Final = re.compile(
+    r"\b(?:apply|application|proposal|bid|upwork)(?:'s)? form(?:'s)? (?:shows|says"
+    r"|lists|has|carries|rate|figure|field)\b"
+    r"|\bon the (?:apply|application|proposal|upwork) form\b",
+    re.IGNORECASE,
+)
+_FIGURE_RE: Final = re.compile(
+    r"\$\s?\d|\bhourly\b|\brates?\b|\bprices?\b|\bquoted\b|\btotal\b",
+    re.IGNORECASE,
+)
+_RECONCILIATION_ANCHORS: Final = (_HOURLY_RE, _PLATFORM_FORM_RE)
+
+
+def _is_reconciliation(sentence: str) -> bool:
+    if _HOURLY_RE.search(sentence) and _SQUARED_RE.search(sentence):
+        return True
+    return bool(_PLATFORM_FORM_RE.search(sentence) and _FIGURE_RE.search(sentence))
+
+
 # A line break ends a sentence too, so a figure list is never part of one.
 _SENTENCE_END_RE: Final = re.compile(r"[.!?](?=\s|$)|\n")
 # Long enough to quote a whole sentence for the repair to cut.
@@ -609,10 +612,10 @@ def _lint_section(text: str, location: str) -> list[dict[str, str]]:
             _finding("tic_phrase", location, m.group(0)) for m in rex.finditer(text)
         ]
     seen: set[str] = set()
-    for rex in _RECONCILIATION_RES:
+    for rex in _RECONCILIATION_ANCHORS:
         for m in rex.finditer(text):
             sentence = _sentence_at(text, m.start())
-            if sentence not in seen and _FIGURE_RE.search(sentence):
+            if sentence not in seen and _is_reconciliation(sentence):
                 seen.add(sentence)
                 findings.append(
                     _finding(
@@ -708,10 +711,11 @@ _REPAIR_INSTRUCTIONS: Final[Mapping[str, str]] = {
         "in for, or delete it."
     ),
     "pricing_reconciliation": (
-        "Delete each flagged sentence: it explains the application form, an hourly "
-        "rate or tracked hours, or that two figures agree. That is the developer's "
-        "bookkeeping, not something the client reads. Keep every other figure as it "
-        "is."
+        "Each flagged sentence may be the developer's own bookkeeping: what the "
+        "application form shows, or an hourly rate squared with the fixed total. "
+        "Delete each one that is. Keep, unchanged, a flagged sentence that describes "
+        "the client's work (a form, a rate or a ledger the developer would build), and "
+        "keep every other figure as it is."
     ),
     "rhetorical_fragment": (
         "This section poses a question and answers it with a fragment. Fold both into "

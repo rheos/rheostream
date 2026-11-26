@@ -121,7 +121,8 @@ def test_the_lint_finds_tells_per_section_and_across_the_draft() -> None:
     ]
     # One finding per sentence, however many patterns it trips.
     assert [f["excerpt"][:24] for f in flagged] == ["The apply form shows an "]
-    assert "Delete each flagged sentence" in gate.repair_block(flagged)
+    assert "Delete each one that is" in gate.repair_block(flagged)
+    assert "describes the client's work" in gate.repair_block(flagged)
     assert '"The apply form shows' in gate.repair_block(flagged)
 
     def reconciliation(letter: str) -> list[str]:
@@ -152,6 +153,13 @@ def test_the_lint_finds_tells_per_section_and_across_the_draft() -> None:
     assert reconciliation("That works out to an hourly equivalent of $70.") == [
         "That works out to an hourly equivalent of $70."
     ]
+    for cut in (
+        "Upwork's form shows $40/hr; the fixed total is $900.",
+        "The rate on the form is $40/hr and it lines up with the $900 total.",
+        "I set the form to $40/hr, about 22 hours, which comes to the $900 total.",
+        "The proposal form's rate is $40/hr.",
+    ):
+        assert reconciliation(cut) == [cut], cut
     # A form, a rate or tracked hours as the work itself, or a plain quote, stays.
     for kept in (
         "I'd fix the bug where the checkout form shows the wrong price after a coupon.",
@@ -160,6 +168,14 @@ def test_the_lint_finds_tells_per_section_and_across_the_draft() -> None:
         "About 40 tracked hours at $85/hr.",
         "I'll make sure the rates reconcile with your bank feed every night.",
         "The form matches your design and the totals page.",
+        "The nightly job checks that the numbers match and flags any invoice whose "
+        "total is off.",
+        "I built a reconciler for a client moving $2M a month; the amounts match.",
+        "I check that the totals line up between Stripe and QuickBooks, $40k in total.",
+        "The figures match the client's spreadsheet, and the total reconciles.",
+        "I added a tax rate field to the invoice form with a live total.",
+        "When the form shows a fixed shipping fee of $5, the cart total updates.",
+        "On the bid form for your contractors, each line shows a price per hour.",
     ):
         assert not reconciliation(kept), kept
     long_letter = " ".join(["word"] * 360)
@@ -327,6 +343,7 @@ def test_the_analysis_is_coerced_onto_its_contract() -> None:
         "Day",
         "hourly",
         "monthly",
+        "quarterly",
     ):
         assert prompts.normalize_analysis({"per_unit": junk})["per_unit"] == ""
     assert prompts.normalize_analysis("not a mapping") == prompts.empty_analysis()

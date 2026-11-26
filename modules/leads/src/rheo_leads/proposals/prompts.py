@@ -59,7 +59,8 @@ ANALYSIS_BOOL_KEYS: Final = frozenset({"asks_quote"})
 _UNIT_RE: Final = re.compile(r"[a-z]{2,20}")
 _TIME_UNITS: Final = frozenset(
     {"hour", "hr", "day", "week", "month", "year"}
-    | {"hourly", "daily", "weekly", "monthly", "yearly", "annual"}
+    | {"hourly", "daily", "weekly", "monthly", "yearly", "annual", "annually"}
+    | {"biweekly", "quarterly", "fortnight", "fortnightly"}
 )
 _SAME_PLURAL: Final = frozenset({"series", "species", "canvas"})
 
