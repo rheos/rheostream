@@ -41,12 +41,16 @@ was applied to it and lends nothing to the newer one.
 **Every other kind.** An obligation is a candidate when its ``issued_on`` is on or
 before ``paid_on`` plus its slack (a null ``issued_on`` is no bound), and live when it
 is also ``open`` or ``partial`` as the payments before this one left it. The slack is
-``finance.payments.early_days``, except for a parsed bill whose identity ties out
-(``bill_identity``, ``tied_out``): its total already nets every payment dated before its
-bill date, as a card statement's does, so it has none, and a payment dated before it
-stays with the bill before. A payment that posts too late to be on the bill is then on
-the wrong one; FR-21 (below) shows it when the bill prints its payments. Among the live
-candidates:
+``finance.payments.early_days``, except for what a parsed bill whose identity ties out
+(``bill_identity``, ``tied_out``) is owed for its printed total, as one ``bill`` or
+split into a bill and its ``arrears``: that total is the balance before it less what was
+paid since, plus its charges, so it already nets every payment dated before its bill
+date, as a card statement's does. It has no slack, and a payment dated before it stays
+with the bill before. A bill an arrangement governs is owed its current charges, which
+net nothing, and keeps the slack, as does a typed-in bill. A payment that posts too late
+to be on the bill is then on the bill before; FR-21 (below) shows it when the bill
+prints its payments, and a payment the biller dates after the older bill but the bank
+dates before it shows on both. Among the live candidates:
 
 - the ones whose remaining is the amount within ``match_tolerance`` (one live candidate
   or several, edge case 15): it pays the oldest of them, unless the oldest two were
@@ -121,13 +125,19 @@ from types import MappingProxyType
 from typing import Annotated, Final, NamedTuple
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import bindparam, func, insert, select, update
+from sqlalchemy import Row, bindparam, func, insert, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.contracts import Tiered
 from rheo_finance.decision import DecisionKind, reversed_clause
 from rheo_finance.derive.stage4 import cents
-from rheo_finance.derive.stage14 import BILL, CARD_STATEMENT, CURRENCY, INSTALMENT
+from rheo_finance.derive.stage14 import (
+    ARREARS,
+    BILL,
+    CARD_STATEMENT,
+    CURRENCY,
+    INSTALMENT,
+)
 from rheo_finance.derive.stage15 import ACTIVE, NOTICE_KIND
 from rheo_finance.events import record_event
 from rheo_finance.manual.accounts import CREDIT_CARD
@@ -219,8 +229,9 @@ class _Obligation:
     arrangement_ref: str | None
     primary_source: str
     paid: Decimal = ZERO
-    # A parsed bill whose identity ties out: its total already nets every payment
-    # dated before its bill date, so it takes no ``early_days`` slack.
+    # Owed from a parsed bill whose identity ties out, for its printed total or split
+    # from it as bill and arrears: it already nets every payment dated before its bill
+    # date, so it takes no ``early_days`` slack (``_nets_earlier``).
     nets_earlier: bool = False
 
     @property
@@ -328,13 +339,14 @@ class _Decided:
     unapplied: str | None
 
 
-def _netting_sources(uow: UnitOfWork) -> frozenset[str]:
-    """The paths of parsed bills whose identity ties out (control ``bill_identity``,
-    ``tied_out``): each prints its previous amount and the payments since, so its
-    total holds every payment dated before its bill date."""
+def _netting_sources(uow: UnitOfWork) -> dict[str, Decimal | None]:
+    """The printed total of each parsed bill whose identity ties out (control
+    ``bill_identity``, ``tied_out``), by path: its total is the balance before it, less
+    what was paid since, plus its charges, so it holds every payment dated before its
+    bill date."""
     sp = statement_period.c
     rows = uow.execute(
-        select(document.c.path)
+        select(document.c.path, sp.balance_due)
         .select_from(statement_period.join(document, sp.document_id == document.c.id))
         .where(
             document.c.status == "parsed",
@@ -342,7 +354,29 @@ def _netting_sources(uow: UnitOfWork) -> frozenset[str]:
             sp.tied_out.is_(True),
         )
     ).all()
-    return frozenset(row.path for row in rows)
+    return {row.path: row.balance_due for row in rows}
+
+
+def _nets_earlier(
+    row: Row[tuple[object, ...]],
+    netting: Mapping[str, Decimal | None],
+    arrears_sources: Collection[str],
+) -> bool:
+    """Whether the obligation in ``row`` already nets the payments dated before its
+    bill date: a ``bill`` owed its tied-out bill's printed total, or split from it into
+    bill and ``arrears`` (both rows). A bill an arrangement governs is owed its current
+    charges, which net nothing, and keeps the slack."""
+    source = row.primary_source
+    if not isinstance(source, str) or source not in netting:
+        return False
+    if row.kind == ARREARS:
+        return True
+    if row.kind != BILL:
+        return False
+    total = netting[source]
+    return source in arrears_sources or (
+        total is not None and cents(row.amount_due) == cents(total)
+    )
 
 
 def _slack(each: _Obligation, rules: Rules) -> dt.timedelta:
@@ -371,6 +405,7 @@ def _obligations(uow: UnitOfWork) -> dict[uuid.UUID, _Obligation]:
             o.primary_source,
         )  # fmt: skip
     ).all()
+    arrears_sources = {row.primary_source for row in rows if row.kind == ARREARS}
     return {
         row.id: _Obligation(
             id=row.id,
@@ -386,7 +421,7 @@ def _obligations(uow: UnitOfWork) -> dict[uuid.UUID, _Obligation]:
             supersedes_id=row.supersedes_id,
             arrangement_ref=row.arrangement_ref,
             primary_source=row.primary_source,
-            nets_earlier=row.kind == BILL and row.primary_source in netting,
+            nets_earlier=_nets_earlier(row, netting, arrears_sources),
         )
         for row in rows
     }
