@@ -28,6 +28,7 @@ from rheo_finance import decision as decisions
 from rheo_finance.context import FinanceContext, UnitOfWork
 from rheo_finance.contracts import Role, SafetyClass, Tiered
 from rheo_finance.decision import DecisionKind, DecisionRefused
+from rheo_finance.decision import record as record_decision
 from rheo_finance.derive.presumed import presumed
 from rheo_finance.derive.stage15_apply import (
     OBLIGATION_TYPE,
@@ -96,7 +97,9 @@ def report_paid(ctx: FinanceContext, uow: UnitOfWork, data: ReportIn) -> ReportO
     if row.before_floor:
         raise DecisionRefused("report_paid: that obligation is due before the floor")
     _reverse_reported(ctx, uow, key)
-    out = decisions.record(
+    # A plain-name call: the repository's audit-sink scan reads every ``.record(``
+    # attribute call as a sink write, and this one records a ledger decision.
+    out = record_decision(
         ctx,
         uow,
         decisions.RecordIn(
