@@ -229,7 +229,7 @@ def list_owed(ctx: FinanceContext, uow: UnitOfWork, _data: ListIn) -> ListOut:
     ]
     rows.sort(
         key=lambda r: (
-            # Reported paid waits for its statements at the end, past the cap first.
+            # Reported paid waits for its statements at the end.
             r.status == "presumed_paid",
             r.overdue <= 0,
             r.due_date or dt.date.max,
@@ -238,6 +238,17 @@ def list_owed(ctx: FinanceContext, uow: UnitOfWork, _data: ListIn) -> ListOut:
             r.obligation_ref,
         )
     )
+    # The cap trims only the plain owed rows. A bill the owner reported paid, and one
+    # whose report its statements did not bear out, are always listed: the first keeps
+    # its Undo, the second its warning, however many other bills are open.
+    shown: list[OwedRow] = []
+    plain = 0
+    for r in rows:
+        if r.status == "presumed_paid" or r.reported_unconfirmed:
+            shown.append(r)
+        elif plain < cap:
+            shown.append(r)
+            plain += 1
     due = sum((r.due_in_window for r in rows), ZERO)
     overdue = sum((r.overdue for r in rows), ZERO)
     carried = sum((r.carried for r in rows), ZERO)
@@ -251,8 +262,8 @@ def list_owed(ctx: FinanceContext, uow: UnitOfWork, _data: ListIn) -> ListOut:
         due_in_window=due,
         overdue=overdue,
         carried=carried,
-        rows=rows[:cap],
-        more=max(0, len(rows) - cap),
+        rows=shown,
+        more=len(rows) - len(shown),
         credits=credits(ctx, uow),
         gaps=missing,
         gap_count=len(missing),
