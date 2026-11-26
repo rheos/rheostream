@@ -36,7 +36,9 @@ layout may print the start's year only when the period crosses New Year.
 Each bill gives one CAD ``statement_period``, control ``bill_identity``, over the
 printed billing period, with no ledger lines, as ``boxwood.bill`` does:
 ``balance_due`` the amount due, ``due_date``, ``bill_date`` (which also names the
-filed copy), ``current_charges`` and ``arrears`` when printed. The identity: the
+filed copy), ``current_charges`` and ``arrears`` when printed, and on a bill that ties
+out ``total_payments``, the payments it prints since the last bill (positive), which
+FR-21 checks against the payments applied between the two bills. The identity: the
 previous bill amount plus the payments is the balance forward (when printed), and the
 previous amount plus the payments plus the current charges is the amount due. A bill
 that breaks it is rejected (``identity_mismatch``); one that prints no previous
@@ -262,6 +264,14 @@ def _tied_out(bill: _Layout, text: str, total: Decimal) -> bool | None:
     return forward + current == total
 
 
+def _payments_received(bill: _Layout, text: str) -> Decimal:
+    """The payments the bill prints since the last one, as a positive figure (FR-21
+    compares it with the payments applied between the two bills)."""
+    return -sum(
+        (_money(each) for each in _values(bill, text, "payment", "amount")), Decimal(0)
+    )
+
+
 def _parse(bill: _Layout, text: str, accounts: AccountLookup) -> ParseResult:
     bill_date = _bill_date(bill, text)
     period = _period(bill, text)
@@ -293,6 +303,7 @@ def _parse(bill: _Layout, text: str, accounts: AccountLookup) -> ParseResult:
                 current_charges=_optional(bill, text, "current"),
                 arrears=_optional(bill, text, "arrears"),
                 tied_out=bool(tied_out),
+                total_payments=_payments_received(bill, text) if tied_out else None,
             ),
         ),
         lines=(),
@@ -323,7 +334,7 @@ PARSER_COLUMNS: Final = register_parser(
         parser_id=COLUMNS.parser_id,
         issuer=ISSUER,
         format="pdf",
-        version="4",
+        version="6",
         parse=parse_columns,
         filing_date=filing_date_columns,
     )
@@ -333,7 +344,7 @@ PARSER_LEADERS: Final = register_parser(
         parser_id=LEADERS.parser_id,
         issuer=ISSUER,
         format="pdf",
-        version="5",
+        version="7",
         parse=parse_leaders,
         filing_date=filing_date_leaders,
     )

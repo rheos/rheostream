@@ -39,9 +39,18 @@ the tolerance (below), and ``no_target`` when not. A superseded statement keeps 
 was applied to it and lends nothing to the newer one.
 
 **Every other kind.** An obligation is a candidate when its ``issued_on`` is on or
-before ``paid_on`` plus ``finance.payments.early_days`` (a null ``issued_on`` is no
-bound), and live when it is also ``open`` or ``partial`` as the payments before this one
-left it. Among the live candidates:
+before ``paid_on`` plus its slack (a null ``issued_on`` is no bound), and live when it
+is also ``open`` or ``partial`` as the payments before this one left it. The slack is
+``finance.payments.early_days``, except for what a parsed bill whose identity ties out
+(``bill_identity``, ``tied_out``) is owed for its printed total, as one ``bill`` or
+split into a bill and its ``arrears``: that total is the balance before it less what was
+paid since, plus its charges, so it already nets every payment dated before its bill
+date, as a card statement's does. It has no slack, and a payment dated before it stays
+with the bill before. A bill an arrangement governs is owed its current charges, which
+net nothing, and keeps the slack, as does a typed-in bill. A payment that posts too late
+to be on the bill is then on the bill before; FR-21 (below) shows it when the bill
+prints its payments, and a payment the biller dates after the older bill but the bank
+dates before it shows on both. Among the live candidates:
 
 - the ones whose remaining is the amount within ``match_tolerance`` (one live candidate
   or several, edge case 15): it pays the oldest of them, unless the oldest two were
@@ -51,14 +60,14 @@ left it. Among the live candidates:
 - else it is a ``confirm`` credit: two candidates and neither fits.
 
 Oldest is by ``issued_on``, then due date, then the period label in its natural order
-(``inst-plan-2`` before ``inst-plan-10``). With no live candidate, an obligation
-the stage left ``superseded`` (or presumed paid) whose own window holds ``paid_on`` is
-the target when the amount fits its ``amount_due`` or its kind is in the partial set:
-the window runs from its ``issued_on`` less ``early_days`` up to, not including, the
-next ``issued_on`` of the payee's same kind plus ``early_days`` (open for the newest;
-one ``issued_on`` shared is one window). Two such targets, the amount picks one, else
-``confirm``; one the amount does not fit, ``confirm``. With none (every candidate paid
-already, or out of its window, or no candidate at all) it is ``no_target``, with
+(``inst-plan-2`` before ``inst-plan-10``). With no live candidate, an obligation the
+stage left ``superseded`` (or presumed paid) whose own window holds ``paid_on`` is the
+target when the amount fits its ``amount_due`` or its kind is in the partial set: the
+window runs from its ``issued_on`` less its slack up to, not including, the next
+``issued_on`` of the payee's same kind plus that obligation's slack (open for the
+newest; one ``issued_on`` shared is one window). Two such targets, the amount picks one,
+else ``confirm``; one the amount does not fit, ``confirm``. With none (every candidate
+paid already, or out of its window, or no candidate at all) it is ``no_target``, with
 ``bound_on`` the latest issue date a target could have had; ``excess`` is only the part
 of a payment above what its target had left. So a credit never rolls forward onto an
 obligation issued after it: it leaves that state by a decision or by a target that
@@ -78,10 +87,12 @@ live candidate, and once a payment applies to it (in its own window, or by a
 decision stays on record and changes nothing.
 
 **FR-21.** For each obligation that supersedes another and whose document prints a
-payments figure (a card statement's ``total_payments``), the payments applied to its
-payee dated after the older one's date and on or before its own are compared with that
-figure; applied less printed is ``payments_mismatch`` ("applied X, statement shows Y"),
-null when they agree.
+payments figure (``total_payments``: a card statement's, or a tied-out bill's), the
+payments applied to its payee dated after the older one's date and on or before its own
+are compared with that figure; applied less printed is ``payments_mismatch`` ("applied
+X, statement shows Y"), null when they agree. A tied-out bill counts from the older
+bill's date up to, not including, its own, as stage 15 applies to it: a payment on a
+bill's date is on the next bill.
 
 **Arrangements.** ``finished_arrangements`` reads, after an application, the
 arrangements whose every instalment is paid, each with the day the last one was paid;
@@ -114,13 +125,19 @@ from types import MappingProxyType
 from typing import Annotated, Final, NamedTuple
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import bindparam, func, insert, select, update
+from sqlalchemy import Row, bindparam, func, insert, select, update
 
 from rheo_finance.context import UnitOfWork
 from rheo_finance.contracts import Tiered
 from rheo_finance.decision import DecisionKind, reversed_clause
 from rheo_finance.derive.stage4 import cents
-from rheo_finance.derive.stage14 import CARD_STATEMENT, CURRENCY, INSTALMENT
+from rheo_finance.derive.stage14 import (
+    ARREARS,
+    BILL,
+    CARD_STATEMENT,
+    CURRENCY,
+    INSTALMENT,
+)
 from rheo_finance.derive.stage15 import ACTIVE, NOTICE_KIND
 from rheo_finance.events import record_event
 from rheo_finance.manual.accounts import CREDIT_CARD
@@ -212,6 +229,10 @@ class _Obligation:
     arrangement_ref: str | None
     primary_source: str
     paid: Decimal = ZERO
+    # Owed from a parsed bill whose identity ties out, for its printed total or split
+    # from it as bill and arrears: it already nets every payment dated before its bill
+    # date, so it takes no ``early_days`` slack (``_nets_earlier``).
+    nets_earlier: bool = False
 
     @property
     def remaining(self) -> Decimal:
@@ -318,7 +339,54 @@ class _Decided:
     unapplied: str | None
 
 
+def _netting_sources(uow: UnitOfWork) -> dict[str, Decimal | None]:
+    """The printed total of each parsed bill whose identity ties out (control
+    ``bill_identity``, ``tied_out``), by path: its total is the balance before it, less
+    what was paid since, plus its charges, so it holds every payment dated before its
+    bill date."""
+    sp = statement_period.c
+    rows = uow.execute(
+        select(document.c.path, sp.balance_due)
+        .select_from(statement_period.join(document, sp.document_id == document.c.id))
+        .where(
+            document.c.status == "parsed",
+            sp.control_kind == "bill_identity",
+            sp.tied_out.is_(True),
+        )
+    ).all()
+    return {row.path: row.balance_due for row in rows}
+
+
+def _nets_earlier(
+    row: Row[tuple[object, ...]],
+    netting: Mapping[str, Decimal | None],
+    arrears_sources: Collection[str],
+) -> bool:
+    """Whether the obligation in ``row`` already nets the payments dated before its
+    bill date: a ``bill`` owed its tied-out bill's printed total, or split from it into
+    bill and ``arrears`` (both rows). A bill an arrangement governs is owed its current
+    charges, which net nothing, and keeps the slack."""
+    source = row.primary_source
+    if not isinstance(source, str) or source not in netting:
+        return False
+    if row.kind == ARREARS:
+        return True
+    if row.kind != BILL:
+        return False
+    total = netting[source]
+    return source in arrears_sources or (
+        total is not None and cents(row.amount_due) == cents(total)
+    )
+
+
+def _slack(each: _Obligation, rules: Rules) -> dt.timedelta:
+    """How long before ``each``'s issue date a payment may be dated and still be
+    toward it: ``early_days``, or none for a bill that already nets such payments."""
+    return dt.timedelta(days=0 if each.nets_earlier else rules.early_days)
+
+
 def _obligations(uow: UnitOfWork) -> dict[uuid.UUID, _Obligation]:
+    netting = _netting_sources(uow)
     o = obligation.c
     rows = uow.execute(
         select(
@@ -337,6 +405,7 @@ def _obligations(uow: UnitOfWork) -> dict[uuid.UUID, _Obligation]:
             o.primary_source,
         )  # fmt: skip
     ).all()
+    arrears_sources = {row.primary_source for row in rows if row.kind == ARREARS}
     return {
         row.id: _Obligation(
             id=row.id,
@@ -352,6 +421,7 @@ def _obligations(uow: UnitOfWork) -> dict[uuid.UUID, _Obligation]:
             supersedes_id=row.supersedes_id,
             arrangement_ref=row.arrangement_ref,
             primary_source=row.primary_source,
+            nets_earlier=_nets_earlier(row, netting, arrears_sources),
         )
         for row in rows
     }
@@ -567,7 +637,10 @@ class _Applier:
             each for each in self.by_payee[paid.payee_id] if each.kind != CARD_STATEMENT
         ]
         candidates = [
-            each for each in mine if each.issued_on is None or each.issued_on <= bound
+            each
+            for each in mine
+            if each.issued_on is None
+            or each.issued_on <= paid.paid_on + _slack(each, rules)
         ]
         if not candidates:
             self.rows.add(paid, paid.amount, reason=NO_TARGET, bound_on=bound)
@@ -621,19 +694,19 @@ class _Applier:
         paid: _Payment,
         rules: Rules,
     ) -> bool:
-        """Whether ``paid`` is dated before the end of ``target``'s own window. The
-        start, ``issued_on`` less ``early_days``, is the bound candidates passed."""
+        """Whether ``paid`` is dated before the end of ``target``'s own window: the
+        next issue date plus that obligation's slack (``_slack``). The start, the
+        target's ``issued_on`` less its own slack, is the bound candidates passed."""
         if target.issued_on is None:
             return False
-        early = dt.timedelta(days=rules.early_days)
-        later = [
-            each.issued_on
+        ends = [
+            each.issued_on + _slack(each, rules)
             for each in mine
             if each.kind == target.kind
             and each.issued_on is not None
             and each.issued_on > target.issued_on
         ]
-        return not later or paid.paid_on < min(later) + early
+        return not ends or paid.paid_on < min(ends)
 
     def _windowed(
         self, paid: _Payment, windowed: Sequence[_Obligation], rules: Rules
@@ -680,12 +753,14 @@ def confirmation_targets(
             if statements
             else ()
         )
-    bound = paid.paid_on + dt.timedelta(days=rules.early_days)
     candidates = [
         each
         for each in mine
         if each.kind != CARD_STATEMENT
-        and (each.issued_on is None or each.issued_on <= bound)
+        and (
+            each.issued_on is None
+            or each.issued_on <= paid.paid_on + _slack(each, rules)
+        )
     ]
     # _obligations is also used before applications, where paid starts at zero.
     applied = {
@@ -752,11 +827,18 @@ def _mismatches(
         start, end = (None, None) if older is None else (dated(older), dated(each))
         if figure is None or start is None or end is None:
             continue
+
+        # A bill nets what was paid before its own date, and a payment on the older
+        # bill's date was not on that one: it is on this one.
+        bill = each.nets_earlier
         applied = sum(
             (
                 applied_of[paid.id]
                 for paid in payments
-                if paid.payee_id == each.payee_id and start < paid.paid_on <= end
+                if paid.payee_id == each.payee_id
+                and (
+                    start <= paid.paid_on < end if bill else start < paid.paid_on <= end
+                )
             ),
             ZERO,
         )

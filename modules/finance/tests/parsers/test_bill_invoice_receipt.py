@@ -221,12 +221,12 @@ COLUMNS_TEXT = "boxwood_bill_columns.txt"
 LEADERS_TEXT = "boxwood_bill_leaders.txt"
 LAYOUTS = {
     "columns": (
-        "boxwood/2031-03-14.pdf", COLUMNS_TEXT, "boxwood.bill_columns", "4",
+        "boxwood/2031-03-14.pdf", COLUMNS_TEXT, "boxwood.bill_columns", "6",
         (D(2031, 1, 12), D(2031, 3, 14)), D(2031, 4, 9), D(2031, 3, 14),
         Decimal("301.95"), Decimal("239.55"),
     ),
     "leaders": (
-        "boxwood/2032-01-12.pdf", LEADERS_TEXT, "boxwood.bill_leaders", "5",
+        "boxwood/2032-01-12.pdf", LEADERS_TEXT, "boxwood.bill_leaders", "7",
         (D(2031, 11, 12), D(2032, 1, 12)), D(2032, 2, 13), D(2032, 1, 12),
         Decimal("412.30"), Decimal("362.30"),
     ),
@@ -255,6 +255,9 @@ def test_each_owner_layout_gives_one_tied_out_bill_period(
     )  # fmt: skip
     assert stored.current_charges == current
     assert stored.arrears is None
+    assert stored.total_payments == (
+        Decimal("150.00") if name == "columns" else Decimal("250.00")
+    )
     assert "999000123" not in setup.stored_text(doc)
     assert "sample customer" not in setup.stored_text(doc)
     assert boxwood_parser(parser_id).filing_date(fixture(text)) == billed  # type: ignore[misc]
@@ -317,6 +320,7 @@ def test_an_owner_layout_bill_without_a_previous_amount_loads_as_printed(
     assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
     (stored,) = setup.periods(doc)
     assert (stored.tied_out, stored.balance_due) == (False, Decimal("412.30"))
+    assert stored.total_payments is None
 
 
 def test_a_credit_total_keeps_its_sign(setup: Setup) -> None:
