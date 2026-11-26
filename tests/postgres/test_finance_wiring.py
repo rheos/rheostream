@@ -21,7 +21,7 @@ under the session's temporary data root.
   is recorded, and the next workspace session is the session user.
 - D7: a database at a known revision other than the code's head fails the job with
   the fixed ``schema_behind`` code alone.
-- D8 (RS-6d D3): exactly the eight opt-in reads and their tools reach core's
+- D8 (RS-6d D3): exactly the nine opt-in reads and their tools reach core's
   registries, each registration ``explicit_only`` and owner-only, each output with
   nothing restricted or unrenderable under core's own walks.
 - RS-6d D4: an owner's session calls ``finance_status`` and ``finance_owed`` through
@@ -637,6 +637,7 @@ FINANCE_READS: Final = frozenset(
         "finance.sink.state",
         "finance.status.get",
         "finance.txn.list",
+        "finance.upcoming.list",
     }
 )
 # The two owner writes (#639, ADR-0030): no tool, and no token set reaches them.
@@ -653,13 +654,14 @@ FINANCE_TOOLS: Final = frozenset(
         "finance_sinks",
         "finance_status",
         "finance_lines",
+        "finance_upcoming",
     }
 )
 SESSION_HOST: Final = "example.test"
 
 
-def test_only_the_eight_opt_in_reads_reach_core_registries(finance: Finance) -> None:
-    """D8 (RS-6d D3, ADR-0029, ADR-0030): exactly the eight reads and their tools, and
+def test_only_the_nine_opt_in_reads_reach_core_registries(finance: Finance) -> None:
+    """D8 (RS-6d D3, ADR-0029, ADR-0030): exactly the nine reads and their tools, and
     the two owner writes with none, each registration ``explicit_only`` and
     owner-only. Each registered output is the owner
     view: its shared view has nothing restricted, and every field the owner view adds

@@ -4,9 +4,10 @@ import type { Screen, ShellApi } from "@rheo-stream/web-contract/screen";
 import { AttentionView } from "./attention";
 import { CoverageView } from "./coverage";
 import { OwnerOnly } from "./frame";
-import { loadAttention, loadCoverage, loadOwed } from "./load";
+import { loadAttention, loadCoverage, loadOwed, loadUpcoming } from "./load";
 import { OwedView } from "./owed";
 import { PaidForm } from "./paid";
+import { UpcomingView } from "./upcoming";
 
 /**
  * Finance's screens, keyed by the `screen` identifier each route in the module's
@@ -50,7 +51,16 @@ const coverage: Screen = async ({ shell, query }) => {
   return createElement(CoverageView, { shell, state: await loadCoverage(shell, year) });
 };
 
-export const screens = { owed, attention, coverage } satisfies Record<string, Screen>;
+const upcomingScreen: Screen = async ({ shell, query }) =>
+  shell.role !== "owner"
+    ? createElement(OwnerOnly)
+    : createElement(UpcomingView, {
+        shell,
+        state: await loadUpcoming(shell),
+        account: typeof query.account === "string" ? query.account : null,
+      });
+
+export const screens = { owed, upcoming: upcomingScreen, attention, coverage } satisfies Record<string, Screen>;
 
 /** The one form component the manifest names, for both owner writes. */
 export const components = { PaidForm };

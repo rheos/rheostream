@@ -1,5 +1,5 @@
 """The manifest (L1, L2, RS-6d L8): one job, one gated schedule, the settings keys,
-the eight opt-in reads, the two owner writes (#639) and nothing else core can reach,
+the nine opt-in reads, the two owner writes (#639) and nothing else core can reach,
 refusing export stubs, and the flagship loading the module beside the four it already
 loaded. No database.
 """
@@ -73,19 +73,19 @@ def test_one_job_and_one_gated_schedule() -> None:
 
 
 def test_only_the_reads_and_the_two_writes_reach_finance_through_core() -> None:
-    """L8: eight READ operations and their tools, opt-in only, and the two owner
+    """L8: nine READ operations and their tools, opt-in only, and the two owner
     writes with no tool, audited by core's own sink; nothing else core can reach (no
     record type, resolver, deletion, event, subscription, sensitivity map, connector,
     secret scope, authorization callback or agent guidance). The reads are pinned in
     ``test_reads``, the writes in ``test_writes``; the web screens in the test below."""
-    assert len(MANIFEST.operations) == 10
+    assert len(MANIFEST.operations) == 11
     writes = [d for d, _ in MANIFEST.operations if d.safety_class is SafetyClass.MUTATE]
     assert [d.name for d in writes] == [
         "finance.obligation.report_paid",
         "finance.obligation.unreport_paid",
     ]
     assert {d.audit for d in writes} == {AuditSpec(subject_field=None)}
-    assert len(MANIFEST.tools) == 8
+    assert len(MANIFEST.tools) == 9
     assert not {tool.operation for tool in MANIFEST.tools} & {d.name for d in writes}
     assert MANIFEST.package_sets == "explicit_only"
     assert MANIFEST.record_types == ()
@@ -105,9 +105,9 @@ def test_only_the_reads_and_the_two_writes_reach_finance_through_core() -> None:
 
 
 def test_the_web_screens_are_the_owners_alone_and_submit_only_the_two_writes() -> None:
-    """#584, #639: three screens on ``finance.``, one navigation entry for the owner,
-    one form per owner write and no record route, record view or search provider, so
-    the shell lets the module submit those two and nothing else."""
+    """#584, #637, #639: four screens on ``finance.``, one navigation entry for the
+    owner, one form per owner write and no record route, record view or search
+    provider, so the shell lets the module submit those two and nothing else."""
     web = MANIFEST.web
     assert web is not None
     assert (web.surface.surface, web.surface.host, web.surface.path) == (
@@ -121,6 +121,7 @@ def test_the_web_screens_are_the_owners_alone_and_submit_only_the_two_writes() -
     ]
     assert [(route.id, route.path, route.screen) for route in web.routes] == [
         ("owed", "/", "owed"),
+        ("upcoming", "/upcoming", "upcoming"),
         ("attention", "/attention", "attention"),
         ("coverage", "/coverage", "coverage"),
     ]

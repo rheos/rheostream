@@ -1,5 +1,5 @@
 /**
- * Wire shapes of finance's eight owner-only reads (`rheo_finance.wiring.reads`),
+ * Wire shapes of finance's nine owner-only reads (`rheo_finance.wiring.reads`),
  * narrowed from the untyped `OperationOutcome.result`.
  *
  * Amounts are finance's restricted fields. The reads fill them only for the owner's
@@ -536,4 +536,93 @@ export function relativeDays(days: number | null): string {
 
 export function words(code: string): string {
   return code.replace(/_/g, " ");
+}
+
+// --- finance.upcoming.list ----------------------------------------------------------
+
+export type ChargeState = "due" | "expected" | "likely_charged";
+
+export interface Charge {
+  /** "due": a bill from Owed; "expected": a recurring charge the ledger predicts. */
+  kind: "due" | "expected";
+  state: ChargeState;
+  on: string;
+  daysAway: number;
+  label: string;
+  account: string | null;
+  accountLabel: string | null;
+  payeeSlug: string | null;
+  currency: string;
+  amount: number | null;
+  amountLow: number | null;
+  amountHigh: number | null;
+  cadence: string | null;
+  seen: number | null;
+  lastSeen: string | null;
+  obligationRef: string | null;
+  obligationKind: string | null;
+  periodLabel: string | null;
+}
+
+function chargeState(value: unknown): ChargeState {
+  return value === "due" || value === "likely_charged" ? value : "expected";
+}
+
+export function charge(value: unknown): Charge {
+  const r = row(value);
+  return {
+    kind: r.kind === "due" ? "due" : "expected",
+    state: chargeState(r.state),
+    on: str(r.on),
+    daysAway: int(r.days_away),
+    label: str(r.label),
+    account: optional(r.account),
+    accountLabel: optional(r.account_label),
+    payeeSlug: optional(r.payee_slug),
+    currency: str(r.currency) || "CAD",
+    amount: amount(r.amount),
+    amountLow: amount(r.amount_low),
+    amountHigh: amount(r.amount_high),
+    cadence: optional(r.cadence),
+    seen: optionalInt(r.seen),
+    lastSeen: optional(r.last_seen),
+    obligationRef: optional(r.obligation_ref),
+    obligationKind: optional(r.obligation_kind),
+    periodLabel: optional(r.period_label),
+  };
+}
+
+export interface AccountData {
+  account: string;
+  accountLabel: string;
+  dataThrough: string;
+  predicts: boolean;
+}
+
+export interface Upcoming {
+  asOf: string;
+  today: string;
+  windowDays: number;
+  rows: Charge[];
+  totals: { currency: string; amount: number | null }[];
+  overdueCount: number;
+  accounts: AccountData[];
+}
+
+export function upcoming(value: unknown): Upcoming {
+  const r = row(value);
+  return {
+    asOf: str(r.as_of),
+    today: str(r.today),
+    windowDays: int(r.window_days),
+    rows: rows(r.rows).map(charge),
+    totals: rows(r.totals).map((t) => ({ currency: str(t.currency), amount: amount(t.amount) })),
+    overdueCount: int(r.overdue_count),
+    accounts: rows(r.accounts).map((a) => ({
+      account: str(a.account),
+      accountLabel: str(a.account_label),
+      dataThrough: str(a.data_through),
+      predicts: bool(a.predicts),
+    })),
+  };
 }
