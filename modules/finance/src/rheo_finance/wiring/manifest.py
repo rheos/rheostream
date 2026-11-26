@@ -1,8 +1,8 @@
 """Finance's ``ModuleManifest``: one job, one gated schedule, its core settings keys,
-an install check, eight READ operations with their tools, owner-only web screens over
+an install check, nine READ operations with their tools, owner-only web screens over
 them, and no exportable record type.
 
-- The eight reader reads (``wiring.reads``, ADR-0028) are owner-only and
+- The nine reader reads (``wiring.reads``, ADR-0028) are owner-only and
   ``package_sets="explicit_only"``: no named package set, connector grant or routine
   token reaches them, only a ``module_read:finance`` token. Their registered outputs
   leave every restricted field empty for any token. ``audit_sink`` is ``None``
@@ -173,6 +173,7 @@ MANIFEST = ModuleManifest(
         ),
         routes=(
             WebRoute(id="owed", path="/", screen="owed"),
+            WebRoute(id="upcoming", path="/upcoming", screen="upcoming"),
             WebRoute(id="attention", path="/attention", screen="attention"),
             WebRoute(id="coverage", path="/coverage", screen="coverage"),
         ),

@@ -68,6 +68,7 @@ export const MODULES = [
     ],
     routes: [
       { id: "owed", path: "/", screen: financeWeb.screens.owed },
+      { id: "upcoming", path: "/upcoming", screen: financeWeb.screens.upcoming },
       { id: "attention", path: "/attention", screen: financeWeb.screens.attention },
       { id: "coverage", path: "/coverage", screen: financeWeb.screens.coverage },
     ],
@@ -84,6 +85,7 @@ export const MODULES = [
       "finance.sink.state",
       "finance.status.get",
       "finance.txn.list",
+      "finance.upcoming.list",
     ],
     submitOperations: [],
   },

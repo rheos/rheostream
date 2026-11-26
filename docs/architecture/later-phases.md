@@ -9,7 +9,7 @@ says.
 saying what shipped, where it lives, and where the build differs from the sketch. Phases 6 to 8
 are still sketches. One module arrived outside this list: Finance
 ([`modules/finance/`](../../modules/finance/README.md)), a personal ledger and reminder module
-that core loads like any other. Its eight read operations are owner-only and
+that core loads like any other. Its nine read operations are owner-only and
 `package_sets = "explicit_only"`, so only a `module_read:finance` token reaches them, and its
 `tick` schedule enqueues only once a workspace sets `finance.jobs.enabled` to true. It is not
 the invoicing or accounting product phase 5 rules out.

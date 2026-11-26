@@ -9,6 +9,7 @@ import {
   statusFacts,
   statusLines,
   traces,
+  upcoming,
   type Coverage,
   type Document,
   type OpenItems,
@@ -17,10 +18,11 @@ import {
   type StatusFacts,
   type StatusLine,
   type Trace,
+  type Upcoming,
 } from "./data";
 
 /**
- * The reads these screens call: seven of the eight finance registers in core
+ * The reads these screens call: eight of the nine finance registers in core
  * (`finance.txn.list` has no screen yet). All are READ, owner-only, and leave out
  * every restricted field. Nothing here submits, so the package declares no form
  * and no submit operation.
@@ -32,7 +34,8 @@ export type Operation =
   | "finance.owed.trace"
   | "finance.document.list"
   | "finance.coverage.get"
-  | "finance.openitem.list";
+  | "finance.openitem.list"
+  | "finance.upcoming.list";
 
 export type Loaded<T> =
   | { state: "ok"; value: T }
@@ -135,4 +138,17 @@ export async function loadCoverage(
     read(shell, "finance.coverage.get", { year }, coverage),
   ]);
   return { strip, year, coverage: months };
+}
+
+export interface UpcomingState {
+  strip: Loaded<Strip>;
+  upcoming: Loaded<Upcoming>;
+}
+
+export async function loadUpcoming(shell: ShellApi): Promise<UpcomingState> {
+  const [strip, list] = await Promise.all([
+    loadStrip(shell),
+    read(shell, "finance.upcoming.list", {}, upcoming),
+  ]);
+  return { strip, upcoming: list };
 }

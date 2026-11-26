@@ -1,5 +1,5 @@
 """The manifest (L1, L2, RS-6d L8): one job, one gated schedule, the settings keys,
-the eight opt-in reads and nothing else core can reach, refusing export stubs, and the
+the nine opt-in reads and nothing else core can reach, refusing export stubs, and the
 flagship loading the module beside the four it already loaded. No database.
 """
 
@@ -70,14 +70,14 @@ def test_one_job_and_one_gated_schedule() -> None:
     )
 
 
-def test_only_the_eight_opt_in_reads_reach_finance_through_core() -> None:
-    """L8: eight READ operations and their tools, opt-in only; nothing else core can
+def test_only_the_nine_opt_in_reads_reach_finance_through_core() -> None:
+    """L8: nine READ operations and their tools, opt-in only; nothing else core can
     reach (no record type, resolver, deletion, event, subscription, sensitivity map,
     audit sink, connector, secret scope, authorization callback or agent guidance).
     The reads themselves are pinned in ``test_reads``; the read-only web screens over
     them in the test below."""
-    assert len(MANIFEST.operations) == 8
-    assert len(MANIFEST.tools) == 8
+    assert len(MANIFEST.operations) == 9
+    assert len(MANIFEST.tools) == 9
     assert MANIFEST.package_sets == "explicit_only"
     assert MANIFEST.record_types == ()
     assert MANIFEST.resolvers == ()
@@ -96,7 +96,7 @@ def test_only_the_eight_opt_in_reads_reach_finance_through_core() -> None:
 
 
 def test_the_web_screens_are_read_only_and_the_owners_alone() -> None:
-    """#584: three screens on ``finance.``, one navigation entry for the owner, and
+    """#584, #637: four screens on ``finance.``, one navigation entry for the owner, and
     no form, record route, record view or search provider, so the shell's allowlist
     for the module is its READ operations and nothing it can submit."""
     web = MANIFEST.web
@@ -112,6 +112,7 @@ def test_the_web_screens_are_read_only_and_the_owners_alone() -> None:
     ]
     assert [(route.id, route.path, route.screen) for route in web.routes] == [
         ("owed", "/", "owed"),
+        ("upcoming", "/upcoming", "upcoming"),
         ("attention", "/attention", "attention"),
         ("coverage", "/coverage", "coverage"),
     ]

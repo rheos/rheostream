@@ -1007,7 +1007,7 @@ sections stay short. Acceptance records for phases one and two are in
 **Outside the phases: Finance.** A personal ledger and reminder module that no phase names,
 built from 2026-11-10 and documented in [its README](../../modules/finance/README.md). Core
 loads it like any other module, and a workspace installs and enables it through the ordinary
-lifecycle. Its eight read operations are owner-only and `explicit_only`: a token reaches
+lifecycle. Its nine read operations are owner-only and `explicit_only`: a token reaches
 them only when it is a `module_read:finance` token or lists them, and an owner's web
 session reaches them by role. Its `tick` schedule enqueues only once a workspace
 sets `finance.jobs.enabled` to true. It files its reminders as Current items in process. It
