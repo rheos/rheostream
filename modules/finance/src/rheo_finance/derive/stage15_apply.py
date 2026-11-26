@@ -86,7 +86,9 @@ decision stays on record and changes nothing.
 payments figure (``total_payments``: a card statement's, or a tied-out bill's), the
 payments applied to its payee dated after the older one's date and on or before its own
 are compared with that figure; applied less printed is ``payments_mismatch`` ("applied
-X, statement shows Y"), null when they agree.
+X, statement shows Y"), null when they agree. A tied-out bill counts from the older
+bill's date up to, not including, its own, as stage 15 applies to it: a payment on a
+bill's date is on the next bill.
 
 **Arrangements.** ``finished_arrangements`` reads, after an application, the
 arrangements whose every instalment is paid, each with the day the last one was paid;
@@ -790,11 +792,18 @@ def _mismatches(
         start, end = (None, None) if older is None else (dated(older), dated(each))
         if figure is None or start is None or end is None:
             continue
+
+        # A bill nets what was paid before its own date, and a payment on the older
+        # bill's date was not on that one: it is on this one.
+        bill = each.nets_earlier
         applied = sum(
             (
                 applied_of[paid.id]
                 for paid in payments
-                if paid.payee_id == each.payee_id and start < paid.paid_on <= end
+                if paid.payee_id == each.payee_id
+                and (
+                    start <= paid.paid_on < end if bill else start < paid.paid_on <= end
+                )
             ),
             ZERO,
         )

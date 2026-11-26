@@ -1114,6 +1114,29 @@ def test_a_payment_before_a_parsed_bill_stays_with_the_bill_before(
     assert newer.remaining == expected
 
 
+def test_a_tied_out_bills_payments_figure_counts_up_to_its_own_date(
+    ledger: Ledger,
+) -> None:
+    """Each bill prints 152.88 of payments. The newer one's are the payments from the
+    older bill's date up to, not including, its own: the one on its own date is on
+    the next bill, and FR-21 leaves it out."""
+    two_power_bills(
+        ledger,
+        (D(2029, 1, 26), "114.66"),
+        (D(2029, 3, 1), "38.22"),
+        (D(2029, 3, 27), "60.00"),
+    )
+
+    ledger.derive()
+
+    assert applied(ledger) == [
+        Applied("bill-2029-02", Decimal("38.22"), True),
+        Applied("bill-2029-02", Decimal("114.66"), True),
+        Applied("bill-2029-04", Decimal("60.00"), True),
+    ]
+    assert owed(ledger)["bill-2029-04"].payments_mismatch is None
+
+
 def test_a_payment_before_a_typed_bill_still_takes_early_days(ledger: Ledger) -> None:
     """A typed-in bill prints nothing about earlier payments, so it keeps the slack."""
     accounts(
