@@ -5,6 +5,14 @@ starts from an argument list, never through a local shell. The remote command is
 argument, ``shlex.join`` of fixed or validated words, so the remote login shell sees
 only single-quoted words; ``--`` always comes before the destination.
 
+Every ssh call sets ``StrictHostKeyChecking=yes`` and ``ControlPath=none`` on its
+command line, which win over any ssh_config value: each call opens its own connection
+(a shared master connection would skip the check) and an unknown or changed host key
+always refuses (exit 255, ``ssh_failed``). So a push never sends files, keys included,
+to a host that only claims to be the server. Which keys count as known is still the
+operator's ssh_config (``UserKnownHostsFile`` and the like). The operator records the
+key once by connecting by hand.
+
 Each command takes two sessions: one finds the container by its two compose labels
 (``docker ps``; exactly one running id, else a refusal), the next runs ``finance`` in
 it. A container replaced in between fails closed as a docker error.
@@ -37,6 +45,7 @@ from rheo_finance.remote.frames import REPLY_CODES, RemoteRefused
 WORKSPACE_VARIABLE: Final = "FINANCE_WORKSPACE_ID"
 CONFIG_VARIABLE: Final = "FINANCE_REMOTE_CONFIG"
 SSH: Final = "ssh"
+HOST_KEY_OPTIONS: Final = ("-o", "StrictHostKeyChecking=yes", "-o", "ControlPath=none")
 PROJECT_LABEL: Final = "com.docker.compose.project"
 SERVICE_LABEL: Final = "com.docker.compose.service"
 RESOLVE_SECONDS: Final = 120
@@ -160,11 +169,12 @@ def exec_words(
 def ssh_argv(
     cfg: RemoteConfig, words: Sequence[str], *, tty: bool, stream: bool
 ) -> list[str]:
-    """ssh's argument list: a terminal only when asked, the escape character off for
-    a binary stream, ``--`` before the destination, and the remote command as one
-    argument."""
+    """ssh's argument list: host-key checking on and connection sharing off whatever
+    ssh_config says, a terminal only when asked, the escape character off for a binary
+    stream, ``--`` before the destination, and the remote command as one argument."""
     return [
         SSH,
+        *HOST_KEY_OPTIONS,
         "-t" if tty else "-T",
         *(["-e", "none"] if stream else []),
         "--",

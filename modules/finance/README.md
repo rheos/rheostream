@@ -170,6 +170,18 @@ docker = ["docker"]                   # optional, e.g. ["sudo", "-n", "docker"]
 Each command finds the one running container with both labels, then runs `finance`
 in it. The remote account's login shell must be sh-compatible.
 
+Every ssh call checks the host key and opens its own connection (`-o
+StrictHostKeyChecking=yes -o ControlPath=none`, which win over your ssh_config), so a
+host whose key is not in your known hosts files, or whose key changed, refuses with
+`ssh_failed`. Which files count is still your ssh_config's choice
+(`UserKnownHostsFile` and the like). Before the first command, connect once by hand,
+compare the fingerprint ssh shows with the server's own, and answer yes. The two
+options make ssh ask even when your ssh_config would accept a new key silently:
+
+```sh
+ssh -o StrictHostKeyChecking=ask -o ControlPath=none -- finance-host true
+```
+
 - `finance remote push` copies files into the layout. `--archive DIR` and `--inbox
   DIR` take every regular file, recursively. `--data DIR` takes `settings.toml`,
   `identities.toml` and `manual/` only, never `db.env`, `dumps/` or anything else
