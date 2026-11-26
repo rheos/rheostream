@@ -11,21 +11,32 @@ Two kinds of row, never mixed:
   a subscription vendor is a spending line only (stage 14).
 
 **A series.** The charges a prediction rests on are the outflows of ``report_txn``
-(amount below zero) that are not transfer-like (``transfer_state`` null: an own
-transfer, a conversion, a funding pull and an unpaired transfer-like line are left
-out) and that no obligation's payment cites as evidence (``report_owed_trace``), since
-``due`` counts those bills already. One account, one currency and one label key make
-a group, where the label key is the printed label casefolded, without each token that
-holds a digit and without trailing two-letter tokens (a region code), so a label that
-changes its postal code, phone number or province between statements stays one group.
-A key that starts with another key of the same account and currency, token for token,
-joins it. Within a group, each charge in date order joins the run whose latest amount
-is nearest, when it is within ``AMOUNT_TOLERANCE`` of it (or ``AMOUNT_FLOOR``), else it
-starts a run: one vendor with two plans is two runs, and a charge that drifts a little
-each month, as interest or a foreign-currency price does, stays one. Two runs of one
+(amount below zero) with a label of their own that are:
+
+- not transfer-like (``transfer_state`` null: an own transfer, a conversion, a funding
+  pull and an unpaired transfer-like line are left out);
+- not excluded (``exclusion`` null) and not in a crypto currency
+  (``report_crypto_movement``);
+- not cited by an obligation's payment (``report_owed_trace``), and not a payment still
+  unapplied to a payee that has bills (``report_open_item``, matched by account, date,
+  amount and currency, since an unapplied credit names no line): ``due`` and Owed
+  count those bills already. A payee with no bill, such as a landlord, keeps them.
+
+One account, one currency and one label key make a group, where the label key is the
+printed label casefolded, without each token that holds a digit and without trailing
+two-letter tokens (a region code), so a label that changes its postal code, phone
+number or province between statements stays one group. A key that starts with another
+key of two or more tokens of the same account and currency, token for token, joins it;
+an empty key joins nothing. Within a group, each charge in date order joins the run
+whose latest amount is nearest, when it is within ``AMOUNT_TOLERANCE`` of it (or
+``AMOUNT_FLOOR``), else it starts a run: one vendor with two plans is two runs, and a
+charge that drifts a little each month, as interest or a foreign-currency price does,
+stays one. Two runs of one
 group whose median amounts are that near join when their charges, put together, are
 never within ``COLLISION_DAYS`` of each other: interest that moves back and forth
-splits into two runs that skip turns, and this puts it back together.
+splits into two runs that skip turns, and this puts it back together. And a run
+carries on into a run that starts where its next charge was due, after its last
+charge: a price rise starts a new run, which continues the old one.
 
 **Regular.** A run counts when its latest ``RECENT`` charges number at least
 ``finance.waste.recurring_min_count``, every gap between them is a day or more, their
@@ -42,8 +53,9 @@ keeps its charges, and a cancelled subscription on a current account drops out.
 
 **The charges.** Each step from the last charge, up to the end of the window. A step
 before today is ``likely_charged`` (the data does not reach it yet, so it has probably
-posted), shown only from ``PAST_DAYS`` back; a step from today on is ``expected``. The
-amount is the run's latest, with the low and high of its latest three.
+posted), shown only from ``PAST_DAYS`` back and only past the account's data; a step
+from today on is ``expected``. The amount is the run's latest, with the low and high of
+its latest three.
 """
 
 from __future__ import annotations
@@ -66,7 +78,13 @@ from rheo_finance.contracts import Role, SafetyClass, Tiered
 from rheo_finance.operations import OperationSpec, register
 from rheo_finance.render import as_of
 from rheo_finance.reports.owed import Facts, figures
-from rheo_finance.storage.schema import report_owed, report_owed_trace, report_txn
+from rheo_finance.storage.schema import (
+    report_crypto_movement,
+    report_open_item,
+    report_owed,
+    report_owed_trace,
+    report_txn,
+)
 from rheo_finance.tier import Tier
 
 P, R = Tier.PUBLIC, Tier.RESTRICTED
@@ -81,6 +99,9 @@ AMOUNT_FLOOR: Final = Decimal("1.00")
 STALE_ACCOUNT: Final = 120
 PAST_DAYS: Final = 62
 REGULAR_SHARE: Final = 0.75
+JOIN_TOKENS: Final = 2
+# What the reader view writes for a line with no label of its own.
+NO_LABEL: Final = "Transaction"
 
 
 @dataclass(frozen=True)
@@ -133,12 +154,17 @@ def label_key(label: str) -> str:
 
 
 def joined_keys(keys: Iterable[str]) -> dict[str, str]:
-    """Each key to the shortest key it starts with, token for token (itself if none)."""
+    """Each key to the shortest key of ``JOIN_TOKENS`` or more tokens it starts with,
+    token for token (itself if none). An empty key is never a root and maps to
+    itself, so a label with no letters joins nothing."""
     ordered = sorted(set(keys), key=lambda k: (len(k.split()), k))
     roots: list[tuple[str, ...]] = []
     out: dict[str, str] = {}
     for key in ordered:
         tokens = tuple(key.split())
+        if len(tokens) < JOIN_TOKENS:
+            out[key] = key
+            continue
         root = next((r for r in roots if tokens[: len(r)] == r), None)
         if root is None:
             roots.append(tokens)
@@ -193,7 +219,7 @@ def runs(outflows: Iterable[Outflow]) -> list[Run]:
                     ).charges.append(o)
                 else:
                     open_runs.append(Run(account, o.account_label, currency, [o]))
-            found.extend(merged(open_runs))
+            found.extend(chained(merged(open_runs)))
     return found
 
 
@@ -229,6 +255,38 @@ def merged(found: list[Run]) -> list[Run]:
                 joined = True
                 break
             if joined:
+                break
+    return out
+
+
+def chained(found: list[Run]) -> list[Run]:
+    """Carry a run on into the run that starts where its next charge was due: a price
+    change beyond ``AMOUNT_TOLERANCE`` starts a new run, which this continues. The
+    later run must start after the earlier one's last charge, so two plans that run
+    side by side stay two."""
+    out = sorted(found, key=lambda r: (r.charges[0].posted, r.charges[0].amount))
+    joined = True
+    while joined:
+        joined = False
+        for a in out:
+            every = cadence(a, 2)
+            if every is None:
+                continue
+            due = every.step(a.last.posted, 1)
+            b = next(
+                (
+                    b
+                    for b in out
+                    if b is not a
+                    and b.charges[0].posted > a.last.posted
+                    and abs((b.charges[0].posted - due).days) <= every.tolerance
+                ),
+                None,
+            )
+            if b is not None:
+                a.charges.extend(b.charges)
+                out.remove(b)
+                joined = True
                 break
     return out
 
@@ -302,6 +360,10 @@ def predicted(
         while (on := every.step(last.posted, n)) <= end:
             n += 1
             if on < today - dt.timedelta(days=PAST_DAYS):
+                continue
+            if on <= through:
+                # Inside the loaded data, which shows no such charge yet: the grace
+                # keeps the run alive, but this step is not one the data cannot see.
                 continue
             out.append(
                 Charge(
@@ -396,6 +458,29 @@ def _due(uow: UnitOfWork, today: dt.date, days: int) -> tuple[list[Charge], int]
     return rows, overdue
 
 
+Paid = tuple[str | None, dt.date, Decimal, str | None]
+
+
+def _unapplied_bill_payments(uow: UnitOfWork) -> set[Paid]:
+    """The (account label, date, amount, currency) of each payment still unapplied to
+    a payee that has bills: Owed counts that payee's bills, so its payments are not
+    predicted too. An unapplied credit names no line, so the line is found by these
+    four; a payee with no bill (rent) keeps its payments as predictions."""
+    billers = set(
+        uow.execute(select(report_owed_trace.c.payee_slug).distinct()).scalars()
+    )
+    o = report_open_item.c
+    return {
+        (row.account_label, row.occurred_on, abs(Decimal(row.amount)), row.currency)
+        for row in uow.execute(
+            select(
+                o.account_label, o.occurred_on, o.amount, o.currency, o.payee_slug
+            ).where(o.payment_ref.is_not(None), o.amount.is_not(None))
+        )
+        if row.payee_slug in billers
+    }
+
+
 def list_upcoming(ctx: FinanceContext, uow: UnitOfWork, data: ListIn) -> ListOut:
     today = local_date(ctx.clock.now_utc(), ctx.settings.timezone)
     min_count = ctx.settings.get_int(MIN_COUNT_KEY)
@@ -407,6 +492,10 @@ def list_upcoming(ctx: FinanceContext, uow: UnitOfWork, data: ListIn) -> ListOut
             )
         ).scalars()
     }
+    paid_bills = _unapplied_bill_payments(uow)
+    crypto = set(
+        uow.execute(select(report_crypto_movement.c.currency).distinct()).scalars()
+    )
     c = report_txn.c
     data_end: dict[str, dt.date] = {}
     labels: dict[str, str] = {}
@@ -421,6 +510,7 @@ def list_upcoming(ctx: FinanceContext, uow: UnitOfWork, data: ListIn) -> ListOut
             c.currency,
             c.display_label,
             c.transfer_state,
+            c.exclusion,
         )
     ).mappings():
         if row.account is None or row.posting_date is None:
@@ -432,8 +522,13 @@ def list_upcoming(ctx: FinanceContext, uow: UnitOfWork, data: ListIn) -> ListOut
             row.amount is None
             or row.amount >= 0
             or row.transfer_state is not None
+            or row.exclusion is not None
             or row.line_ref in cited
+            or (row.account_label, row.posting_date, abs(row.amount), row.currency)
+            in paid_bills
+            or row.currency in crypto
             or not row.display_label
+            or row.display_label == NO_LABEL
         ):
             continue
         outflows.append(
@@ -450,7 +545,15 @@ def list_upcoming(ctx: FinanceContext, uow: UnitOfWork, data: ListIn) -> ListOut
     due, overdue = _due(uow, today, data.days)
     rows = sorted(
         due + expected,
-        key=lambda r: (r.on, r.kind != "due", r.account or "", r.label, r.currency),
+        key=lambda r: (
+            r.on,
+            r.kind != "due",
+            r.account or "",
+            r.label,
+            r.currency,
+            r.obligation_ref or "",
+            r.amount,
+        ),
     )
     sums: dict[str, Decimal] = defaultdict(lambda: ZERO)
     for r in rows:

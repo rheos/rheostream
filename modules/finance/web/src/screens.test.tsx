@@ -186,7 +186,7 @@ function charge(overrides: Record<string, unknown>) {
     account_label: "Test Card",
     payee_slug: null,
     currency: "CAD",
-    amount: "8.95",
+    amount: "7.45",
     amount_low: null,
     amount_high: null,
     cadence: "monthly",
@@ -206,13 +206,13 @@ const UPCOMING = ok({
   rows: [
     charge({ kind: "due", state: "due", on: "2026-01-10", days_away: 5, label: "Example Power", account: null, account_label: null, payee_slug: "example-power", amount: "120.00", cadence: null, seen: null, last_seen: null, obligation_ref: "finance.obligation:00000000-0000-4000-8000-000000000001", obligation_kind: "bill", period_label: "2025-12" }),
     charge({}),
-    charge({ on: "2026-01-12", days_away: 7, label: "Example Interest", amount: "51.57", amount_low: "48.85", amount_high: "55.30" }),
-    charge({ on: "2026-01-14", days_away: 9, label: "Example Cloud", account: "zz-wallet", account_label: "zz-wallet", currency: "USD", amount: "22.39" }),
-    charge({ state: "likely_charged", on: "2026-01-02", days_away: -3, label: "Example Host", amount: "31.66" }),
+    charge({ on: "2026-01-12", days_away: 7, label: "Example Interest", amount: "41.60", amount_low: "39.15", amount_high: "46.20" }),
+    charge({ on: "2026-01-14", days_away: 9, label: "Example Cloud", account: "zz-wallet", account_label: "zz-wallet", currency: "USD", amount: "18.25" }),
+    charge({ state: "likely_charged", on: "2026-01-02", days_away: -3, label: "Example Host", amount: "27.40" }),
   ],
   totals: [
-    { currency: "CAD", amount: "180.52" },
-    { currency: "USD", amount: "22.39" },
+    { currency: "CAD", amount: "169.05" },
+    { currency: "USD", amount: "18.25" },
   ],
   overdue_count: 1,
   accounts: [
@@ -421,15 +421,16 @@ describe("coverage", () => {
 describe("upcoming", () => {
   it("leads with the window's total and lists bills and predictions by date", async () => {
     const html = await render("upcoming", fakeShell());
-    expect(html).toContain("$180.52 and $22.39 USD over 4 charges in the next 30 days.");
+    expect(html).toContain("$169.05 and $18.25 USD over 4 charges in the next 30 days.");
     const order = ["Example Power", "Example Stream", "Example Interest", "Example Cloud"].map((t) =>
       html.indexOf(t),
     );
     expect(order).toEqual([...order].sort((a, b) => a - b));
-    expect(html).toContain("about $51.57");
-    expect(html).toContain("$48.85 to $55.30");
+    expect(html).toContain("about $41.60");
+    expect(html).toContain("$39.15 to $46.20");
     expect(html).toContain("Unnamed account");
     expect(html).toContain("1 overdue bill is on Owed");
+    expect(html).not.toMatch(/zz.?2dwallet|zz-wallet/);
   });
 
   it("puts charges the statements do not reach yet apart", async () => {
@@ -444,7 +445,8 @@ describe("upcoming", () => {
     expect(html).toContain('href="/upcoming?account=test-card"');
     expect(html).not.toContain("Example Cloud");
     expect(html).not.toContain("Example Power");
-    expect(html).toContain("$60.52 over 2 charges in the next 30 days.");
+    expect(html).toContain("$49.05 over 2 charges in the next 30 days.");
+    expect(html).not.toMatch(/zz.?2dwallet|zz-wallet/);
   });
 
   it("counts charges without money when the figures are withheld", async () => {

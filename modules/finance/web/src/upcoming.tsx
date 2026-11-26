@@ -75,11 +75,13 @@ export function headline(u: Upcoming, shown: readonly Charge[]): string {
     : `${count} in the next ${u.windowDays} days.`;
 }
 
-function Row({ c, year }: { c: Charge; year: number }) {
+function Row({ c, year, place }: { c: Charge; year: number; place: string }) {
   const name = chargeName(c);
   const account = accountName(c);
   const amount = figure(c);
-  const id = popoverId("charge", c.kind, c.account ?? "", c.obligationRef ?? c.label, c.on, c.currency, c.amount ?? "");
+  // The row's place and, for a bill, its ref: never an account key, which may be a
+  // codename, and unique even when the amounts are withheld.
+  const id = popoverId("charge", place, c.obligationRef ?? "");
   const low = cash(c.amountLow, c.currency);
   const high = cash(c.amountHigh, c.currency);
   return (
@@ -254,7 +256,7 @@ function UpcomingBody({ shell, u, account }: { shell: ShellApi; u: Upcoming; acc
           </h2>
           <ul className={styles.bills}>
             {coming.map((c, i) => (
-              <Row key={i} c={c} year={year} />
+              <Row key={i} c={c} year={year} place={`c${i}`} />
             ))}
           </ul>
         </section>
@@ -272,7 +274,7 @@ function UpcomingBody({ shell, u, account }: { shell: ShellApi; u: Upcoming; acc
             </summary>
             <ul className={styles.bills}>
               {past.map((c, i) => (
-                <Row key={i} c={c} year={year} />
+                <Row key={i} c={c} year={year} place={`p${i}`} />
               ))}
             </ul>
           </details>
