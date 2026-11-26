@@ -123,6 +123,7 @@ def test_the_lint_finds_tells_per_section_and_across_the_draft() -> None:
     assert [f["excerpt"][:24] for f in flagged] == ["The apply form shows an "]
     assert "Delete each one that is" in gate.repair_block(flagged)
     assert "describes the client's work" in gate.repair_block(flagged)
+    assert "quotes the developer's own rate" in gate.repair_block(flagged)
     assert '"The apply form shows' in gate.repair_block(flagged)
 
     def reconciliation(letter: str) -> list[str]:
@@ -158,6 +159,8 @@ def test_the_lint_finds_tells_per_section_and_across_the_draft() -> None:
         "The rate on the form is $40/hr and it lines up with the $900 total.",
         "I set the form to $40/hr, about 22 hours, which comes to the $900 total.",
         "The proposal form's rate is $40/hr.",
+        "Upwork's form shows the quoted price.",
+        "At $40/hr that works out to the $900 fixed total.",
     ):
         assert reconciliation(cut) == [cut], cut
     # A form, a rate or tracked hours as the work itself, or a plain quote, stays.
@@ -176,6 +179,10 @@ def test_the_lint_finds_tells_per_section_and_across_the_draft() -> None:
         "I added a tax rate field to the invoice form with a live total.",
         "When the form shows a fixed shipping fee of $5, the cart total updates.",
         "On the bid form for your contractors, each line shows a price per hour.",
+        # An hourly letter quotes the developer's rate, as its prompt asks.
+        "My rate is $85/hr, which matches the range you posted.",
+        "At $85/hr, a build like this usually comes to 30 to 40 hours.",
+        "Your rate of $60/hr is the equivalent of what I charge US clients.",
     ):
         assert not reconciliation(kept), kept
     long_letter = " ".join(["word"] * 360)

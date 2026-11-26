@@ -486,11 +486,18 @@ _HOURLY_RE: Final = re.compile(
     r"|\bhourly (?:rate|equivalent|figure)\b",
     re.IGNORECASE,
 )
-# What an hourly figure is squared with: the form, the fixed total, an agreement.
+# What an hourly figure is squared with: the form, the fixed total, the two figures
+# agreeing. A bare "matches" or "comes to" is left alone, since an hourly letter
+# quotes the developer's rate ("$85/hr, which matches the range you posted").
 _SQUARED_RE: Final = re.compile(
     r"\bthe form\b|\b(?:apply|application|proposal|bid|upwork)(?:'s)? form\b"
-    r"|\bfixed (?:total|price|figure|quote)\b|\bagrees?\b|\bmatch(?:es)?\b"
-    r"|\blines? up\b|\breconciles?\b|\bcomes? to\b|\bworks? out\b|\bequivalent\b",
+    r"|\bfixed (?:total|price|figure|quote)\b"
+    r"|\bthe two (?:agree|match|line up|reconcile)\b",
+    re.IGNORECASE,
+)
+# An hourly equivalent is always derived from a total.
+_HOURLY_EQUIVALENT_RE: Final = re.compile(
+    r"\bhourly equivalent\b[^.!?\n]*\$\s?\d|\$\s?\d[^.!?\n]*\bhourly equivalent\b",
     re.IGNORECASE,
 )
 # The platform's form saying a figure, whatever the figure is.
@@ -508,6 +515,8 @@ _RECONCILIATION_ANCHORS: Final = (_HOURLY_RE, _PLATFORM_FORM_RE)
 
 
 def _is_reconciliation(sentence: str) -> bool:
+    if _HOURLY_EQUIVALENT_RE.search(sentence):
+        return True
     if _HOURLY_RE.search(sentence) and _SQUARED_RE.search(sentence):
         return True
     return bool(_PLATFORM_FORM_RE.search(sentence) and _FIGURE_RE.search(sentence))
@@ -714,8 +723,9 @@ _REPAIR_INSTRUCTIONS: Final[Mapping[str, str]] = {
         "Each flagged sentence may be the developer's own bookkeeping: what the "
         "application form shows, or an hourly rate squared with the fixed total. "
         "Delete each one that is. Keep, unchanged, a flagged sentence that describes "
-        "the client's work (a form, a rate or a ledger the developer would build), and "
-        "keep every other figure as it is."
+        "the client's work (a form, a rate or a ledger the developer would build) or "
+        "quotes the developer's own rate or hour estimate, and keep every other figure "
+        "as it is."
     ),
     "rhetorical_fragment": (
         "This section poses a question and answers it with a fragment. Fold both into "
