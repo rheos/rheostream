@@ -123,6 +123,7 @@ PARSER_MODULES: Final[tuple[str, ...]] = (
     "rheo_finance.parsers.hazel_activity_csv",
     "rheo_finance.parsers.juniper_balance_csv",
     "rheo_finance.parsers.boxwood_bill",
+    "rheo_finance.parsers.boxwood_layouts",
     "rheo_finance.parsers.invoice_received",
     "rheo_finance.parsers.patient_receipt",
 )

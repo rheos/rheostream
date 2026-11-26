@@ -1,0 +1,48 @@
+   Lorem
+
+   Lorem owing   Ipsum
+
+   $412.30
+   Ref number: 9990001234
+   Name: SAMPLE CUSTOMER
+   Service address: 999 SAMPLE RD, SAMPLETOWN
+
+   Due Friday, Feb 13, 2032
+   Bill span: Nov 12-Jan 12, 2032
+   Bill day: Jan 12, 2032
+   Lorem ipsum dolor
+   Sumdolo rsitam tconse teturad ipis.
+
+   Lorem   Ipsum   Dolor
+   1,234 kWh   Lorem ipsum dolor sit amet.
+
+   Lorem   Ref number: 999000123 - 4
+   Boxwood return slip   9990001234_0001.999.0001
+
+   Pay by: Feb 13, 2032
+   Owing: $412.30
+
+   SAMPLE CUSTOMER
+   PO BOX 999   Amount paid   $
+   SAMPLETOWN ZZ Z0Z 9Z9
+
+   999000123 4 9990041230
+
+Lorem ipsum   Bill lines
+Sumdo number: 9990001   Lorem bimonthly rate
+Prior bill (Sep 12 - Nov 12)______________________ $300.00
+Sumdolo rsitam   Paid in (Dec 01 2031) ______________ $150.00CR
+   Paid in (Dec 20 2031) _______________ $100.00CR
+   Carried from prior bill ______________________________ $50.00
+
+   Lorem charges Nov 12 - Jan 12
+   Sumdo charge 61 days _________________________$45.00<
+   Lorem for energy used ________________________ $300.00<
+   Total lorem charges ________________________ $345.00
+
+   GST (5% of < amount) ____________________________ $17.30
+   Sumdo rsitam.   This bill total _______________________________ $362.30
+
+   Settle ___________________________________________ $412.30
+
+Lorem ipsum   Ref number: 999000123 - 4
