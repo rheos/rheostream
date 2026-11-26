@@ -10,6 +10,7 @@ from __future__ import annotations
 import errno
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -45,6 +46,7 @@ RESOLVE = [
     "{{.ID}}",
 ]
 ENV_WORD = f"FINANCE_WORKSPACE_ID={WORKSPACE}"
+HOST_KEY = ["-o", "StrictHostKeyChecking=yes", "-o", "ControlPath=none"]
 
 
 def _exec_line(*args: str, flags: tuple[str, ...] = ("-i",)) -> str:
@@ -70,12 +72,21 @@ def test_push_and_pull_argument_lists_are_exact_and_never_a_terminal(
     assert main(["remote", "push", *config, "--archive", str(archive)]) == 0
     assert main(["remote", "pull", *config, "--into", str(into)]) == 0
     capsys.readouterr()
-    resolve = ["-T", "--", DESTINATION, shlex.join(RESOLVE)]
+    resolve = [*HOST_KEY, "-T", "--", DESTINATION, shlex.join(RESOLVE)]
     assert fake.calls() == [
         resolve,
-        ["-T", "-e", "none", "--", DESTINATION, _exec_line("remote", "receive")],
+        [
+            *HOST_KEY,
+            "-T",
+            "-e",
+            "none",
+            "--",
+            DESTINATION,
+            _exec_line("remote", "receive"),
+        ],
         resolve,
         [
+            *HOST_KEY,
             "-T",
             "-e",
             "none",
@@ -125,6 +136,7 @@ def test_exec_asks_for_a_terminal_only_when_stdin_is_one(
     assert capfd.readouterr().out == "fake-finance\n"
     flags = ("-i", "-t") if tty else ("-i",)
     assert fake.calls()[1] == [
+        *HOST_KEY,
         "-t" if tty else "-T",
         "--",
         DESTINATION,
@@ -140,8 +152,8 @@ def test_hostile_exec_words_reach_finance_as_words(
     assert remote_cli.exec_command(str(fake.config), ["--", *words]) == 0
     capfd.readouterr()
     argv = fake.calls()[1]
-    assert argv[:3] == ["-T", "--", DESTINATION] and len(argv) == 4
-    remote = shlex.split(argv[3])
+    assert argv[:7] == [*HOST_KEY, "-T", "--", DESTINATION] and len(argv) == 8
+    remote = shlex.split(argv[7])
     assert remote[remote.index("finance") + 1 :] == words
 
     fake.log.write_text("", encoding="utf-8")
@@ -165,8 +177,9 @@ def test_exec_through_the_parser_hands_the_words_to_finance(
     assert main(["remote", "exec", "--config", str(fake.config), *words]) == 0
     assert capfd.readouterr().out == "fake-finance\n"
     argv = fake.calls()[1]
-    assert argv[0] in ("-T", "-t") and argv[1:3] == ["--", DESTINATION]
-    remote = shlex.split(argv[3])
+    assert argv[:4] == HOST_KEY and argv[4] in ("-T", "-t")
+    assert argv[5:7] == ["--", DESTINATION]
+    remote = shlex.split(argv[7])
     expected = words[1:] if words[:1] == ["--"] else words
     assert remote[remote.index("finance") + 1 :] == expected
 
@@ -635,3 +648,65 @@ def test_the_workspace_variable_is_wirings() -> None:
     from rheo_finance.wiring import core
 
     assert ssh.WORKSPACE_VARIABLE == core.WORKSPACE_VARIABLE
+
+
+def test_a_keys_push_checks_the_host_key_on_every_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeRemote.install(tmp_path, monkeypatch)
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    (keys / "statement.key").write_bytes(b"synthetic key")
+    (keys / "statement.key").chmod(0o600)
+    push_keys = ["remote", "push", "--config", str(fake.config), "--keys", str(keys)]
+
+    # An unknown or changed host key: ssh refuses before any session, exit 255.
+    monkeypatch.setenv("FAKE_SSH_FAULT", "ssh255")
+    assert main(push_keys) == 1
+    assert "refused. ssh_failed." in capsys.readouterr().err
+    assert list(fake.layout.keys.iterdir()) == []
+
+    monkeypatch.delenv("FAKE_SSH_FAULT")
+    assert main(push_keys) == 0
+    capsys.readouterr()
+    assert (fake.layout.keys / "statement.key").read_bytes() == b"synthetic key"
+    calls = fake.calls()
+    assert len(calls) == 3  # the refused first call, then resolve and the stream
+    for argv in calls:
+        assert argv[:4] == HOST_KEY
+        assert argv.index("--") > 3
+
+
+@pytest.mark.parametrize(
+    ("tty", "stream"), [(False, False), (False, True), (True, False)]
+)
+def test_host_key_checking_beats_an_ssh_config_that_turns_it_off_or_shares(
+    tmp_path: Path, tty: bool, stream: bool
+) -> None:
+    """Real ssh, no connection: ``ssh -G`` prints the settings a call would use."""
+    real_ssh = shutil.which("ssh")
+    if real_ssh is None:
+        pytest.skip("no ssh client on this machine")
+    ssh_config = tmp_path / "ssh_config"
+    ssh_config.write_text(
+        f"Host {DESTINATION}\n"
+        "  StrictHostKeyChecking no\n"
+        "  UserKnownHostsFile /dev/null\n"
+        "  ControlMaster auto\n"
+        "  ControlPath ~/.ssh/cm-%C\n"
+        "  ControlPersist 600\n",
+        encoding="utf-8",
+    )
+    cfg = ssh.load_config(write_config(tmp_path / "remote.toml", config_values()))
+    argv = ssh.ssh_argv(cfg, ["docker", "ps"], tty=tty, stream=stream)
+    assert argv[0] == ssh.SSH and argv[1:5] == HOST_KEY
+    shown = subprocess.run(
+        [real_ssh, "-G", "-F", str(ssh_config), *argv[1:]],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout.splitlines()
+    assert "stricthostkeychecking true" in shown
+    # No control path: the call never rides a master connection opened earlier.
+    assert not [line for line in shown if line.startswith("controlpath ")]
