@@ -115,11 +115,11 @@ SOURCES: dict[str, Source] = {
     ),
     "Boxwood bill PDF (columnar layout)": Source(
         "boxwood/2031-03-14.pdf", "boxwood_bill_columns.txt",
-        "boxwood.bill_columns", "4", (UTILITY,),
+        "boxwood.bill_columns", "6", (UTILITY,),
     ),
     "Boxwood bill PDF (leader layout)": Source(
         "boxwood/2032-01-12.pdf", "boxwood_bill_leaders.txt",
-        "boxwood.bill_leaders", "5", (UTILITY,),
+        "boxwood.bill_leaders", "7", (UTILITY,),
     ),
     "Invoices received": Source(
         "invoices-received/sample-vendor/2047-06-03.pdf", "invoice_received.txt",

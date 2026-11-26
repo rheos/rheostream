@@ -1063,6 +1063,74 @@ def test_a_payment_left_to_the_owner_is_not_counted_as_applied_for_fr_21(
     assert owed(paying)[N1].payments_mismatch == Decimal("-103.20")
 
 
+# --- parsed bills that net earlier payments -------------------------------------------
+
+
+def two_power_bills(ledger: Ledger, *payments: tuple[dt.date, str]) -> None:
+    """Two parsed Boxwood bills, both tied out, issued 26 January and 27 March, and the
+    chequing payments to the vendor. Partial bill payments apply without a confirm."""
+    accounts(
+        ledger,
+        ("chequing", "Alder", "chequing", CSV_IDENTIFIER, ""),
+        ("utility", "Boxwood", "bill_vendor", "9990001234", ""),
+    )
+    ledger.manual(PAYEES_FILE, "boxwood,Our power,vendor,SAMPLE POWER,,")
+    with_settings(
+        ledger,
+        "[finance.payments]\n"
+        'partial_auto_kinds = ["arrangement_instalment", "card_statement", "bill"]\n',
+    )
+    ledger.file("boxwood/a.pdf", boxwood_bill("January 26, 2029", "February 16, 2029"))
+    ledger.file("boxwood/b.pdf", boxwood_bill("March 27, 2029", "April 17, 2029"))
+    file_bank(
+        ledger,
+        *on(CSV_IDENTIFIER, *((day, POWER, -Decimal(out)) for day, out in payments)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("day", "to"),
+    [
+        (D(2029, 3, 17), "bill-2029-02"),
+        (D(2029, 3, 26), "bill-2029-02"),
+        (D(2029, 3, 27), "bill-2029-04"),
+        (D(2029, 4, 2), "bill-2029-04"),
+    ],
+    ids=["10 days before", "the day before", "on the bill date", "after it"],
+)
+def test_a_payment_before_a_parsed_bill_stays_with_the_bill_before(
+    ledger: Ledger, day: dt.date, to: str
+) -> None:
+    """A tied-out parsed bill prints the payments since the last one, so its total
+    already nets a payment dated before its bill date: no early_days slack, as for a
+    card. Counting it again on the newer bill would leave that bill owing too little."""
+    two_power_bills(ledger, (day, "50.00"))
+
+    ledger.derive()
+
+    assert applied(ledger) == [Applied(to, Decimal("50.00"), True)]
+    newer = owed(ledger)["bill-2029-04"]
+    expected = Decimal("444.66") if to == "bill-2029-04" else Decimal("494.66")
+    assert newer.remaining == expected
+
+
+def test_a_payment_before_a_typed_bill_still_takes_early_days(ledger: Ledger) -> None:
+    """A typed-in bill prints nothing about earlier payments, so it keeps the slack."""
+    accounts(
+        ledger,
+        ("chequing", "Alder", "chequing", CSV_IDENTIFIER, ""),
+        ("utility", "Boxwood", "bill_vendor", "9990001234", ""),
+    )
+    ledger.manual(PAYEES_FILE, "boxwood,Our power,vendor,SAMPLE POWER,,")
+    ledger.file("boxwood/a.pdf", boxwood_bill("January 26, 2029", "February 16, 2029"))
+    bills(ledger, ("boxwood", "50.00", D(2029, 3, 27), D(2029, 4, 17)))
+    file_bank(ledger, *on(CSV_IDENTIFIER, (D(2029, 3, 22), POWER, Decimal("-50.00"))))
+
+    ledger.derive()
+
+    assert applied(ledger) == [Applied("bill-2029-04", Decimal("50.00"), True)]
+
+
 # --- arrangements: a finished one stops setting the bills -----------------------------
 
 
@@ -1180,14 +1248,15 @@ def test_a_bill_cut_within_early_days_of_the_last_instalment_stays_governed(
 def test_a_last_instalment_overpaid_just_before_a_new_bill_settles(
     ledger: Ledger,
 ) -> None:
-    """The 8 May payment is the 15 May bill's current charges, and the 9 May 67.08
+    """The 16 May payment is the 15 May bill's current charges (paid after the bill
+    date: a tied-out parsed bill nets what was paid before it), and the 9 May 67.08
     overpays the 61.92 last instalment by rule (b) and finishes the plan that day.
     Cut within early_days of it, the bill stays governed, so the finished set holds
     on the second round: the derive completes, and nothing is owed twice."""
     power(
         ledger,
         (D(2029, 3, 26), "38.22"),
-        (D(2029, 5, 8), "333.84"),
+        (D(2029, 5, 16), "333.84"),
         (D(2029, 5, 9), "67.08"),
         later_bill=True,
     )
