@@ -22,10 +22,16 @@ from typing import Any
 import pytest
 from sqlalchemy import Connection, func, select
 
+from rheo_finance import identities
 from rheo_finance.context import UnitOfWork
 from rheo_finance.documents.registry import document_id, file_archive
 from rheo_finance.manual.stage2 import account_id
-from rheo_finance.parsers.registry import Parsed, parse_document, parsers_for
+from rheo_finance.parsers.registry import (
+    Parsed,
+    Parser,
+    parse_document,
+    parsers_for,
+)
 from rheo_finance.storage.schema import (
     document,
     document_line,
@@ -197,10 +203,235 @@ def test_a_bill_photo_stays_in_the_manual_entry_queue(setup: Setup) -> None:
     assert setup.lines(doc) == []
 
 
+def boxwood_parser(parser_id: str) -> Parser:
+    (parser,) = [p for p in parsers_for("boxwood", "pdf") if p.parser_id == parser_id]
+    return parser
+
+
 def test_the_bill_is_filed_by_its_bill_date() -> None:
-    (parser,) = parsers_for("boxwood", "pdf")
+    parser = boxwood_parser("boxwood.bill")
     assert parser.filing_date is not None
     assert parser.filing_date(fixture(BILL_TEXT)) == D(2029, 1, 26)
+
+
+# --- Boxwood, the owner's two layouts -------------------------------------------------
+
+LAYOUT_NUMBER = BOXWOOD_NUMBER
+COLUMNS_TEXT = "boxwood_bill_columns.txt"
+LEADERS_TEXT = "boxwood_bill_leaders.txt"
+LAYOUTS = {
+    "columns": (
+        "boxwood/2031-03-14.pdf", COLUMNS_TEXT, "boxwood.bill_columns", "4",
+        (D(2031, 1, 12), D(2031, 3, 14)), D(2031, 4, 9), D(2031, 3, 14),
+        Decimal("301.95"), Decimal("239.55"),
+    ),
+    "leaders": (
+        "boxwood/2032-01-12.pdf", LEADERS_TEXT, "boxwood.bill_leaders", "5",
+        (D(2031, 11, 12), D(2032, 1, 12)), D(2032, 2, 13), D(2032, 1, 12),
+        Decimal("412.30"), Decimal("362.30"),
+    ),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("name", sorted(LAYOUTS))
+def test_each_owner_layout_gives_one_tied_out_bill_period(
+    setup: Setup, name: str
+) -> None:
+    path, text, parser_id, version, period, due, billed, total, current = LAYOUTS[name]
+    setup.register_boxwood(LAYOUT_NUMBER)
+    doc = setup.file(path, fixture(text))
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
+    row = setup.document(doc)
+    assert (row.parser_id, row.parser_version) == (parser_id, version)
+    (stored,) = setup.periods(doc)
+    assert stored.account_id == account_id("utility")
+    assert (stored.control_kind, stored.tied_out, stored.currency) == (
+        "bill_identity", True, "CAD",
+    )  # fmt: skip
+    assert (stored.period_start, stored.period_end) == period
+    assert (stored.balance_due, stored.due_date, stored.bill_date) == (
+        total, due, billed,
+    )  # fmt: skip
+    assert stored.current_charges == current
+    assert stored.arrears is None
+    assert "999000123" not in setup.stored_text(doc)
+    assert "sample customer" not in setup.stored_text(doc)
+    assert boxwood_parser(parser_id).filing_date(fixture(text)) == billed  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("text", "printed", "replacement"),
+    [
+        (COLUMNS_TEXT, "New charges total   239.55", "New charges total   239.56"),
+        (COLUMNS_TEXT, "Carried over   62.40", "Carried over   62.41"),
+        (COLUMNS_TEXT, "Lorem ipsum   150.00 CR", "Lorem ipsum   150.01 CR"),
+        (LEADERS_TEXT, "This bill total _______________________________ $362.30",
+         "This bill total _______________________________ $362.31"),
+        (LEADERS_TEXT, "prior bill ______________________________ $50.00",
+         "prior bill ______________________________ $50.01"),
+        (LEADERS_TEXT, "2031) _______________ $100.00CR",
+         "2031) _______________ $100.01CR"),
+    ],
+)  # fmt: skip
+def test_an_owner_layout_bill_whose_identity_breaks_is_rejected(
+    setup: Setup, text: str, printed: str, replacement: str
+) -> None:
+    setup.register_boxwood(LAYOUT_NUMBER)
+    doc = setup.file("boxwood/2031-03-14.pdf", changed(text, printed, replacement))
+
+    assert setup.parse(doc) == Parsed("rejected", "identity_mismatch")
+    assert setup.periods(doc) == []
+    assert setup.rejected_periods(doc) == 1
+
+
+@pytest.mark.parametrize(
+    ("text", "printed", "replacement"),
+    [
+        (COLUMNS_TEXT, "   Owing Now\n   $301.95", "   Owing Now\n   $301.96"),
+        (COLUMNS_TEXT, "   APR-09-2031   9990001234", "   APR-10-2031   9990001234"),
+        (LEADERS_TEXT, "Owing: $412.30", "Owing: $412.31"),
+        (LEADERS_TEXT, "Pay by: Feb 13, 2032", "Pay by: Feb 14, 2032"),
+    ],
+)  # fmt: skip
+def test_an_owner_layout_value_printed_twice_must_agree(
+    setup: Setup, text: str, printed: str, replacement: str
+) -> None:
+    setup.register_boxwood(LAYOUT_NUMBER)
+    doc = setup.file("boxwood/2031-03-14.pdf", changed(text, printed, replacement))
+
+    assert setup.parse(doc) == Parsed("unparsed", "not_recognised")
+
+
+def test_an_owner_layout_bill_without_a_previous_amount_loads_as_printed(
+    setup: Setup,
+) -> None:
+    setup.register_boxwood(LAYOUT_NUMBER)
+    text = changed(
+        LEADERS_TEXT,
+        "Prior bill (Sep 12 - Nov 12)______________________ $300.00\n",
+        "",
+    )
+    doc = setup.file("boxwood/2032-01-12.pdf", text)
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
+    (stored,) = setup.periods(doc)
+    assert (stored.tied_out, stored.balance_due) == (False, Decimal("412.30"))
+
+
+def test_a_credit_total_keeps_its_sign(setup: Setup) -> None:
+    setup.register_boxwood(LAYOUT_NUMBER)
+    text = fixture(COLUMNS_TEXT).replace("$301.95", "$301.95CR")
+    text = text.replace("Earlier statement   212.40   APR-09-2031", "   APR-09-2031")
+    doc = setup.file("boxwood/2031-03-14.pdf", text)
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
+    (stored,) = setup.periods(doc)
+    assert (stored.tied_out, stored.balance_due) == (False, Decimal("-301.95"))
+
+
+def test_a_credit_after_two_spaces_is_still_a_credit(setup: Setup) -> None:
+    setup.register_boxwood(LAYOUT_NUMBER)
+    text = changed(COLUMNS_TEXT, "Lorem ipsum   150.00 CR", "Lorem ipsum   150.00  CR")
+    doc = setup.file("boxwood/2031-03-14.pdf", text)
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
+    (stored,) = setup.periods(doc)
+    assert stored.tied_out is True
+
+
+def test_values_printed_twice_agree_once_read(setup: Setup) -> None:
+    setup.register_boxwood(LAYOUT_NUMBER)
+    doc = setup.file(
+        "boxwood/2032-01-12.pdf",
+        changed(LEADERS_TEXT, "Owing: $412.30", "Owing: 412.30"),
+    )
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
+    (stored,) = setup.periods(doc)
+    assert (stored.tied_out, stored.balance_due) == (True, Decimal("412.30"))
+
+
+def test_a_february_29_start_takes_the_leap_year_before(setup: Setup) -> None:
+    setup.register_boxwood(LAYOUT_NUMBER)
+    text = changed(
+        LEADERS_TEXT, "Bill span: Nov 12-Jan 12, 2032", "Bill span: Feb 29-Jan 12, 2033"
+    )
+    doc = setup.file("boxwood/2032-01-12.pdf", text)
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
+    (stored,) = setup.periods(doc)
+    assert (stored.period_start, stored.period_end) == (D(2032, 2, 29), D(2033, 1, 12))
+
+
+def test_a_forward_balance_printed_twice_must_agree_without_an_identity(
+    setup: Setup,
+) -> None:
+    setup.register_boxwood(LAYOUT_NUMBER)
+    text = changed(
+        LEADERS_TEXT,
+        "Prior bill (Sep 12 - Nov 12)______________________ $300.00\n",
+        "Carried from prior bill ___ $51.00\n",
+    )
+    doc = setup.file("boxwood/2032-01-12.pdf", text)
+
+    assert setup.parse(doc) == Parsed("unparsed", "not_recognised")
+
+
+def test_a_period_start_may_print_its_year(setup: Setup) -> None:
+    setup.register_boxwood(LAYOUT_NUMBER)
+    text = changed(
+        LEADERS_TEXT, "Bill span: Nov 12-Jan 12", "Bill span: Nov 12, 2031-Jan 12"
+    )
+    doc = setup.file("boxwood/2032-01-12.pdf", text)
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
+    (stored,) = setup.periods(doc)
+    assert (stored.period_start, stored.period_end) == (D(2031, 11, 12), D(2032, 1, 12))
+
+
+@pytest.mark.parametrize("text", [COLUMNS_TEXT, LEADERS_TEXT])
+def test_an_owner_layout_bill_for_an_unregistered_account_is_rejected(
+    setup: Setup, text: str
+) -> None:
+    setup.register_boxwood("9990009999")
+    doc = setup.file("boxwood/2031-03-14.pdf", fixture(text))
+
+    assert setup.parse(doc) == Parsed("rejected", "unknown_account")
+
+
+def test_the_owner_layouts_come_from_the_identities_file(
+    setup: Setup, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bill in another wording is read once the owner's file names its shapes, and
+    a period that crosses New Year without a start year starts the year before."""
+    reworded = (
+        fixture(LEADERS_TEXT)
+        .replace("Settle ____", "Remit ____")
+        .replace("Bill span: Nov 12-Jan 12, 2032", "Span: Dec 12-Jan 12, 2032")
+    )
+    setup.register_boxwood(LAYOUT_NUMBER)
+    doc = setup.file("boxwood/2032-01-12.pdf", reworded)
+    assert setup.parse(doc) == Parsed("unparsed", "not_recognised")
+
+    owner = tmp_path / identities.FILE_NAME
+    owner.write_text(
+        "[layout]\n"
+        '"boxwood.bill_leaders.total" = '
+        r"'(?:Remit[ \t]*_*[ \t]*|Owing: )(?P<amount>\$[\d,]+\.\d\d)'"
+        "\n"
+        '"boxwood.bill_leaders.period" = '
+        r"'Span: (?P<start>[A-Z][a-z]{2} \d{1,2})"
+        r"-(?P<end>[A-Z][a-z]{2} \d{1,2}, \d{4})'"
+        "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(identities, "identities_path", lambda: owner)
+
+    assert setup.parse(doc) == Parsed("parsed", None, periods=1, lines=0)
+    (stored,) = setup.periods(doc)
+    assert (stored.period_start, stored.period_end) == (D(2031, 12, 12), D(2032, 1, 12))
+    assert (stored.tied_out, stored.balance_due) == (True, Decimal("412.30"))
 
 
 # --- invoices received ----------------------------------------------------------------

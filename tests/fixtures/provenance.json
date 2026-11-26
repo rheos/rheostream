@@ -305,6 +305,16 @@
     "how": "hand-written for the finance module's tests, institutions named by neutral codenames: invented Boxwood energy bill layout text: two payments, a balance forward and current charges whose identity gives the total amount due, and a payment stub; fake values."
   },
   {
+    "path": "modules/finance/tests/fixtures/synthetic/boxwood_bill_columns.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: Boxwood bill in an invented columnar layout: amounts in columns, a due date and the amount due on the line under their labels, one payment, a balance carried, new charges and a payment stub; fake values."
+  },
+  {
+    "path": "modules/finance/tests/fixtures/synthetic/boxwood_bill_leaders.txt",
+    "origin": "synthetic",
+    "how": "hand-written for the finance module's tests, institutions named by neutral codenames: Boxwood bill in an invented layout with leader lines: two payments, a balance carried, this bill's charges, a period printed without its start year, and a payment stub; fake values."
+  },
+  {
     "path": "modules/finance/tests/fixtures/synthetic/yew_bill.txt",
     "origin": "synthetic",
     "how": "hand-written for the finance module's tests, institutions named by neutral codenames: yew bill layout text in an invented layout whose unpaid balance plus current charges equals the total due; fake values."

@@ -146,6 +146,16 @@ synthetic = true
 description = "Invented Boxwood energy bill layout text: two payments, a balance forward and current charges whose identity gives the total amount due, and a payment stub; fake values."
 
 [[fixture]]
+path = "tests/fixtures/synthetic/boxwood_bill_columns.txt"
+synthetic = true
+description = "Boxwood bill in an invented columnar layout: amounts in columns, a due date and the amount due on the line under their labels, one payment, a balance carried, new charges and a payment stub; fake values."
+
+[[fixture]]
+path = "tests/fixtures/synthetic/boxwood_bill_leaders.txt"
+synthetic = true
+description = "Boxwood bill in an invented layout with leader lines: two payments, a balance carried, this bill's charges, a period printed without its start year, and a payment stub; fake values."
+
+[[fixture]]
 path = "tests/fixtures/synthetic/invoice_received.txt"
 synthetic = true
 description = "Invoice received layout text in an invented layout: two items, a partial payment, the amount due; fake values and names."
