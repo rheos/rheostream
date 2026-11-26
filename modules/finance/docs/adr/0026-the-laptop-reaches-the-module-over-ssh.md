@@ -31,6 +31,15 @@ walk reads, and a copy must never change the laptop's files.
   remote command is one argument, `shlex.join` of fixed or checked words, so the
   remote shell sees only single-quoted words; `--` always comes before the
   destination. The remote account's shell must be sh-compatible.
+- **Host keys are always checked.** Every ssh call passes `-o
+  StrictHostKeyChecking=yes -o ControlPath=none` before any other option. A
+  command-line option wins over ssh_config, so an operator's `StrictHostKeyChecking
+  no` or `accept-new` cannot turn the check off, and no call rides a shared master
+  connection that skipped it. An unknown or changed host key refuses as `ssh_failed`,
+  and a push, `--keys` included, never sends a file to a host that only claims to be
+  the server. Which keys count as known stays the operator's ssh_config. The operator
+  records the key once by hand with `ssh -o StrictHostKeyChecking=ask -o
+  ControlPath=none`, so ssh shows the fingerprint (added 2026-11-26, #554).
 - **Names travel in the stream, never on a command line.** A push or pull is a framed
   stream on stdin or stdout: a magic line, then `F <size> <path>`, the bytes and
   `H <sha256>` per file, then `E <count>`; `X <code>` lets a sender give up between
@@ -79,7 +88,8 @@ walk reads, and a copy must never change the laptop's files.
 - A changed archive document, inbox file, key or transfer file is refused, not merged;
   pulling a regenerated pack into the same directory is the owner's own step.
 - Each command takes two ssh sessions; an owner on password authentication types
-  twice unless ssh's connection sharing is set up.
+  twice. Connection sharing cannot save that, since every call turns it off; a key
+  with an ssh agent can.
 - An authentication failure reads only `ssh_failed` on push and pull; `exec` or plain
   ssh shows ssh's own message.
 - A push changes the inputs' modification times, so the next derive rebuilds; nothing
