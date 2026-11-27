@@ -760,13 +760,17 @@ function LinkFinder({
             </ul>
           ) : (
             <p className={styles.meta}>
-              {matches.found
-                ? "Every match is this item or already linked to it."
-                : "No unfinished items match."}
+              {matches.more
+                ? "The first matches are all linked already. Add a word to narrow it."
+                : matches.found
+                  ? "Every match is this item or already linked to it."
+                  : "No unfinished items match."}
             </p>
           )}
           <p className={styles.meta}>
-            {matches.more ? "Showing the first few. Add a word to narrow it. " : ""}
+            {matches.more && matches.items.length
+              ? "Showing the first few. Add a word to narrow it. "
+              : ""}
             <a href={clear}>Clear search</a>
           </p>
         </div>

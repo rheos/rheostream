@@ -439,20 +439,25 @@ def test_comment_author_comes_from_the_actor(current: Current) -> None:
 def test_search_matches_the_start_of_a_word(current: Current) -> None:
     """A partial word finds the item (#645): the dependency search types prefixes."""
     wanted = current.item("Gardenfax supply order")
-    other = current.item("Unrelated chore")
+    reversed_words = current.item("Order supply first")
+    without = current.item("Garden things with nothing to buy")
+    other = current.item("Upfront chore")
     current.ok("item.comment", ref=other.ref, body="Ask about compost delivery")
 
-    def found(query: str) -> list[str]:
-        return [i.ref for i in current.ok("item.list", query=query).items]
+    def found(query: str) -> set[str]:
+        return {i.ref for i in current.ok("item.list", query=query).items}
 
-    assert found("garden") == [wanted.ref]
-    assert found("supp ord") == [wanted.ref]
-    assert found("Gardenfax supply") == [wanted.ref]
-    assert found("compo") == [other.ref]  # comments match by prefix too
-    assert found("supp zzz") == []  # every word must match
-    assert found('"supply order"') == [wanted.ref]  # whole-word syntax still works
-    assert found("the") == []  # a stop word alone matches nothing
-    assert found("_ -") == []  # no words at all
+    assert found("gardenf") == {wanted.ref}
+    assert found("supp ord") == {wanted.ref, reversed_words.ref}
+    assert found("Gardenfax supply") == {wanted.ref}
+    assert found("compo") == {other.ref}  # comments match by prefix too
+    assert found("up") == {other.ref}  # a stop word still starts a longer word
+    assert found("supp zzz") == set()  # every word must match
+    # Search syntax keeps its whole-word meaning: no prefix widening.
+    assert found('"supply order"') == {wanted.ref}
+    assert found("garden -supply") == {without.ref}
+    assert found("gardenfax or first") == {wanted.ref, reversed_words.ref}
+    assert found("_ -") == set()  # no words at all
 
 
 def test_compare_and_set_and_clearing(current: Current) -> None:
