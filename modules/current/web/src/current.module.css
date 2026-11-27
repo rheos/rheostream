@@ -855,6 +855,12 @@ a.rowTitle:hover {
 .linkResults {
   margin-top: var(--rs-space-3);
 }
+/* Add stays beside its match: a long title wraps in its own column instead of
+   pushing the button onto a line of its own. */
+.linkResults .links li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
 .linkDisclosure {
   margin-top: var(--rs-space-2);
 }
