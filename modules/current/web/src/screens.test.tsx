@@ -310,15 +310,94 @@ describe("item detail", () => {
     expect(html).toContain("email.thread: thread-1");
     expect(html).toContain("Find the registrar login");
     expect(html).toContain("Remove the link to Find the registrar login");
-    // An existing blocker is not offered again; another active item is.
-    expect(html).toMatch(/<option value="current\.item:[^"]*09">Pay the hosting bill<\/option>/);
-    expect(html).toContain('<option value="" selected="">Choose an item</option>');
-    expect(html).not.toMatch(/<option value="current\.item:[^"]*02">/);
+    // Linking is a search now (#645): no menu of items, and no list read for one.
+    expect(html).toContain('placeholder="Find an item…"');
+    expect(html).not.toContain("<select name=\"blocker_ref\"");
+    expect(html).not.toContain("Pay the hosting bill");
+    expect(api.call.mock.calls.map(([name]) => name)).not.toContain(
+      "current.item.list",
+    );
     expect(html).toContain("Still blocked. You can complete it anyway.");
     expect(html).toContain("Edit details");
     // The retired area stays readable but is not offered for new choices.
     expect(html).not.toContain("Garden (retired)");
     expect(api.submit).not.toHaveBeenCalled();
+  });
+  it("searches for items to link only once words are typed (#645)", async () => {
+    const api = detailShell(detail());
+    const html = renderToStaticMarkup(
+      await screens.item({
+        shell: api,
+        query: { ref: ITEM, link: "blocker", find: "  hosting bill " },
+      }),
+    );
+    expect(api.call).toHaveBeenCalledWith("current.item.list", {
+      status: "active",
+      query: "hosting bill",
+      limit: 20,
+    });
+    // Not an ID, so no lookup by ID: only the page's own item.get.
+    expect(
+      api.call.mock.calls.filter(([name]) => name === "current.item.get"),
+    ).toHaveLength(1);
+    // The existing blocker is left out; the other match is offered on the side
+    // searched, whose disclosure is open; the other side's stays shut and empty.
+    expect(html).toContain('aria-label="Add Pay the hosting bill as a blocker"');
+    expect(html).not.toContain("Add Find the registrar login as a blocker");
+    expect(html).not.toContain("as blocked by this");
+    expect(html.match(/<details[^>]*open=""/g)).toHaveLength(1);
+    expect(html).toContain('value="hosting bill"');
+    expect(html).toContain("Clear search");
+    expect(api.submit).not.toHaveBeenCalled();
+  });
+  it("ignores a search that names no side", async () => {
+    const api = detailShell(detail());
+    await screens.item({ shell: api, query: { ref: ITEM, find: "hosting" } });
+    expect(api.call.mock.calls.map(([name]) => name)).not.toContain(
+      "current.item.list",
+    );
+  });
+  it("says when nothing matches, and when every match is already linked", async () => {
+    const none = shell((name) =>
+      name === "current.item.list"
+        ? ok({ items: [], next_offset: null })
+        : ({ "current.item.get": detail(), "current.area.list": areaList,
+            "current.project.list": projectList } as Record<string, OperationOutcome>)[name],
+    );
+    expect(
+      renderToStaticMarkup(
+        await screens.item({ shell: none, query: { ref: ITEM, link: "blocked", find: "nothing" } }),
+      ),
+    ).toContain("No unfinished items match.");
+    const linkedOnly = shell((name) =>
+      name === "current.item.list"
+        ? ok({ items: [item(), item({ ref: OTHER, title: "Find the registrar login" })],
+            next_offset: null })
+        : ({ "current.item.get": detail(), "current.area.list": areaList,
+            "current.project.list": projectList } as Record<string, OperationOutcome>)[name],
+    );
+    expect(
+      renderToStaticMarkup(
+        await screens.item({ shell: linkedOnly, query: { ref: ITEM, link: "blocker", find: "registrar" } }),
+      ),
+    ).toContain("Every match is this item or already linked to it.");
+  });
+  it("finds an item by a pasted short ID", async () => {
+    const NAMED = "current.item:01900000-0000-7000-8000-00000000abcd";
+    const api = shell((name, input) => {
+      if (name === "current.item.get")
+        return input.ref === ITEM
+          ? detail()
+          : ok({ ...item({ ref: NAMED, title: "Book the venue" }), short_id: "00000000abcd" });
+      if (name === "current.item.list") return ok({ items: [], next_offset: null });
+      return ({ "current.area.list": areaList, "current.project.list": projectList } as
+        Record<string, OperationOutcome>)[name];
+    });
+    const html = renderToStaticMarkup(
+      await screens.item({ shell: api, query: { ref: ITEM, link: "blocked", find: "00000000abcd" } }),
+    );
+    expect(api.call).toHaveBeenCalledWith("current.item.get", { ref: "00000000abcd" });
+    expect(html).toContain('aria-label="Add Book the venue as blocked by this"');
   });
   it("links items by short ID and offers the ID with a one-click copy (#587)", async () => {
     const api = detailShell(

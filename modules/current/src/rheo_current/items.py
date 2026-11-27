@@ -46,6 +46,43 @@ def search_vector(*columns: ColumnElement[str]) -> ColumnElement[Any]:
     return func.to_tsvector(t.ENGLISH, text_value)
 
 
+# Words a search treats as prefixes: letters and digits only, so nothing typed
+# can reach tsquery syntax. Capped like the query's own length.
+SEARCH_WORD = re.compile(r"\w+")
+MAX_PREFIX_WORDS = 16
+# Search syntax that whole-word matching honours and prefixes would undo: a
+# quoted phrase, a -word to leave out, or "or" between alternatives.
+SEARCH_SYNTAX = re.compile(r'"|(?:^|\s)-\S|(?:^|\s)or(?:\s|$)', re.IGNORECASE)
+
+
+def prefix_terms(query: str) -> str | None:
+    """Every word of a search as a word start ("garden" -> "garden:*"), joined with AND.
+
+    A person finding an item types the start of a word; whole-word matching alone
+    misses "Gardenfax" for "garden" (#645). None when the search has no words or
+    uses search syntax, which only the whole-word reading keeps.
+    """
+    if SEARCH_SYNTAX.search(query):
+        return None
+    words = SEARCH_WORD.findall(query)[:MAX_PREFIX_WORDS]
+    return " & ".join(f"{w}:*" for w in words) or None
+
+
+def text_matches(vector: ColumnElement[Any], query: str) -> ColumnElement[bool]:
+    """Whole-word search syntax, or else every word as a prefix, in one match.
+
+    One tsquery (whole || prefixes) against the English vector, so the vector is
+    built once per row and the GIN index serves it. Prefixes use the simple
+    configuration: no stemming of a half-typed word, and a short word that is an
+    English stop word ("up") still starts a longer one ("Upwork").
+    """
+    terms: ColumnElement[Any] = func.websearch_to_tsquery(t.ENGLISH, query)
+    prefixes = prefix_terms(query)
+    if prefixes is not None:
+        terms = terms.op("||")(func.to_tsquery(t.SIMPLE, prefixes))
+    return vector.bool_op("@@")(terms)
+
+
 def unfinished_blocker(item_id: ColumnElement[Any]) -> ColumnElement[bool]:
     return exists(
         select(t.dependency.c.blocker_id)
@@ -360,16 +397,15 @@ def listing(ctx: WorkspaceContext, uow: UnitOfWork, data: c.ItemList) -> c.ItemP
         blocked = unfinished_blocker(t.item.c.id)
         query = query.where(blocked if data.blocked else ~blocked)
     if data.query is not None:
-        terms = func.websearch_to_tsquery(t.ENGLISH, data.query)
         in_comments = exists(
             select(t.comment.c.id).where(
                 t.comment.c.item_id == t.item.c.id,
-                search_vector(t.comment.c.body).bool_op("@@")(terms),
+                text_matches(search_vector(t.comment.c.body), data.query),
             )
         )
         query = query.where(
             or_(
-                search_vector(t.item.c.title, t.item.c.body).bool_op("@@")(terms),
+                text_matches(search_vector(t.item.c.title, t.item.c.body), data.query),
                 in_comments,
             )
         )

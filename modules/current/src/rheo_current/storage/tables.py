@@ -28,6 +28,7 @@ from sqlalchemy import (
 metadata = MetaData(schema="current")
 ENGLISH: ColumnClause[Any] = literal_column("'english'::regconfig")
 SPACE: ColumnClause[Any] = literal_column("' '::text")
+SIMPLE: ColumnClause[Any] = literal_column("'simple'::regconfig")
 
 
 def stamp(name: str, *, nullable: bool = False) -> Column[Any]:

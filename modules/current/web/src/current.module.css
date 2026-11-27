@@ -848,6 +848,19 @@ a.rowTitle:hover {
   border-color: var(--rs-color-hairline);
   border-radius: var(--rs-radius-md);
 }
+/* The dependency searches (#645): the queue's finder, stacked in the aside. */
+.linkFinder {
+  display: block;
+}
+.linkResults {
+  margin-top: var(--rs-space-3);
+}
+.linkDisclosure {
+  margin-top: var(--rs-space-2);
+}
+.linkDisclosure[open] summary {
+  margin-bottom: var(--rs-space-2);
+}
 .finderIcon {
   position: absolute;
   inset-inline-start: var(--rs-space-3);
