@@ -43,7 +43,7 @@ afterEach(() => {
   host.remove();
 });
 
-async function mounted() {
+async function mounted(link: string) {
   const answers: Record<string, OperationOutcome> = {
     "current.item.get": ok({
       ...summary(ITEM, "Renew the example.com domain"),
@@ -76,7 +76,7 @@ async function mounted() {
     href: (id: string, q?: Record<string, string | undefined>) =>
       `/current/${id}?${new URLSearchParams(q as Record<string, string>)}`,
   } satisfies ShellApi;
-  const page = await screens.item({ shell: api, query: { ref: ITEM, find: "hosting" } });
+  const page = await screens.item({ shell: api, query: { ref: ITEM, link, find: "hosting" } });
   act(() => root.render(page));
   return submit;
 }
@@ -88,17 +88,17 @@ async function press(label: string) {
 }
 
 describe("linking a found item (#645)", () => {
-  it("Blocks this makes the match a blocker of this item", async () => {
-    const submit = await mounted();
-    await press("Pay the hosting bill blocks this item");
+  it("Add under Blocked by makes the match a blocker of this item", async () => {
+    const submit = await mounted("blocker");
+    await press("Add Pay the hosting bill as a blocker");
     expect(submit).toHaveBeenCalledExactlyOnceWith("current.dependency.add", {
       item_ref: ITEM,
       blocker_ref: MATCH,
     });
   });
-  it("Waits on this makes this item a blocker of the match", async () => {
-    const submit = await mounted();
-    await press("Pay the hosting bill waits on this item");
+  it("Add under Blocking makes this item a blocker of the match", async () => {
+    const submit = await mounted("blocked");
+    await press("Add Pay the hosting bill as blocked by this");
     expect(submit).toHaveBeenCalledExactlyOnceWith("current.dependency.add", {
       item_ref: MATCH,
       blocker_ref: ITEM,

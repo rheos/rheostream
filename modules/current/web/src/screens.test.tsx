@@ -326,7 +326,10 @@ describe("item detail", () => {
   it("searches for items to link only once words are typed (#645)", async () => {
     const api = detailShell(detail());
     const html = renderToStaticMarkup(
-      await screens.item({ shell: api, query: { ref: ITEM, find: "  hosting bill " } }),
+      await screens.item({
+        shell: api,
+        query: { ref: ITEM, link: "blocker", find: "  hosting bill " },
+      }),
     );
     expect(api.call).toHaveBeenCalledWith("current.item.list", {
       status: "active",
@@ -337,14 +340,22 @@ describe("item detail", () => {
     expect(
       api.call.mock.calls.filter(([name]) => name === "current.item.get"),
     ).toHaveLength(1);
-    // The existing blocker is left out; the other match is offered both ways.
-    expect(html).toContain("Pay the hosting bill");
-    expect(html).toContain('aria-label="Pay the hosting bill blocks this item"');
-    expect(html).toContain('aria-label="Pay the hosting bill waits on this item"');
-    expect(html).not.toContain("Find the registrar login blocks this item");
+    // The existing blocker is left out; the other match is offered on the side
+    // searched, whose disclosure is open; the other side's stays shut and empty.
+    expect(html).toContain('aria-label="Add Pay the hosting bill as a blocker"');
+    expect(html).not.toContain("Add Find the registrar login as a blocker");
+    expect(html).not.toContain("as blocked by this");
+    expect(html.match(/<details[^>]*open=""/g)).toHaveLength(1);
     expect(html).toContain('value="hosting bill"');
     expect(html).toContain("Clear search");
     expect(api.submit).not.toHaveBeenCalled();
+  });
+  it("ignores a search that names no side", async () => {
+    const api = detailShell(detail());
+    await screens.item({ shell: api, query: { ref: ITEM, find: "hosting" } });
+    expect(api.call.mock.calls.map(([name]) => name)).not.toContain(
+      "current.item.list",
+    );
   });
   it("says when nothing matches, and when every match is already linked", async () => {
     const none = shell((name) =>
@@ -355,7 +366,7 @@ describe("item detail", () => {
     );
     expect(
       renderToStaticMarkup(
-        await screens.item({ shell: none, query: { ref: ITEM, find: "nothing" } }),
+        await screens.item({ shell: none, query: { ref: ITEM, link: "blocked", find: "nothing" } }),
       ),
     ).toContain("No unfinished items match.");
     const linkedOnly = shell((name) =>
@@ -367,7 +378,7 @@ describe("item detail", () => {
     );
     expect(
       renderToStaticMarkup(
-        await screens.item({ shell: linkedOnly, query: { ref: ITEM, find: "registrar" } }),
+        await screens.item({ shell: linkedOnly, query: { ref: ITEM, link: "blocker", find: "registrar" } }),
       ),
     ).toContain("Every match is this item or already linked to it.");
   });
@@ -383,10 +394,10 @@ describe("item detail", () => {
         Record<string, OperationOutcome>)[name];
     });
     const html = renderToStaticMarkup(
-      await screens.item({ shell: api, query: { ref: ITEM, find: "00000000abcd" } }),
+      await screens.item({ shell: api, query: { ref: ITEM, link: "blocked", find: "00000000abcd" } }),
     );
     expect(api.call).toHaveBeenCalledWith("current.item.get", { ref: "00000000abcd" });
-    expect(html).toContain('aria-label="Book the venue blocks this item"');
+    expect(html).toContain('aria-label="Add Book the venue as blocked by this"');
   });
   it("links items by short ID and offers the ID with a one-click copy (#587)", async () => {
     const api = detailShell(

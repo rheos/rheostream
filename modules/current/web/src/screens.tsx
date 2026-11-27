@@ -661,44 +661,67 @@ function NeighbourList({
   );
 }
 
+/** Which side of the item a search links: a blocker of it, or an item it blocks. */
+type LinkSide = "blocker" | "blocked";
+const LINK_SIDE: Record<
+  LinkSide,
+  { open: string; id: string; add: (title: string) => string }
+> = {
+  blocker: {
+    open: "Add a blocker",
+    id: "current-link-blocker",
+    add: (title) => `Add ${title} as a blocker`,
+  },
+  blocked: {
+    open: "Add an item this blocks",
+    id: "current-link-blocked",
+    add: (title) => `Add ${title} as blocked by this`,
+  },
+};
+
 /**
- * Link another item by searching for it (#645). A GET search, like the queue's
- * finder, that brings the page back to Dependencies; each match offers both
- * directions. Nothing is listed until something is searched.
+ * Link another item by searching for it (#645), under the list it joins. A
+ * GET search like the queue's finder, behind a disclosure, that brings the page
+ * back to Dependencies. Nothing is listed until something is searched.
  */
 function LinkFinder({
   shell,
   submit,
   record,
-  find,
+  side,
+  search,
   matches,
 }: {
   shell: ShellApi;
   submit: NonNullable<ShellApi["submit"]>;
   record: ItemDetail;
-  find: string | null;
+  side: LinkSide;
+  /** The words searched on this side, if this side was searched. */
+  search: string | null;
   matches: LinkMatches | null;
 }) {
+  const text = LINK_SIDE[side];
   const clear = `${shell.href("item", { ref: record.shortId })}#dependencies`;
   return (
-    <>
-      <h3 className={styles.subheading}>Link an item</h3>
+    <details className={`${styles.disclosure} ${styles.linkDisclosure}`} open={search !== null}>
+      <summary>{text.open}</summary>
       <form
         action={`${shell.href("item")}#dependencies`}
         method="get"
         className={`${styles.finder} ${styles.linkFinder}`}
         role="search"
-        aria-label="Find an item to link"
+        aria-label={text.open}
       >
         <Icon name="search" className={styles.finderIcon} />
-        <label htmlFor="current-link-find" className={styles.visuallyHidden}>
+        <label htmlFor={text.id} className={styles.visuallyHidden}>
           Words in the item, or its ID
         </label>
         <input type="hidden" name="ref" value={record.shortId} />
+        <input type="hidden" name="link" value={side} />
         <input
-          id="current-link-find"
+          id={text.id}
           name="find"
-          defaultValue={find ?? ""}
+          defaultValue={search ?? ""}
           required
           maxLength={512}
           enterKeyHint="search"
@@ -706,7 +729,7 @@ function LinkFinder({
           placeholder="Find an item…"
         />
       </form>
-      {find && matches ? (
+      {search !== null && matches ? (
         <div className={styles.linkResults} aria-live="polite">
           {matches.failed ? (
             <p className={styles.error}>The search could not be read. Try again.</p>
@@ -722,22 +745,17 @@ function LinkFinder({
                       {STATUS_LABEL[other.status]} · {other.shortId}
                     </span>
                   </span>
-                  <span className={styles.linkActions}>
-                    <ActionButton
-                      submit={submit}
-                      operation="current.dependency.add"
-                      input={{ item_ref: record.ref, blocker_ref: other.ref }}
-                      label="Blocks this"
-                      description={`${other.title} blocks this item`}
-                    />
-                    <ActionButton
-                      submit={submit}
-                      operation="current.dependency.add"
-                      input={{ item_ref: other.ref, blocker_ref: record.ref }}
-                      label="Waits on this"
-                      description={`${other.title} waits on this item`}
-                    />
-                  </span>
+                  <ActionButton
+                    submit={submit}
+                    operation="current.dependency.add"
+                    input={
+                      side === "blocker"
+                        ? { item_ref: record.ref, blocker_ref: other.ref }
+                        : { item_ref: other.ref, blocker_ref: record.ref }
+                    }
+                    label="Add"
+                    description={text.add(other.title)}
+                  />
                 </li>
               ))}
             </ul>
@@ -754,7 +772,7 @@ function LinkFinder({
           </p>
         </div>
       ) : null}
-    </>
+    </details>
   );
 }
 
@@ -771,7 +789,9 @@ export async function item({ shell, query }: ScreenProps) {
       </Frame>
     );
   // Items to link are found by search only (#645): no search, no list read.
-  const find = linkSearch(query.find);
+  const side: LinkSide | null =
+    query.link === "blocker" || query.link === "blocked" ? query.link : null;
+  const find = side ? linkSearch(query.find) : null;
   const [result, areaResult, projectResult, matchResult, idResult] =
     await Promise.all([
       read(shell, "current.item.get", { ref: query.ref }),
@@ -1016,6 +1036,16 @@ export async function item({ shell, query }: ScreenProps) {
                 blocker_ref: other.ref,
               })}
             />
+            {shell.submit ? (
+              <LinkFinder
+                shell={shell}
+                submit={shell.submit}
+                record={record}
+                side="blocker"
+                search={side === "blocker" ? find : null}
+                matches={side === "blocker" ? matches : null}
+              />
+            ) : null}
             <h3 className={styles.subheading}>Blocking</h3>
             <NeighbourList
               shell={shell}
@@ -1031,8 +1061,9 @@ export async function item({ shell, query }: ScreenProps) {
                 shell={shell}
                 submit={shell.submit}
                 record={record}
-                find={find}
-                matches={matches}
+                side="blocked"
+                search={side === "blocked" ? find : null}
+                matches={side === "blocked" ? matches : null}
               />
             ) : null}
           </section>
