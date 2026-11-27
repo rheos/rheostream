@@ -703,7 +703,7 @@ one; the Leads job-search tools, Current and Finance came after it.
 | Five (current) | `current_create`, `current_update`, `current_status` | mutate | owner, member, service |
 | Five (current) | `current_close_by_source`, `current_comment`, `current_add_dependency`, `current_remove_dependency`, `current_create_project`, `current_update_project` | mutate | owner, member |
 | Five (current) | `current_delete_item`, `current_delete_project` | destructive | owner |
-| Finance | `finance_status`, `finance_coverage`, `finance_documents`, `finance_sinks`, `finance_lines`, `finance_open_items`, `finance_owed`, `finance_trace` | read; every restricted field left out of the registered output | owner. `explicit_only`: reached only by a `module_read:finance` token or an explicit list ([package sets](identity-and-topology.md#the-named-package-operation-sets)) |
+| Finance | `finance_status`, `finance_coverage`, `finance_documents`, `finance_sinks`, `finance_lines`, `finance_open_items`, `finance_owed`, `finance_trace`, `finance_upcoming` | read; every restricted field left out of the registered output | owner. `explicit_only`: reached only by a `module_read:finance` token or an explicit list ([package sets](identity-and-topology.md#the-named-package-operation-sets)) |
 
 `audit_list` declares `limit` and nothing else. `core.audit.list`'s two opt-ins,
 `include_tool_telemetry` and `include_deletions`, open owner/operator-only collections (tool

@@ -46,7 +46,7 @@ class Line(BaseModel):
     cad_amount: Annotated[Decimal | None, Tiered(R)]
     basis: Annotated[str | None, Tiered(P)]
     provisional: Annotated[bool, Tiered(P)]
-    display_label: Annotated[str, Tiered(P)]
+    display_label: Annotated[str, Tiered(R)]
     category: Annotated[str | None, Tiered(P)]
     category_basis_class: Annotated[str | None, Tiered(P)]
     tag: Annotated[str | None, Tiered(P)]
