@@ -46,6 +46,34 @@ def search_vector(*columns: ColumnElement[str]) -> ColumnElement[Any]:
     return func.to_tsvector(t.ENGLISH, text_value)
 
 
+# Words a search treats as prefixes: letters and digits only, so nothing typed
+# can reach tsquery syntax. Capped like the query's own length.
+SEARCH_WORD = re.compile(r"\w+")
+MAX_PREFIX_WORDS = 16
+
+
+def prefix_terms(query: str) -> str | None:
+    """Every word of a search as a word start ("nutri" -> "nutri:*"), joined with AND.
+
+    A person finding an item types the start of a word; whole-word matching alone
+    misses "Nutrifax" for "nutri" (#645). None when the search has no words.
+    """
+    words = SEARCH_WORD.findall(query)[:MAX_PREFIX_WORDS]
+    return " & ".join(f"{w}:*" for w in words) or None
+
+
+def text_matches(vector: ColumnElement[Any], query: str) -> ColumnElement[bool]:
+    """Whole-word search syntax (quotes, -word, or) or every word as a prefix.
+
+    Both run against the same English vector, so the GIN index serves both.
+    """
+    whole = vector.bool_op("@@")(func.websearch_to_tsquery(t.ENGLISH, query))
+    prefixes = prefix_terms(query)
+    if prefixes is None:
+        return whole
+    return or_(whole, vector.bool_op("@@")(func.to_tsquery(t.ENGLISH, prefixes)))
+
+
 def unfinished_blocker(item_id: ColumnElement[Any]) -> ColumnElement[bool]:
     return exists(
         select(t.dependency.c.blocker_id)
@@ -360,16 +388,15 @@ def listing(ctx: WorkspaceContext, uow: UnitOfWork, data: c.ItemList) -> c.ItemP
         blocked = unfinished_blocker(t.item.c.id)
         query = query.where(blocked if data.blocked else ~blocked)
     if data.query is not None:
-        terms = func.websearch_to_tsquery(t.ENGLISH, data.query)
         in_comments = exists(
             select(t.comment.c.id).where(
                 t.comment.c.item_id == t.item.c.id,
-                search_vector(t.comment.c.body).bool_op("@@")(terms),
+                text_matches(search_vector(t.comment.c.body), data.query),
             )
         )
         query = query.where(
             or_(
-                search_vector(t.item.c.title, t.item.c.body).bool_op("@@")(terms),
+                text_matches(search_vector(t.item.c.title, t.item.c.body), data.query),
                 in_comments,
             )
         )

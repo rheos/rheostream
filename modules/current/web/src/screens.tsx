@@ -16,6 +16,8 @@ import {
   type FormProps,
 } from "./forms";
 import {
+  ITEM_ID,
+  LINK_FETCH,
   PRIORITIES,
   PRIORITY_LABEL,
   PROVENANCE_LABEL,
@@ -29,13 +31,17 @@ import {
   day,
   itemDetail,
   itemSummary,
+  linkMatches,
+  linkSearch,
   page,
   pageOffset,
   project as projectOf,
   read,
   summary,
   type Area,
+  type ItemDetail,
   type ItemSummary,
+  type LinkMatches,
   type Neighbour,
   type Project,
 } from "./data";
@@ -655,6 +661,103 @@ function NeighbourList({
   );
 }
 
+/**
+ * Link another item by searching for it (#645). A GET search, like the queue's
+ * finder, that brings the page back to Dependencies; each match offers both
+ * directions. Nothing is listed until something is searched.
+ */
+function LinkFinder({
+  shell,
+  submit,
+  record,
+  find,
+  matches,
+}: {
+  shell: ShellApi;
+  submit: NonNullable<ShellApi["submit"]>;
+  record: ItemDetail;
+  find: string | null;
+  matches: LinkMatches | null;
+}) {
+  const clear = `${shell.href("item", { ref: record.shortId })}#dependencies`;
+  return (
+    <>
+      <h3 className={styles.subheading}>Link an item</h3>
+      <form
+        action={`${shell.href("item")}#dependencies`}
+        method="get"
+        className={`${styles.finder} ${styles.linkFinder}`}
+        role="search"
+        aria-label="Find an item to link"
+      >
+        <Icon name="search" className={styles.finderIcon} />
+        <label htmlFor="current-link-find" className={styles.visuallyHidden}>
+          Words in the item, or its ID
+        </label>
+        <input type="hidden" name="ref" value={record.shortId} />
+        <input
+          id="current-link-find"
+          name="find"
+          defaultValue={find ?? ""}
+          required
+          maxLength={512}
+          enterKeyHint="search"
+          autoComplete="off"
+          placeholder="Find an item…"
+        />
+      </form>
+      {find && matches ? (
+        <div className={styles.linkResults} aria-live="polite">
+          {matches.failed ? (
+            <p className={styles.error}>The search could not be read. Try again.</p>
+          ) : matches.items.length ? (
+            <ul className={styles.links}>
+              {matches.items.map((other) => (
+                <li key={other.ref}>
+                  <span className={styles.linkText}>
+                    <a href={shell.href("item", { ref: other.shortId })}>
+                      {other.title}
+                    </a>
+                    <span className={styles.meta}>
+                      {STATUS_LABEL[other.status]} · {other.shortId}
+                    </span>
+                  </span>
+                  <span className={styles.linkActions}>
+                    <ActionButton
+                      submit={submit}
+                      operation="current.dependency.add"
+                      input={{ item_ref: record.ref, blocker_ref: other.ref }}
+                      label="Blocks this"
+                      description={`${other.title} blocks this item`}
+                    />
+                    <ActionButton
+                      submit={submit}
+                      operation="current.dependency.add"
+                      input={{ item_ref: other.ref, blocker_ref: record.ref }}
+                      label="Waits on this"
+                      description={`${other.title} waits on this item`}
+                    />
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className={styles.meta}>
+              {matches.found
+                ? "Every match is this item or already linked to it."
+                : "No unfinished items match."}
+            </p>
+          )}
+          <p className={styles.meta}>
+            {matches.more ? "Showing the first few. Add a word to narrow it. " : ""}
+            <a href={clear}>Clear search</a>
+          </p>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 export async function item({ shell, query }: ScreenProps) {
   if (!query.ref)
     return (
@@ -667,12 +770,23 @@ export async function item({ shell, query }: ScreenProps) {
         </div>
       </Frame>
     );
-  const [result, areaResult, projectResult, candidateResult] =
+  // Items to link are found by search only (#645): no search, no list read.
+  const find = linkSearch(query.find);
+  const [result, areaResult, projectResult, matchResult, idResult] =
     await Promise.all([
       read(shell, "current.item.get", { ref: query.ref }),
       read(shell, "current.area.list", { include_retired: true }),
       read(shell, "current.project.list"),
-      read(shell, "current.item.list", { status: "active", limit: 100 }),
+      find
+        ? read(shell, "current.item.list", {
+            status: "active",
+            query: find,
+            limit: LINK_FETCH,
+          })
+        : null,
+      find && ITEM_ID.test(find)
+        ? read(shell, "current.item.get", { ref: find })
+        : null,
     ]);
   if (result.state !== "ok")
     return (
@@ -693,11 +807,9 @@ export async function item({ shell, query }: ScreenProps) {
     ...record.blockers.map((b) => b.ref),
     ...record.blocking.map((b) => b.ref),
   ]);
-  const candidates = page(candidateResult, itemSummary)
-    .items.filter((c) => !linked.has(c.ref))
-    .map((c) => ({ value: c.ref, label: c.title }));
-  // An explicit empty choice, so a stray click cannot link the first item.
-  const choices = [{ value: "", label: "Choose an item" }, ...candidates];
+  const matches = find
+    ? linkMatches(matchResult, idResult, linked)
+    : null;
   const base = { ref: record.ref, revision: record.revision };
   const editFields: Field[] = [
     {
@@ -904,25 +1016,6 @@ export async function item({ shell, query }: ScreenProps) {
                 blocker_ref: other.ref,
               })}
             />
-            {candidates.length ? (
-              <Form
-                shell={shell}
-                operation="current.dependency.add"
-                base={{ item_ref: record.ref }}
-                fields={[
-                  {
-                    name: "blocker_ref",
-                    label: "Add a blocker",
-                    type: "select",
-                    required: true,
-                    value: "",
-                    options: choices,
-                  },
-                ]}
-                button="Add blocker"
-                inline
-              />
-            ) : null}
             <h3 className={styles.subheading}>Blocking</h3>
             <NeighbourList
               shell={shell}
@@ -933,30 +1026,14 @@ export async function item({ shell, query }: ScreenProps) {
                 blocker_ref: record.ref,
               })}
             />
-            {candidates.length ? (
-              <Form
+            {shell.submit ? (
+              <LinkFinder
                 shell={shell}
-                operation="current.dependency.add"
-                base={{ blocker_ref: record.ref }}
-                fields={[
-                  {
-                    name: "item_ref",
-                    label: "This blocks",
-                    type: "select",
-                    required: true,
-                    value: "",
-                    options: choices,
-                  },
-                ]}
-                button="Add blocked item"
-                inline
+                submit={shell.submit}
+                record={record}
+                find={find}
+                matches={matches}
               />
-            ) : null}
-            {candidateResult.state === "ok" &&
-            page(candidateResult, itemSummary).nextOffset !== null ? (
-              <p className={styles.meta}>
-                Lists the 100 most urgent active items.
-              </p>
             ) : null}
           </section>
           <section className={styles.section} aria-labelledby="origin">
