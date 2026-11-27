@@ -709,7 +709,6 @@ function LinkFinder({
         action={`${shell.href("item")}#dependencies`}
         method="get"
         className={`${styles.finder} ${styles.linkFinder}`}
-        role="search"
         aria-label={text.open}
       >
         <Icon name="search" className={styles.finderIcon} />
@@ -724,7 +723,7 @@ function LinkFinder({
           defaultValue={search ?? ""}
           required
           maxLength={512}
-          enterKeyHint="search"
+          enterKeyHint="go"
           autoComplete="off"
           placeholder="Find an item…"
         />
