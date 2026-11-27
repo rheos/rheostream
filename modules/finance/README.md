@@ -88,12 +88,14 @@ workspace owner alone (ADR-0028):
 | `finance_upcoming` | `finance.upcoming.list` | bills due and recurring charges expected in the next days |
 
 No restricted field reaches a model: every field finance tiers restricted (amounts,
-totals, the owed headline) is empty in what these operations return to a token, and
-core's tool facade drops it. An agent sees the fields finance tiers public or internal
-(structure, dates, states, counts, labels and the status lines' text), as finance
-tiers them. Labels (payees, accounts, document paths) are public under finance's own
-tiers and do reach it. The one caller that gets the restricted fields filled is the
-workspace owner's own signed-in browser session, for the web screens (ADR-0029).
+totals, the owed headline, and a line's or upcoming charge's statement descriptor,
+which can print an amount or an account number) is empty in what these operations
+return to a token, and core's tool facade drops it. An agent sees the fields finance
+tiers public or internal (structure, dates, states, counts, categories, the status
+lines' text and the reasons), as finance tiers them. Payee and account names and
+document paths are public under finance's own tiers and do reach it (ADR-0031). The
+one caller that gets the restricted fields filled is the workspace owner's own
+signed-in browser session, for the web screens (ADR-0029).
 
 The reads are opt-in. No routine token, named package set or connector grant reaches
 them, and the module's other operations are not registered in core at all. The one
@@ -103,7 +105,7 @@ way in is a token issued for them, by the operator, inside the core container:
 rheo token issue --account <account id> --workspace <workspace id> --set module_read:finance --kind mcp
 ```
 
-The token holds the eight reads and nothing else, and lasts as long as core's
+The token holds the nine reads and nothing else, and lasts as long as core's
 `identity.token_max_days.mcp` allows (30 days by default). Each read runs
 as `finance_reader` and needs the workspace's data layout mounted where it runs; a
 missing layout refuses with `finance_layout_invalid`.

@@ -318,7 +318,7 @@ class Charge(BaseModel):
     state: Annotated[State, Tiered(P)]
     on: Annotated[dt.date, Tiered(P)]
     days_away: Annotated[int, Tiered(P)]
-    label: Annotated[str, Tiered(P)]
+    label: Annotated[str, Tiered(R)]
     account: Annotated[str | None, Tiered(P)]
     account_label: Annotated[str | None, Tiered(P)]
     currency: Annotated[str, Tiered(P)]

@@ -278,7 +278,13 @@ def test_l4_the_dropped_fields_are_the_designs() -> None:
         finance = _finance_paths(specs[name].output_model)
         return {path for path, tier in finance.items() if tier is R}
 
-    assert dropped("finance.txn.list") == {"rows.amount", "rows.cad_amount"}
+    # ADR-0031: a line's statement descriptor is restricted, since it can print an
+    # amount or a number; payee and account labels and categories stay public.
+    assert dropped("finance.txn.list") == {
+        "rows.amount",
+        "rows.cad_amount",
+        "rows.display_label",
+    }
     for name in (
         "finance.status.get",
         "finance.coverage.get",
@@ -298,6 +304,7 @@ def test_l4_the_dropped_fields_are_the_designs() -> None:
         "rows.amount",
         "rows.amount_low",
         "rows.amount_high",
+        "rows.label",
         "totals.amount",
         "headline",
     } == coming

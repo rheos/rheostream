@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from typing import Final
 
 import pytest
 from pydantic import BaseModel
@@ -507,6 +509,21 @@ def test_coverage_under_the_reader_is_the_matrix_with_reasons_in_words(
         "account", "account_label", "month", "state", "reason",
     }  # fmt: skip
     assert leaked(fixture_ledger, out.model_dump_json()) == []
+
+
+# A figure as statements print one: digits with two decimals, or a dollar sign.
+MONEY: Final = re.compile(r"\d\.\d{2}\b|\$\s?\d")
+
+
+def test_the_status_lines_and_coverage_reasons_carry_no_figure(
+    fixture_ledger: FixtureLedger, sinks_off: None
+) -> None:
+    """ADR-0031 keeps these public because they hold no amount, though the fixture
+    ledger's lines and bills do (#568)."""
+    lines = status_lines(fixture_ledger)
+    assert lines and not [text for text in lines.values() if MONEY.search(text)]
+    reasons = [m.reason for m in coverage_out(fixture_ledger).months if m.reason]
+    assert reasons and not [reason for reason in reasons if MONEY.search(reason)]
 
 
 def test_coverage_filters_by_account_and_year(fixture_ledger: FixtureLedger) -> None:

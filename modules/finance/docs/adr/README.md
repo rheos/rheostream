@@ -81,3 +81,9 @@ bill paid from the Owed screen (`finance.obligation.report_paid`) or undoes it
 derive keeps it off the list until a payment confirms it, and puts it back as owed,
 flagged, once the paying accounts' statements come in without one. It partly replaces
 ADR-0028's "nothing above READ" and ADR-0029's "no operation is added".
+
+ADR-0031 records the owner's decision per field group (#568): a line's statement
+descriptor (`display_label`) and an upcoming charge's `label` are restricted, since a
+descriptor can print an amount or an account number; payee and account names,
+categories, paths, status lines and reasons stay public. `internal` is not used,
+because a token with no purpose sees internal fields under the default purposes.
