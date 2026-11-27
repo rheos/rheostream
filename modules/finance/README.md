@@ -93,8 +93,9 @@ which can print an amount or an account number) is empty in what these operation
 return to a token, and core's tool facade drops it. An agent sees the fields finance
 tiers public or internal (structure, dates, states, counts, categories, the status
 lines' text and the reasons), as finance tiers them. Payee and account names and
-document paths are public under finance's own tiers and do reach it (ADR-0031). The one caller that gets the restricted fields filled is the
-workspace owner's own signed-in browser session, for the web screens (ADR-0029).
+document paths are public under finance's own tiers and do reach it (ADR-0031). The
+one caller that gets the restricted fields filled is the workspace owner's own
+signed-in browser session, for the web screens (ADR-0029).
 
 The reads are opt-in. No routine token, named package set or connector grant reaches
 them, and the module's other operations are not registered in core at all. The one

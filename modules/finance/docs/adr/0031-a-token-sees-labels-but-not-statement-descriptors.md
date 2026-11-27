@@ -42,9 +42,10 @@ The owner chose each group (2026-11-26):
 - **Paths and free text stay public.** Document, evidence and gap paths,
   `invoice_folder`, the status lines and the open item and coverage reasons. The paths
   are archive directory and date; the text is built from codes, counts, dates and
-  labels. A test pins the columns each reason expression and the status facts read,
-  so a new column is a deliberate change, and another checks the fixture ledger's
-  status lines and coverage reasons hold no figure though its lines and bills do.
+  labels. A test pins the columns each reason expression reads and each status fact
+  projects into its text, so a new column is a deliberate change and a raw SQL
+  fragment refuses, and another checks the fixture ledger's status lines and coverage
+  reasons hold no figure though its lines and bills do.
 
 Nothing moves to `internal`: it would withhold nothing until the workspace changes
 its purposes, and then it would also withhold Leads data.
@@ -54,8 +55,8 @@ its purposes, and then it would also withhold Leads data.
 - A `module_read:finance` token can now be issued for real. What it sees is the shape
   of the ledger and who is owed when, with no amount and no statement text.
 - The registered owner view gains `display_label` and `label` as optional, `None` for
-  every caller but the owner's browser session. The web screens already read both
-  through helpers that accept a missing value.
+  every caller but the owner's browser session. The Upcoming screen reads `label`
+  through a helper that accepts a missing value; no screen reads `display_label`.
 - Upcoming bill rows lose their payee label for a token; `payee_slug` names the payee.
 - This holds field by field, not by masking text: a future field that copies a
   descriptor, or any other text that can hold a figure, must be tiered restricted when
