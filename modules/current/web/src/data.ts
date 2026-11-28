@@ -298,6 +298,47 @@ export function linkMatches(
   };
 }
 
+// --- web addresses in text (#650) -----------------------------------------------------
+
+/** One run of text: plain, or a web address to show as a link. */
+export type TextPart = string | { href: string };
+
+const WEB_ADDRESS = /https?:\/\/[^\s<>"'`]+/gi;
+const SENTENCE_END = ".,;:!?]}*_";
+
+/** `found` without the punctuation that ends the sentence around it. A closing
+ * bracket stays when the address opened one ("https://example.com/a_(b)"). */
+function trimAddress(found: string): string {
+  let href = found;
+  for (;;) {
+    const last = href.at(-1) ?? "";
+    const opened = href.split("(").length - 1;
+    const closed = href.split(")").length - 1;
+    if (SENTENCE_END.includes(last) || (last === ")" && closed > opened))
+      href = href.slice(0, -1);
+    else return href;
+  }
+}
+
+/**
+ * Text split into plain runs and web addresses, so notes and comments can link
+ * them (#650). Only http and https addresses with a host become links.
+ */
+export function textParts(text: string): TextPart[] {
+  const parts: TextPart[] = [];
+  let at = 0;
+  for (const match of text.matchAll(WEB_ADDRESS)) {
+    const href = trimAddress(match[0]);
+    if (!/^https?:\/\/[^/?#]/i.test(href)) continue;
+    const start = match.index ?? 0;
+    if (start > at) parts.push(text.slice(at, start));
+    parts.push({ href });
+    at = start + href.length;
+  }
+  if (at < text.length) parts.push(text.slice(at));
+  return parts;
+}
+
 // --- reads ------------------------------------------------------------------------
 
 const READS = [

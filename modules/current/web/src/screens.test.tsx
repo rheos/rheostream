@@ -244,7 +244,7 @@ describe("queue", () => {
 function detail(overrides: Record<string, unknown> = {}) {
   return ok({
     ...item(),
-    body: "Registrar sends the notice to <billing@example.com>.",
+    body: "Registrar sends the notice to <billing@example.com>. Renew at https://example.com/renew.",
     provenance: "email",
     source_kind: "email.thread",
     source_ref: "thread-1",
@@ -304,6 +304,10 @@ describe("item detail", () => {
       await screens.item({ shell: api, query: { ref: ITEM } }),
     );
     expect(html).toContain("&lt;billing@example.com&gt;");
+    // A web address in the notes is a link that opens in a new tab (#650).
+    expect(html).toContain(
+      '<a href="https://example.com/renew" target="_blank" rel="noopener noreferrer">https://example.com/renew</a>.',
+    );
     expect(html).toContain("Agent 96bde0dd");
     expect(html).toContain("System");
     expect(html).toContain("From email");
