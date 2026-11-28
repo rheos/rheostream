@@ -474,6 +474,9 @@ def test_search_can_match_titles_only(current: Current) -> None:
     assert found("gardenf", "title") == {titled.ref}
     assert found("supp ord", "title") == {titled.ref}
     assert found("invoice", "title") == set()
+    # A -word that is only in the notes does not hide a title that matches.
+    assert found("weekly -invoice", "title") == {in_notes.ref}
+    assert found("chore -weekly", "title") == {in_comment.ref}
     assert current.call("item.list", query="x", match="body").state == "input_invalid"
 
 

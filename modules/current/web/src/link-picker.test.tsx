@@ -6,10 +6,16 @@ import type {
   OperationOutcome,
   ShellApi,
 } from "@rheo-stream/web-contract/screen";
-import { LinkPicker, PICK_DELAY_MS, PICK_SHOWN, type LinkSide } from "./link-picker";
+import {
+  LinkPicker,
+  PICK_DELAY_MS,
+  PICK_SHOWN,
+  type LinkSide,
+} from "./link-picker";
 
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
+(
+  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 const ok = (result: unknown): OperationOutcome => ({ state: "ok", result });
 const ITEM = "current.item:01900000-0000-7000-8000-000000000001";
@@ -41,7 +47,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function mount(side: LinkSide, read: ReturnType<typeof vi.fn>, submit = vi.fn(async () => ok({}))) {
+function mount(
+  side: LinkSide,
+  read: ReturnType<typeof vi.fn>,
+  submit = vi.fn(async () => ok({})),
+  linked: readonly string[] = [ITEM, LINKED],
+) {
   act(() =>
     root.render(
       <LinkPicker
@@ -50,15 +61,18 @@ function mount(side: LinkSide, read: ReturnType<typeof vi.fn>, submit = vi.fn(as
         itemRef={ITEM}
         subject="Renew the example.com domain"
         side={side}
-        linked={[ITEM, LINKED]}
+        linked={linked}
+        reloadHref="/current/item?ref=00000001"
       />,
     ),
   );
   return submit;
 }
-const opener = () => host.querySelector<HTMLButtonElement>("button[aria-haspopup]")!;
+const opener = () =>
+  host.querySelector<HTMLButtonElement>("button[aria-haspopup]")!;
 const box = () => host.querySelector<HTMLInputElement>("dialog input")!;
-const rows = () => Array.from(host.querySelectorAll<HTMLButtonElement>("dialog li button"));
+const rows = () =>
+  Array.from(host.querySelectorAll<HTMLButtonElement>("dialog li button"));
 const dialogOpen = () => host.querySelector("dialog")!.open;
 
 function open() {
@@ -66,7 +80,10 @@ function open() {
 }
 async function type(text: string) {
   const input = box();
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    "value",
+  )!.set!;
   act(() => {
     setter.call(input, text);
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -103,17 +120,24 @@ describe("link picker (#645)", () => {
       status: "active",
       query: "pay",
       match: "title",
-      limit: PICK_SHOWN + 2,
+      limit: PICK_SHOWN + 1 + 2,
     });
-    expect(rows().map((r) => r.textContent)).toEqual(["Pay the hosting bill00000009"]);
+    expect(rows().map((r) => r.textContent)).toEqual([
+      "Pay the hosting bill00000009",
+    ]);
   });
 
   it("waits for typing to pause, and clearing the box clears the list", async () => {
-    const read = vi.fn(async () => page(summary(ref(9), "Pay the hosting bill")));
+    const read = vi.fn(async () =>
+      page(summary(ref(9), "Pay the hosting bill")),
+    );
     mount("blocker", read);
     open();
     const input = box();
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!;
     for (const text of ["p", "pa", "pay"]) {
       act(() => {
         setter.call(input, text);
@@ -130,7 +154,9 @@ describe("link picker (#645)", () => {
     expect(rows()).toHaveLength(1);
     await type("");
     expect(rows()).toHaveLength(0);
-    expect(host.querySelector("dialog")!.textContent).not.toContain("No unfinished item");
+    expect(host.querySelector("dialog")!.textContent).not.toContain(
+      "No unfinished item",
+    );
     expect(read).toHaveBeenCalledOnce();
   });
 
@@ -138,39 +164,55 @@ describe("link picker (#645)", () => {
     let slow: (value: OperationOutcome) => void = () => {};
     const read = vi
       .fn()
-      .mockImplementationOnce(() => new Promise<OperationOutcome>((resolve) => (slow = resolve)))
-      .mockImplementationOnce(async () => page(summary(ref(11), "Order supplies")));
+      .mockImplementationOnce(
+        () => new Promise<OperationOutcome>((resolve) => (slow = resolve)),
+      )
+      .mockImplementationOnce(async () =>
+        page(summary(ref(11), "Order supplies")),
+      );
     mount("blocker", read);
     open();
     await type("pay");
     await type("order");
-    expect(rows().map((r) => r.textContent)).toEqual(["Order supplies00000011"]);
+    expect(rows().map((r) => r.textContent)).toEqual([
+      "Order supplies00000011",
+    ]);
     await act(async () => slow(page(summary(ref(9), "Pay the hosting bill"))));
-    expect(rows().map((r) => r.textContent)).toEqual(["Order supplies00000011"]);
+    expect(rows().map((r) => r.textContent)).toEqual([
+      "Order supplies00000011",
+    ]);
   });
 
   it.each([
     ["blocker", { item_ref: ITEM, blocker_ref: ref(9) }],
     ["blocked", { item_ref: ref(9), blocker_ref: ITEM }],
-  ] as const)("a pick on the %s side links the right way round and closes", async (side, input) => {
-    const read = vi.fn(async () => page(summary(ref(9), "Pay the hosting bill")));
-    const submit = mount(side, read);
-    open();
-    await type("pay");
-    await act(async () => rows()[0]!.click());
-    expect(submit).toHaveBeenCalledExactlyOnceWith("current.dependency.add", input);
-    expect(dialogOpen()).toBe(false);
-  });
+  ] as const)(
+    "a pick on the %s side links the right way round and closes",
+    async (side, input) => {
+      const read = vi.fn(async () =>
+        page(summary(ref(9), "Pay the hosting bill")),
+      );
+      const submit = mount(side, read);
+      open();
+      await type("pay");
+      await act(async () => rows()[0]!.click());
+      expect(submit).toHaveBeenCalledExactlyOnceWith(
+        "current.dependency.add",
+        input,
+      );
+      expect(dialogOpen()).toBe(false);
+    },
+  );
 
   it("stays open and says why when the link is refused", async () => {
-    const read = vi.fn(async () => page(summary(ref(9), "Pay the hosting bill")));
-    const submit = vi.fn(
-      async (): Promise<OperationOutcome> => ({
-        state: "refused",
-        code: "dependency_cycle",
-        text: "That would make a loop.",
-      }),
+    const read = vi.fn(async () =>
+      page(summary(ref(9), "Pay the hosting bill")),
     );
+    const submit = vi.fn(async (): Promise<OperationOutcome> => ({
+      state: "refused",
+      code: "dependency_cycle",
+      text: "That would make a loop.",
+    }));
     mount("blocker", read, submit);
     open();
     await type("pay");
@@ -180,7 +222,10 @@ describe("link picker (#645)", () => {
   });
 
   it("says so when nothing matches, and when the search fails", async () => {
-    const read = vi.fn().mockResolvedValueOnce(page()).mockResolvedValueOnce({ state: "unavailable" });
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce(page())
+      .mockResolvedValueOnce({ state: "unavailable" });
     mount("blocked", read);
     open();
     await type("zzz");
@@ -188,7 +233,51 @@ describe("link picker (#645)", () => {
       "No unfinished item has that in its title.",
     );
     await type("yyy");
-    expect(host.querySelector("dialog")!.textContent).toContain("The search did not answer.");
+    expect(host.querySelector("dialog")!.textContent).toContain(
+      "The search did not answer.",
+    );
+  });
+
+  it("asks for at most a page however many links the item has", async () => {
+    const read = vi.fn(async () => page());
+    const many = Array.from({ length: 120 }, (_, n) => ref(1000 + n));
+    mount("blocker", read, undefined, [ITEM, ...many]);
+    open();
+    await type("pay");
+    expect(read).toHaveBeenCalledWith("current.item.list", expect.objectContaining({ limit: 100 }));
+  });
+
+  it("says more match once there are more than it shows", async () => {
+    const read = vi.fn(async () =>
+      page(
+        ...Array.from({ length: PICK_SHOWN + 1 }, (_, n) =>
+          summary(ref(100 + n), `Hosting task ${n}`),
+        ),
+      ),
+    );
+    mount("blocker", read);
+    open();
+    await type("hosting");
+    expect(rows()).toHaveLength(PICK_SHOWN);
+    expect(host.querySelector("dialog")!.textContent).toContain(
+      "More match. Add a word to narrow it.",
+    );
+  });
+
+  it("says why a refused search will not work on a retry, with a reload", async () => {
+    const read = vi.fn(async (): Promise<OperationOutcome> => ({
+      state: "refused",
+      code: "workspace_changed",
+      text: "Your workspace changed. Reload the page.",
+    }));
+    mount("blocker", read);
+    open();
+    await type("pay");
+    const text = host.querySelector("dialog")!.textContent!;
+    expect(text).not.toContain("Try again");
+    expect(
+      host.querySelector('dialog a[href="/current/item?ref=00000001"]'),
+    ).not.toBeNull();
   });
 
   it("finds an item by a pasted ID, but not a done one", async () => {
@@ -200,8 +289,12 @@ describe("link picker (#645)", () => {
     mount("blocker", read);
     open();
     await type("00000000abcd");
-    expect(read).toHaveBeenCalledWith("current.item.get", { ref: "00000000abcd" });
-    expect(rows().map((r) => r.textContent)).toEqual(["Book the venue0000abcd"]);
+    expect(read).toHaveBeenCalledWith("current.item.get", {
+      ref: "00000000abcd",
+    });
+    expect(rows().map((r) => r.textContent)).toEqual([
+      "Book the venue0000abcd",
+    ]);
 
     read.mockImplementation(async (operation: string) =>
       operation === "current.item.get"

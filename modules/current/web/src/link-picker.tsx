@@ -4,7 +4,13 @@ import type {
   OperationOutcome,
   ShellApi,
 } from "@rheo-stream/web-contract/screen";
-import { ITEM_ID, itemSummary, page, refusalText, type ItemSummary } from "./data";
+import {
+  ITEM_ID,
+  itemSummary,
+  page,
+  refusalText,
+  type ItemSummary,
+} from "./data";
 import styles from "./current.module.css";
 
 type Submit = NonNullable<ShellApi["submit"]>;
@@ -20,6 +26,8 @@ const SIDE: Record<LinkSide, string> = {
 
 /** How many matches the dialog lists. */
 export const PICK_SHOWN = 8;
+/** The most `current.item.list` returns in one page (contracts.ItemList.limit). */
+const LIST_MAX = 100;
 /** Wait this long after the last key before searching. */
 export const PICK_DELAY_MS = 200;
 
@@ -31,7 +39,9 @@ export function linkInput(side: LinkSide, itemRef: string, picked: string) {
 }
 
 /** The answer to one search: what was typed, and what it found or that it failed. */
-type Answer = { words: string; items: ItemSummary[] } | { words: string; failed: true };
+type Answer =
+  | { words: string; items: ItemSummary[]; more: boolean }
+  | { words: string; failed: OperationOutcome | null };
 
 /**
  * Link another item to this one (#645): a text button that opens a modal like
@@ -88,26 +98,37 @@ export function LinkPicker({
             status: "active",
             query: typed,
             match: "title",
-            limit: PICK_SHOWN + skip.size,
+            // One more than shown, past those left out, says whether more match.
+            limit: Math.min(PICK_SHOWN + 1 + skip.size, LIST_MAX),
           }),
           ITEM_ID.test(typed)
             ? read("current.item.get", { ref: typed })
             : Promise.resolve(null),
         ]);
-        if (list.state !== "ok" && named?.state !== "ok") throw new Error("read");
-        const byId =
-          named?.state === "ok"
-            ? [itemSummary(named.result)].filter((i) => i.status !== "done")
-            : [];
-        found = {
-          words: typed,
-          items: [...byId, ...page(list, itemSummary).items]
+        if (list.state !== "ok" && named?.state !== "ok") {
+          // A refusal (signed out, workspace changed) says why; it will not
+          // pass on a retry. Anything else is a search that did not answer.
+          found = {
+            words: typed,
+            failed: list.state === "refused" ? list : null,
+          };
+        } else {
+          const byId =
+            named?.state === "ok"
+              ? [itemSummary(named.result)].filter((i) => i.status !== "done")
+              : [];
+          const listed = page(list, itemSummary);
+          const offered = [...byId, ...listed.items]
             .filter((i, n, all) => all.findIndex((a) => a.ref === i.ref) === n)
-            .filter((i) => !skip.has(i.ref))
-            .slice(0, PICK_SHOWN),
-        };
+            .filter((i) => !skip.has(i.ref));
+          found = {
+            words: typed,
+            items: offered.slice(0, PICK_SHOWN),
+            more: offered.length > PICK_SHOWN || listed.nextOffset !== null,
+          };
+        }
       } catch {
-        found = { words: typed, failed: true };
+        found = { words: typed, failed: null };
       }
       if (mine === asked.current) setAnswer(found);
     }, PICK_DELAY_MS);
@@ -132,7 +153,10 @@ export function LinkPicker({
     startTransition(async () => {
       let outcome: OperationOutcome;
       try {
-        outcome = await submit("current.dependency.add", linkInput(side, itemRef, picked.ref));
+        outcome = await submit(
+          "current.dependency.add",
+          linkInput(side, itemRef, picked.ref),
+        );
       } catch {
         outcome = { state: "unavailable" };
       }
@@ -201,31 +225,56 @@ export function LinkPicker({
           autoComplete="off"
           spellCheck={false}
           placeholder="Type part of a title or an ID"
-          aria-controls={`${field}-list`}
+          aria-controls={items.length ? `${field}-list` : undefined}
         />
-        <div className={styles.pickList} aria-live="polite" aria-busy={searching}>
+        <div
+          className={styles.pickList}
+          aria-live="polite"
+          aria-busy={searching}
+        >
           {!current ? null : "failed" in current ? (
-            searching ? null : (
-              <p className={styles.error}>The search did not answer. Try again.</p>
+            searching ? null : current.failed?.state === "refused" ? (
+              <p className={styles.error}>
+                {refusalText(current.failed.code, current.failed.text)}
+                {reloadHref ? (
+                  <>
+                    {" "}
+                    <a href={reloadHref}>Reload</a>
+                  </>
+                ) : null}
+              </p>
+            ) : (
+              <p className={styles.error}>
+                The search did not answer. Try again.
+              </p>
             )
           ) : items.length ? (
-            <ul id={`${field}-list`} className={styles.choices}>
-              {items.map((i) => (
-                <li key={i.ref}>
-                  <button
-                    type="button"
-                    className={styles.choice}
-                    disabled={pending}
-                    onClick={() => pick(i)}
-                  >
-                    <span>{i.title}</span>
-                    <span className={styles.choiceNote}>{i.shortId}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul id={`${field}-list`} className={styles.choices}>
+                {items.map((i) => (
+                  <li key={i.ref}>
+                    <button
+                      type="button"
+                      className={styles.choice}
+                      disabled={pending}
+                      onClick={() => pick(i)}
+                    >
+                      <span>{i.title}</span>
+                      <span className={styles.choiceNote}>{i.shortId}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {current && "more" in current && current.more ? (
+                <p className={styles.meta}>
+                  More match. Add a word to narrow it.
+                </p>
+              ) : null}
+            </>
           ) : searching ? null : (
-            <p className={styles.meta}>No unfinished item has that in its title.</p>
+            <p className={styles.meta}>
+              No unfinished item has that in its title.
+            </p>
           )}
         </div>
         <div aria-live="polite" aria-atomic="true">
