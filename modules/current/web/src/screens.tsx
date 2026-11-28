@@ -34,6 +34,7 @@ import {
   project as projectOf,
   read,
   summary,
+  textParts,
   type Area,
   type ItemSummary,
   type Neighbour,
@@ -621,6 +622,24 @@ export async function queue({ shell, query }: ScreenProps) {
 
 // --- item detail ------------------------------------------------------------------
 
+/** Notes or a comment with their web addresses as links (#650), opened in a new
+ * tab. Everything else stays text, escaped as React escapes it. */
+function LinkedText({ text }: { text: string }) {
+  return (
+    <>
+      {textParts(text).map((part, n) =>
+        typeof part === "string" ? (
+          part
+        ) : (
+          <a key={n} href={part.href} target="_blank" rel="noopener noreferrer">
+            {part.href}
+          </a>
+        ),
+      )}
+    </>
+  );
+}
+
 function NeighbourList({
   shell,
   items,
@@ -798,7 +817,9 @@ export async function item({ shell, query }: ScreenProps) {
               </div>
             </dl>
             {record.body ? (
-              <p className={styles.body}>{record.body}</p>
+              <p className={styles.body}>
+                <LinkedText text={record.body} />
+              </p>
             ) : (
               <p className={styles.meta}>No notes yet.</p>
             )}
@@ -826,7 +847,9 @@ export async function item({ shell, query }: ScreenProps) {
                     <p className={styles.commentMeta}>
                       <strong>{author(c)}</strong> <LocalTime iso={c.createdAt} zone={shell.timeZone} />
                     </p>
-                    <p className={styles.body}>{c.body}</p>
+                    <p className={styles.body}>
+                      <LinkedText text={c.body} />
+                    </p>
                   </li>
                 ))}
               </ol>
@@ -1297,7 +1320,9 @@ export async function project({ shell, query }: ScreenProps) {
           <section className={styles.section} aria-labelledby="about">
             <h2 id="about">About</h2>
             {record.description ? (
-              <p className={styles.body}>{record.description}</p>
+              <p className={styles.body}>
+                <LinkedText text={record.description} />
+              </p>
             ) : (
               <p className={styles.meta}>No description.</p>
             )}

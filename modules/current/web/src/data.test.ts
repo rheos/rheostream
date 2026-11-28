@@ -10,6 +10,7 @@ import {
   itemSummary,
   refusalText,
   snoozeAt,
+  textParts,
   TRANSITIONS,
 } from "./data";
 import {
@@ -260,5 +261,58 @@ describe("desk helpers", () => {
   it("reads the row tag from a summary", () => {
     expect(itemSummary({ tag: "bill-due" }).tag).toBe("bill-due");
     expect(itemSummary({}).tag).toBeNull();
+  });
+});
+
+describe("textParts (#650)", () => {
+  it("links http and https addresses and leaves the rest as text", () => {
+    expect(textParts("Open in admin: https://example.com/admin/support")).toEqual([
+      "Open in admin: ",
+      { href: "https://example.com/admin/support" },
+    ]);
+    expect(textParts("see http://example.org and https://example.net/x?a=1#b too")).toEqual([
+      "see ",
+      { href: "http://example.org" },
+      " and ",
+      { href: "https://example.net/x?a=1#b" },
+      " too",
+    ]);
+  });
+  it("leaves sentence punctuation out of the address", () => {
+    expect(textParts("Go to https://example.com/a.")).toEqual([
+      "Go to ",
+      { href: "https://example.com/a" },
+      ".",
+    ]);
+    expect(textParts("(see https://example.com/page), then")).toEqual([
+      "(see ",
+      { href: "https://example.com/page" },
+      "), then",
+    ]);
+    expect(textParts("wiki https://example.com/A_(b).")).toEqual([
+      "wiki ",
+      { href: "https://example.com/A_(b)" },
+      ".",
+    ]);
+  });
+  it("does not link other schemes, a bare scheme, or text in angle brackets", () => {
+    expect(textParts("javascript:alert(1) data:text/html,x mailto:a@example.com")).toEqual([
+      "javascript:alert(1) data:text/html,x mailto:a@example.com",
+    ]);
+    expect(textParts("https:// alone")).toEqual(["https:// alone"]);
+    expect(textParts("<https://example.com/x>")).toEqual([
+      "<",
+      { href: "https://example.com/x" },
+      ">",
+    ]);
+  });
+  it("keeps line breaks and returns plain text unchanged", () => {
+    expect(textParts("line one\nhttps://example.com\nline three")).toEqual([
+      "line one\n",
+      { href: "https://example.com" },
+      "\nline three",
+    ]);
+    expect(textParts("no links here")).toEqual(["no links here"]);
+    expect(textParts("")).toEqual([]);
   });
 });
