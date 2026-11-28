@@ -113,6 +113,8 @@ MANIFEST = ModuleManifest(
         ),
         record_views=(),
         search_providers=(),
+        # The link dialog searches as someone types (#645).
+        client_reads=("current.item.list", "current.item.get"),
         # Every MUTATE operation the screens submit. Deletion stays with
         # core.record.delete and its per-action approval, outside the form path.
         forms=tuple(

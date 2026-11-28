@@ -460,6 +460,23 @@ def test_search_matches_the_start_of_a_word(current: Current) -> None:
     assert found("_ -") == set()  # no words at all
 
 
+def test_search_can_match_titles_only(current: Current) -> None:
+    """The link picker lists what the typed words name, not notes or comments (#645)."""
+    titled = current.item("Gardenfax supply order")
+    in_notes = current.item("Weekly chores", body="Gardenfax invoice is in the notes")
+    in_comment = current.item("Another chore")
+    current.ok("item.comment", ref=in_comment.ref, body="Gardenfax mentioned here")
+
+    def found(query: str, match: str) -> set[str]:
+        return {i.ref for i in current.ok("item.list", query=query, match=match).items}
+
+    assert found("gardenf", "all") == {titled.ref, in_notes.ref, in_comment.ref}
+    assert found("gardenf", "title") == {titled.ref}
+    assert found("supp ord", "title") == {titled.ref}
+    assert found("invoice", "title") == set()
+    assert current.call("item.list", query="x", match="body").state == "input_invalid"
+
+
 def test_compare_and_set_and_clearing(current: Current) -> None:
     item = current.item("Due item", due_on="2020-01-01", priority="critical")
     undated = current.item("No due date")

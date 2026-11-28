@@ -396,7 +396,14 @@ def listing(ctx: WorkspaceContext, uow: UnitOfWork, data: c.ItemList) -> c.ItemP
     if data.blocked is not None:
         blocked = unfinished_blocker(t.item.c.id)
         query = query.where(blocked if data.blocked else ~blocked)
-    if data.query is not None:
+    if data.query is not None and data.match == "title":
+        # The title-and-notes match is what ix_item_search indexes; the title-only
+        # match then rechecks just the rows it found.
+        query = query.where(
+            text_matches(search_vector(t.item.c.title, t.item.c.body), data.query),
+            text_matches(search_vector(t.item.c.title), data.query),
+        )
+    elif data.query is not None:
         in_comments = exists(
             select(t.comment.c.id).where(
                 t.comment.c.item_id == t.item.c.id,
