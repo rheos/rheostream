@@ -388,6 +388,10 @@ class WebContribution(BaseModel):
     forms: tuple[FormDeclaration, ...]
     search_providers: tuple[SearchProvider, ...]
     record_routes: tuple[RecordRoute, ...] = ()
+    # The module's own READ operations a client component may call while someone
+    # types, through the shell's read action (#645). Opt-in per operation: a read
+    # that serves owner-only fields to a page (ADR-0029) stays server-render only.
+    client_reads: tuple[str, ...] = ()
 
 
 def _refuse_duplicates(field: str, what: str, keys: Sequence[str]) -> None:
@@ -446,6 +450,19 @@ def _check_web_contribution(
                 f"web.search_providers: provider {provider.id!r} names "
                 f"{provider.operation!r}, which is {safety.value!r}-class; a search "
                 "provider names a read-class operation"
+            )
+    _refuse_duplicates("client_reads", "operation", list(web.client_reads))
+    for name in web.client_reads:
+        safety = operations.get(name)
+        if safety is None:
+            raise ValueError(
+                f"web.client_reads: {name!r} is not one of module {module_id!r}'s "
+                "own operations"
+            )
+        if safety is not SafetyClass.READ:
+            raise ValueError(
+                f"web.client_reads: {name!r} is {safety.value!r}-class; a client "
+                "read names a read-class operation"
             )
     for form in web.forms:
         if form.operation not in operations:

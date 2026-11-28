@@ -59,6 +59,10 @@ export const MODULES = [
       "current.project.create",
       "current.project.update",
     ],
+    clientReadOperations: [
+      "current.item.get",
+      "current.item.list",
+    ],
   },
   {
     id: "finance",
@@ -94,6 +98,7 @@ export const MODULES = [
       "finance.obligation.report_paid",
       "finance.obligation.unreport_paid",
     ],
+    clientReadOperations: [],
   },
   {
     id: "leads",
@@ -202,6 +207,7 @@ export const MODULES = [
       "leads.proposalsection.use_library",
       "leads.qualification.assess",
     ],
+    clientReadOperations: [],
   },
   {
     id: "recallatron",
@@ -234,5 +240,6 @@ export const MODULES = [
       "recallatron.memory.recall",
     ],
     submitOperations: [],
+    clientReadOperations: [],
   },
 ] as const satisfies readonly ComposedModule[];

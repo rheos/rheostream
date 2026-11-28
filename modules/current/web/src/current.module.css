@@ -848,24 +848,39 @@ a.rowTitle:hover {
   border-color: var(--rs-color-hairline);
   border-radius: var(--rs-radius-md);
 }
-/* The dependency searches (#645): the queue's finder, stacked in the aside. */
-.linkFinder {
-  display: block;
-}
-.linkResults {
-  margin-top: var(--rs-space-3);
-}
-/* Add stays beside its match: a long title wraps in its own column instead of
-   pushing the button onto a line of its own. */
-.linkResults .links li {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-.linkDisclosure {
+/* The link dialog (#645): an accent text button under each list, like the
+   page's other disclosures, and the project picker's modal. */
+.linkOpen {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--rs-size-control);
   margin-top: var(--rs-space-2);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--rs-color-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
 }
-.linkDisclosure[open] summary {
-  margin-bottom: var(--rs-space-2);
+.linkOpen:hover {
+  color: var(--rs-color-accent-strong);
+}
+/* Pinned near the top, so the dialog stays put while matches come and go. */
+.pickModal {
+  margin-block-start: min(12vh, calc(var(--rs-space-6) * 3));
+}
+.pickBox {
+  inline-size: 100%;
+  block-size: var(--rs-size-control);
+  margin-bottom: var(--rs-space-3);
+}
+/* Room for a few rows from the start, so the dialog does not jump as answers
+   arrive; longer lists scroll inside it. */
+.pickList {
+  min-block-size: calc(var(--rs-size-control) * 3);
+  max-block-size: min(60vh, calc(var(--rs-size-control) * 9));
+  overflow-y: auto;
 }
 .finderIcon {
   position: absolute;

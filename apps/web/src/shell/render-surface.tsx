@@ -42,6 +42,8 @@ import panel from "@/shell/panel.module.css";
 import { savePreference } from "@/shell/preference-action";
 import { refreshScreen } from "@/shell/refresh-screen";
 import { submitModuleForm } from "@/shell/submit-form";
+import { readModuleScreen } from "@/shell/client-read";
+import { hasClientReads } from "@/shell/client-read-gate";
 import { moduleScreenCall } from "@/shell/screen-call";
 import { ShellFrame, type ShellAccount, type ShellNavigationItem } from "@/shell/ShellFrame";
 
@@ -477,6 +479,10 @@ export async function renderSurface(request: SurfaceRequest): Promise<ReactNode>
   const shell: ShellApi = {
     role: session.role,
     submit: submitModuleForm.bind(null, owner.id, session.activeWorkspaceId),
+    // #645: a live search's reads, only for modules that declare client reads.
+    read: hasClientReads(owner.id)
+      ? readModuleScreen.bind(null, owner.id, session.activeWorkspaceId)
+      : undefined,
     // #122: only the owning module's READ-class operations, refused before core.
     call: moduleScreenCall(owner.id, (operation, input) =>
       callOperation(operation, input, identity),

@@ -138,6 +138,7 @@ COMPOSE_MANIFEST = _manifest(
         search_providers=(
             SearchProvider(id="find", operation=f"{COMPOSE_ID}.note.find"),
         ),
+        client_reads=(f"{COMPOSE_ID}.note.find",),
     ),
 )
 
@@ -194,6 +195,7 @@ export const MODULES = [
     searchProviders: [],
     readOperations: [],
     submitOperations: [],
+    clientReadOperations: [],
   },
   {
     id: "compose_probe",
@@ -223,6 +225,9 @@ export const MODULES = [
     ],
     submitOperations: [
       "compose_probe.note.add",
+    ],
+    clientReadOperations: [
+      "compose_probe.note.find",
     ],
   },
 ] as const satisfies readonly ComposedModule[];

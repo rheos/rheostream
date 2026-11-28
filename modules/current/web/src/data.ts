@@ -249,54 +249,9 @@ export function page<T>(
 
 // --- linking items (#645) ------------------------------------------------------------
 
-/** How many matches the dependency search shows. */
-export const LINK_SHOWN = 8;
-/** How many it asks for: more than it shows, so leaving out the item itself and
- * those already linked still leaves a full list. */
-export const LINK_FETCH = 20;
 /** A pasted item ID: a short ID (an 8-32 hex tail) or a whole UUID. */
 export const ITEM_ID =
   /^(?:[0-9a-f]{8,32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
-
-/** The dependency search's words, or null when there is nothing to search. */
-export function linkSearch(value: string | undefined): string | null {
-  return (value ?? "").trim().slice(0, 512) || null;
-}
-
-export interface LinkMatches {
-  /** What to offer: active, not this item, not already linked. */
-  items: ItemSummary[];
-  /** The search found active items, so an empty `items` means all are linked. */
-  found: boolean;
-  /** More matched than are shown. */
-  more: boolean;
-  /** The search could not be read. */
-  failed: boolean;
-}
-
-/**
- * The items a dependency search offers: the item a pasted ID names first, then
- * the text matches, without the item itself or any it is already linked to.
- */
-export function linkMatches(
-  matchOutcome: OperationOutcome | null,
-  idOutcome: OperationOutcome | null,
-  linked: ReadonlySet<string>,
-): LinkMatches {
-  const named =
-    idOutcome?.state === "ok" ? [itemSummary(idOutcome.result)] : [];
-  const listed = page(matchOutcome, itemSummary);
-  const all: ItemSummary[] = [];
-  for (const i of [...named.filter((n) => n.status !== "done"), ...listed.items])
-    if (!all.some((a) => a.ref === i.ref)) all.push(i);
-  const open = all.filter((i) => !linked.has(i.ref));
-  return {
-    items: open.slice(0, LINK_SHOWN),
-    found: all.length > 0,
-    more: open.length > LINK_SHOWN || listed.nextOffset !== null,
-    failed: matchOutcome !== null && matchOutcome.state !== "ok" && !named.length,
-  };
-}
 
 // --- web addresses in text (#650) -----------------------------------------------------
 

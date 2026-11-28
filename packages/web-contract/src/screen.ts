@@ -10,6 +10,11 @@ export interface ShellApi {
   /** Server action for explicitly declared MUTATE/DRAFT forms; absent in read-only hosts. */
   submit?: (operation: string, input: unknown) => Promise<OperationOutcome>;
   call(operation: string, input: unknown): Promise<OperationOutcome>;
+  /** Server action a client component uses to read as someone types (#645): only
+   * this module's operations declared client-readable, for the signed-in session
+   * and its bound workspace, with no refresh. Absent in hosts that cannot; a
+   * screen then offers no live search. */
+  read?: (operation: string, input: unknown) => Promise<OperationOutcome>;
   /** Server action that renders the current screen again with fresh data, in
    * place: no page load, so scroll, focus and client state survive. Absent in
    * hosts that cannot; a screen then falls back to reloading the page. */
@@ -99,4 +104,10 @@ export interface ComposedModule {
    */
   readOperations: readonly string[];
   submitOperations?: readonly string[];
+  /**
+   * The subset of `readOperations` a client component may call through
+   * `ShellApi.read` while someone types (#645), from the manifest's
+   * `web.client_reads`. Empty or absent: the module's screens get no `read`.
+   */
+  clientReadOperations?: readonly string[];
 }

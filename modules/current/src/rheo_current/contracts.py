@@ -155,6 +155,9 @@ class ItemList(Strict):
     woke: bool | None = None
     blocked: bool | None = None
     query: str | None = Field(default=None, min_length=1, max_length=512)
+    match: Literal["all", "title"] = "all"
+    """Where `query` must match: title, notes or comments ("all"), or the title
+    alone ("title"), for a picker that lists only what the typed words name (#645)."""
     limit: int = Field(default=50, ge=1, le=100)
     offset: int = Field(default=0, ge=0, le=100000)
 

@@ -546,6 +546,7 @@ def test_the_web_contribution_carries_the_ratified_fields_plus_surface() -> None
         "record_views",
         "forms",
         "search_providers",
+        "client_reads",
     }
     fields = WebContribution.model_fields
     assert fields["surface"].annotation is WebSurface
@@ -556,6 +557,8 @@ def test_the_web_contribution_carries_the_ratified_fields_plus_surface() -> None
     assert fields["record_views"].annotation == tuple[RecordView, ...]
     assert fields["forms"].annotation == tuple[FormDeclaration, ...]
     assert fields["search_providers"].annotation == tuple[SearchProvider, ...]
+    assert fields["client_reads"].annotation == tuple[str, ...]
+    assert fields["client_reads"].default == ()
 
 
 def test_the_entry_types_carry_their_declared_fields() -> None:
@@ -739,6 +742,19 @@ WEB_REFUSALS: dict[str, tuple[dict[str, object], str]] = {
     "search provider naming a mutate operation": (
         {"search_providers": (SearchProvider(id="find", operation=MUTATE_OPERATION),)},
         f"names '{MUTATE_OPERATION}', which is 'mutate'-class",
+    ),
+    "duplicate client read": (
+        {"client_reads": (READ_OPERATION, READ_OPERATION)},
+        f"web.client_reads: operation '{READ_OPERATION}' is declared twice",
+    ),
+    "client read naming another module's operation": (
+        {"client_reads": ("other_probe.note.find",)},
+        "web.client_reads: 'other_probe.note.find' is not one of module "
+        f"'{MODULE_ID}''s own operations",
+    ),
+    "client read naming a mutate operation": (
+        {"client_reads": (MUTATE_OPERATION,)},
+        f"web.client_reads: '{MUTATE_OPERATION}' is 'mutate'-class",
     ),
     "form naming another module's operation": (
         {

@@ -299,5 +299,10 @@ def _module(
         *_array("searchProviders", search_providers, 2),
         *_array("readOperations", [_literal(name) for name in reads], 2),
         *_array("submitOperations", [_literal(name) for name in submissions], 2),
+        *_array(
+            "clientReadOperations",
+            [_literal(name) for name in sorted(web.client_reads) if name in reads],
+            2,
+        ),
         f"{_INDENT}}},",
     ]
